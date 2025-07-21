@@ -1,0 +1,4 @@
+validator index,validator public address,Protocol,stack,tailscale dns,AI Monitoring containers1,AI Monitoring containers2,AI Monitoring containers3,AI Monitoring containers4
+1634582,0xabc123...,102 CSM LIDO,VERO,minipcamd.velociraptor-scylla.ts.net,eth-docker-validator-1,eth-docker-consensus-1,eth-docker-execution-1,eth-docker-mev-boost-1
+1634583,0xdef456...,Rocketpool,Rocketpool,minitx.velociraptor-scylla.ts.net,rocketpool_validator,eth-docker-consensus-1,eth-docker-execution-1,eth-docker-mev-boost-1
+1907460,0xghi789...,Etherfi,Obol,orangepi5-plus.velociraptor-scylla.ts.net,charon-distributed-validator-node-lodestar-1,charon-distributed-validator-node-charon-1,charon-distributed-validator-node-mev-boost-1,eth-docker-consensus-1
