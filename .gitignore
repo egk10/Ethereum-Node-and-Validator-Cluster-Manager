@@ -1,0 +1,5 @@
+eth_validators/validators vs hardware.csv
+venv/
+__pycache__/
+*.pyc
+.env
