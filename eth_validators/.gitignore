@@ -1,7 +1,0 @@
-# Arquivos sensíveis e de configuração local
-config.yaml
-validators vs hardware.csv
-venv/
-__pycache__/
-*.pyc
-.env
