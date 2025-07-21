@@ -1,81 +1,134 @@
-# Ethereum Validators Manager
+# 🚀 Ethereum Node and Validator Cluster Manager
 
-Este projeto fornece uma ferramenta CLI em Python para gerenciar, atualizar e monitorar um cluster de validadores Ethereum Mainnet rodando em Ubuntu Server 24.04+ com ETH-DOCKER.
+**Contributing to Ethereum decentralization**
 
-## Funcionalidades
+Bem-vindo ao toolkit open source para manutenção, upgrade e monitoramento de validadores Ethereum Mainnet!  
+Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamento remoto via **Tailscale** e automação usando **ETH-DOCKER**.
 
-- Listar status dos nós e clientes de execução/consenso.
-- Automatizar upgrades de clientes via Docker.
-- Monitorar o desempenho dos validadores com diagnóstico de conectividade multi-cliente (Lighthouse, Teku).
-- Integrar gerenciamento via Tailscale domains.
 
-## Pré-requisitos
+## 🚦 Instalação Passo a Passo (para todos os níveis)
 
-- Python 3.10+
-- Docker Engine & Docker Compose
-- Acesso SSH aos nós (via Tailscale)
+1. **Instale o Git e Python 3 (se ainda não tiver):**
+    - No Ubuntu Server, execute:
+      ```bash
+      sudo apt update
+      sudo apt install git python3 python3-venv
+      ```
 
-## Instalação
+2. **Clone este repositório:**
+    ```bash
+    git clone https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager.git
+    cd Ethereum-Node-and-Validator-Cluster-Manager
+    ```
 
-```bash
-pip install -r requirements.txt
-```
+3. **Crie e ative um ambiente virtual Python (recomendado):**
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
 
-## Uso
+4. **Instale as dependências do projeto:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-```bash
-# List nodes
-python -m eth_validators.cli list
-# Show status of one node
-python -m eth_validators.cli status <name|tailscale_domain>
-# Show all service images for one node
-python -m eth_validators.cli status <name|tailscale_domain> --images
-# Show client versions for a node
-python -m eth_validators.cli versions <name|tailscale_domain>
-# Show client versions for all nodes
-python -m eth_validators.cli versions-all
-# Show status and image versions for all nodes
-python -m eth_validators.cli status-all
-# Upgrade one node
-python -m eth_validators.cli upgrade <name|tailscale_domain>
-# Upgrade all nodes
-python -m eth_validators.cli upgrade-all
-# Monitor validator performance across all nodes
-python -m eth_validators performance
-```
+5. **Configure seu arquivo de validadores:**
+    - Crie o arquivo `validators vs hardware.csv` na pasta `eth_validators/` conforme o exemplo do README.
+    - **Nunca compartilhe dados sensíveis!**
 
-## Monitoramento de Desempenho
+6. **Edite o arquivo `config.yaml` conforme seu setup.**
 
-O comando `performance` oferece uma visão diagnóstica da saúde dos seus validadores. Para cada nó definido no `config.yaml`, ele:
+7. **Execute o toolkit:**
+    ```bash
+    python3 -m eth_validators performance
+    ```
 
-1.  Seleciona aleatoriamente um dos validadores associados ao nó (mapeado em `validators vs hardware.csv`).
-2.  Verifica o status oficial do validador na beacon chain (`active_ongoing`, `exited`, etc.).
-3.  Se o validador estiver ativo, tenta buscar métricas de desempenho detalhadas.
-4.  Utiliza uma **estratégia de failover multi-cliente**: primeiro consulta os nós Lighthouse e, se não obtiver dados, tenta os nós Teku.
-5.  Exibe uma tabela com os resultados, destacando problemas com cores:
-    - **Amarelo**: Alertas, como `misses > 0`.
-    - **Vermelho**: Status críticos, como `exited` ou `active_exiting`.
+---
 
-### Entendendo o Output
+## 🧑‍💻 O que este projeto faz?
 
-- **`Attester Eff.`**: Eficácia do atestador.
-- **`Misses`**: Atestados perdidos.
-- **`Inclusion Dist.`**: Distância de inclusão média.
-- **`Status`**:
-    - `active_ongoing`: Validador ativo e operando.
-    - `active_ongoing (No Perf Data)`: O validador está ativo na rede, mas nenhum dos nós de consulta (`Lighthouse`, `Teku`) conseguiu obter suas métricas de desempenho. Isso indica um **problema de peering/conectividade** entre o nó do validador e os nós de consulta.
-    - `Check CSV mapping`: O nó existe no `config.yaml`, mas não foi encontrado um validador correspondente no `validators vs hardware.csv`.
+- Gerencia múltiplos nodes e clientes (Nethermind, Reth, Lighthouse, Nimbus, etc)
+- Facilita upgrades, monitoramento e troubleshooting
+- Usa domínios Tailscale para acesso remoto seguro e estável
+- Suporta diferentes Withdrawal Credentials e Fee Recipients por hardware
+- Compatível com stacks: ETH-DOCKER, Rocketpool, Node Set Hyperdrive, SSV, OBOL DV e outros
 
-<!-- Example output for versions-all -->
-```markdown
-| Node      | Execution                             | Consensus   | MEV Boost      |
-|-----------|---------------------------------------|-------------|----------------|
-| minipcamd | Nimbus beacon node v25.7.0-94fb81-stateofus | Vero v1.1.3 | mev-boost v1.9.0 |
-| minipcamd2 | Lighthouse v7.1.0-cfb1f73            | Vero v1.1.3 | mev-boost v1.9.0 |
-| minipcamd3 | Teku v25.6.0                         | Besu v25.7.0| mev-boost v1.9.0 |
-| laptop    | Grandine 1.1.1-f0e281a               | Nethermind v1.31.11 | mev-boost v1.9.0 |
-```  
+---
 
-## Configuração
+## 🛠️ Como usar
 
-Edite `eth_validators/config.yaml` e `eth_validators/validators vs hardware.csv` para definir seus nós, credenciais, stacks e o mapeamento de validadores.
+1. **Clone o repositório:**
+    ```bash
+    git clone https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager.git
+    cd Ethereum-Node-and-Validator-Cluster-Manager
+    ```
+
+2. **Crie e ative um ambiente virtual Python:**
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    ```
+
+3. **Crie seu arquivo de configuração de validadores:**
+    - O projeto espera um arquivo chamado `validators vs hardware.csv` na pasta `eth_validators/`.
+    - **Nunca compartilhe chaves privadas ou dados sensíveis!**
+    - Exemplo de formato:
+        ```
+        validator index,validator public address,Protocol,stack,tailscale dns,AI Monitoring containers1,AI Monitoring containers2,AI Monitoring containers3,AI Monitoring containers4
+        1634582,0xabc...,102 CSM LIDO,VERO,minipcamd.velociraptor-scylla.ts.net,eth-docker-validator-1,eth-docker-consensus-1,eth-docker-execution-1,eth-docker-mev-boost-1
+        ```
+    - Cada linha representa um validador e seu hardware correspondente.
+
+4. **Edite o `config.yaml` conforme seu setup.**
+
+5. **Execute o toolkit:**
+    ```bash
+    python3 -m eth_validators performance
+    ```
+
+---
+
+## 🦄 Por que é divertido?
+
+- Chega de IPs dinâmicos: use domínios Tailscale!
+- Misture clientes e stacks para máxima resiliência.
+- Open source: contribua, melhore e compartilhe com a comunidade Ethereum!
+
+---
+
+## 📚 Referências úteis
+
+- [ETH-DOCKER](https://ethdocker.com/)
+- [Node Set Hyperdrive](https://docs.nodeset.io/)
+- [Lido CSM](https://csm.lido.fi/)
+- [Client Diversity](https://clientdiversity.org/#distribution)
+- [Rocketpool](https://docs.rocketpool.net/guides/node/updates.html)
+- [SSV Network](https://docs.ssv.network/operators/)
+- [Obol Network](https://docs.obol.org/)
+- [Stakewise](https://docs.stakewise.io/)
+- [VERO multi-node validator client software](https://github.com/serenita-org/vero/tree/master)
+
+---
+
+## 📝 License
+
+MIT — Open source, public good!
+
+---
+
+**Have fun, stay decentralized, and may your validators always be in sync!**
+
+---
+
+## ⚠️ Segurança
+
+- Adicione ao `.gitignore`:
+    ```
+    eth_validators/validators vs hardware.csv
+    venv/
+    __pycache__/
+    *.pyc
+    .env
+    ```
+- Nunca faça commit de arquivos com dados
