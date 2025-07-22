@@ -1,0 +1,35 @@
+# Ethereum Validators Configuration
+
+nodes:
+  # Example node configuration
+  - name: "nameofournode"
+    ssh_user: "xxx"
+    eth_docker_path: "/home//eth-docker"
+    exec_client: "nethermind"
+    consensus_client: "nimbus"
+    beacon_api_port: 5051
+    stack: "eth-docker"
+    tailscale_domain: "xxxx.xxxx-xxxxx.ts.net"
+  - name: "xxxx node"
+    ssh_user: "xxx"
+    eth_docker_path: "/home/xxx/eth-docker"
+    exec_client: "reth"
+    consensus_client: "lighthouse"
+    beacon_api_port: 5052
+    stack: "eth-docker"
+    tailscale_domain: "xxxx.xxxx-xxxxxts.net"
+  - name: "xxx node"
+    ssh_user: "xxx"
+    eth_docker_path: "/home/xxx/eth-docker"
+    exec_client: "besu"
+    consensus_client: "teku"
+    beacon_api_port: 5052
+    tailscale_domain: "xxx.xxxx-xxxxx.ts.net"
+  - name: "xxx node"
+    ssh_user: "xxx"
+    eth_docker_path: "/home/xxx/eth-docker"
+    exec_client: "nethermind"
+    consensus_client: "grandine"
+    beacon_api_port: 5052
+    tailscale_domain: "xxx.xxxx-xxxxx.ts.net"
+
