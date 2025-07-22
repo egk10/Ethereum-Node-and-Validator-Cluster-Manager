@@ -14,7 +14,7 @@ import json
 import random
 
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
-VALIDATORS_PATH = Path(__file__).parent / 'validators vs hardware.csv'
+VALIDATORS_PATH = Path(__file__).parent / 'validators_vs_hardware.csv'
 
 # Definir os nós de consulta por tipo de cliente
 LIGHTHOUSE_QUERY_NODES = ['minitx', 'minipcamd2']

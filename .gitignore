@@ -1,5 +1,6 @@
-eth_validators/validators vs hardware.csv
+.venv/
 venv/
-__pycache__/
-*.pyc
-.env
+.vscode/
+.github/copilot-instructions.md
+eth_validators/config.yaml
+eth_validators/validators_vs_hardware.csv

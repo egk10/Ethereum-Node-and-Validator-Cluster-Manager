@@ -32,11 +32,15 @@ Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamen
     pip install -r requirements.txt
     ```
 
-5. **Configure seu arquivo de validadores:**
-    - Crie o arquivo `validators vs hardware.csv` na pasta `eth_validators/` conforme o exemplo do README.
-    - **Nunca compartilhe dados sensíveis!**
 
-6. **Edite o arquivo `config.yaml` conforme seu setup.**
+5. **Configure seus arquivos de exemplo:**
+    - Copie e renomeie os arquivos de exemplo para os nomes esperados pelo código:
+      ```bash
+      cp eth_validators/config.example.yaml eth_validators/config.yaml
+      cp eth_validators/example_validators_vs_hardware.csv eth_validators/'validators vs hardware.csv'
+      ```
+    - Edite os arquivos `config.yaml` e `validators vs hardware.csv` conforme seu setup.
+    - **Nunca compartilhe dados sensíveis!**
 
 7. **Execute o toolkit:**
     ```bash
