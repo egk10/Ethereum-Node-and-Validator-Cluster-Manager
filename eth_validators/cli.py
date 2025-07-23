@@ -7,7 +7,7 @@ import re
 from . import performance
 from .config import get_node_config, get_all_node_configs
 from .performance import get_performance_summary
-from .node_manager import get_node_status
+from .node_manager import get_node_status, get_system_update_status, perform_system_upgrade
 
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
 
@@ -215,6 +215,166 @@ def versions(node):
     # Run full .ethd version remotely
     cmd = f"ssh {ssh_target} \"cd {path} && ./ethd version\""
     subprocess.run(cmd, shell=True)
+
+@cli.command(name='system-updates')
+@click.argument('node', required=False)
+def system_updates_cmd(node):
+    """Check if Ubuntu system updates are available on nodes (does not install)"""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    
+    if node:
+        # Check single node
+        node_cfg = next(
+            (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
+            None
+        )
+        if not node_cfg:
+            click.echo(f"Node {node} not found")
+            return
+        nodes_to_check = [node_cfg]
+    else:
+        # Check all nodes
+        nodes_to_check = config.get('nodes', [])
+    
+    table_data = []
+    for node_cfg in nodes_to_check:
+        name = node_cfg['name']
+        click.echo(f"Checking system updates for {name}...")
+        update_status = get_system_update_status(node_cfg)
+        
+        updates_count = update_status.get('updates_available', 'Error')
+        needs_update = "Yes" if update_status.get('needs_system_update', False) else "No"
+        
+        table_data.append([name, updates_count, needs_update])
+    
+    headers = ["Node", "Updates Available", "Needs Update"]
+    click.echo("\n" + tabulate(table_data, headers=headers, tablefmt="github"))
+    
+    if any(row[2] == "Yes" for row in table_data):
+        click.echo("\n⚠️  To install system updates, use:")
+        click.echo("   python3 -m eth_validators system-upgrade <node>")
+        click.echo("   python3 -m eth_validators system-upgrade --all")
+    else:
+        click.echo("\n✅ All nodes are up to date!")
+
+@cli.command(name='system-upgrade')
+@click.argument('node', required=False)
+@click.option('--all', 'upgrade_all_nodes', is_flag=True, help='Upgrade all nodes (will check which need updates first)')
+@click.option('--force', is_flag=True, help='Skip update check and force upgrade')
+def system_upgrade_cmd(node, upgrade_all_nodes, force):
+    """Perform Ubuntu system upgrade on nodes (sudo apt update && sudo apt upgrade -y)"""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    
+    if upgrade_all_nodes:
+        # Check all nodes first, then let user choose
+        all_nodes = config.get('nodes', [])
+        if not all_nodes:
+            click.echo("No nodes found in config.yaml")
+            return
+            
+        if not force:
+            # Check which nodes need updates
+            click.echo("🔍 Checking which nodes need system updates...")
+            nodes_needing_updates = []
+            
+            for node_cfg in all_nodes:
+                name = node_cfg['name']
+                click.echo(f"  Checking {name}...", nl=False)
+                update_status = get_system_update_status(node_cfg)
+                
+                if update_status.get('needs_system_update', False):
+                    updates_count = update_status.get('updates_available', 'Unknown')
+                    nodes_needing_updates.append((node_cfg, updates_count))
+                    click.echo(f" ✅ {updates_count} updates available")
+                else:
+                    click.echo(" ⚪ Up to date")
+            
+            if not nodes_needing_updates:
+                click.echo("\n🎉 All nodes are already up to date!")
+                return
+            
+            # Show summary and ask for confirmation
+            click.echo(f"\n📋 Found {len(nodes_needing_updates)} nodes needing updates:")
+            for node_cfg, count in nodes_needing_updates:
+                click.echo(f"  • {node_cfg['name']}: {count} updates")
+            
+            # Ask if user wants to proceed with just these nodes
+            if not click.confirm(f"\n⚠️  Upgrade these {len(nodes_needing_updates)} nodes?"):
+                click.echo("Operation cancelled.")
+                return
+                
+            nodes_to_upgrade = [node_cfg for node_cfg, _ in nodes_needing_updates]
+        else:
+            # Force mode: upgrade all nodes without checking
+            click.echo("🚨 Force mode: Upgrading ALL nodes without checking...")
+            if not click.confirm("⚠️  This will run 'sudo apt update && sudo apt upgrade -y' on ALL nodes. Continue?"):
+                click.echo("Operation cancelled.")
+                return
+            nodes_to_upgrade = all_nodes
+            
+    elif node:
+        # Single node upgrade
+        node_cfg = next(
+            (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
+            None
+        )
+        if not node_cfg:
+            click.echo(f"Node {node} not found")
+            return
+            
+        if not force:
+            # Check if this single node needs updates
+            click.echo(f"🔍 Checking if {node} needs updates...")
+            update_status = get_system_update_status(node_cfg)
+            updates_count = update_status.get('updates_available', 'Error')
+            
+            if not update_status.get('needs_system_update', False):
+                click.echo(f"✅ {node} is already up to date!")
+                if not click.confirm("Upgrade anyway?"):
+                    return
+            else:
+                click.echo(f"📦 {node} has {updates_count} updates available")
+        
+        if not click.confirm(f"⚠️  Run 'sudo apt update && sudo apt upgrade -y' on {node}?"):
+            click.echo("Operation cancelled.")
+            return
+            
+        nodes_to_upgrade = [node_cfg]
+    else:
+        click.echo("Please specify a node name or use --all flag")
+        click.echo("Examples:")
+        click.echo("  python3 -m eth_validators system-upgrade laptop")
+        click.echo("  python3 -m eth_validators system-upgrade --all")
+        click.echo("  python3 -m eth_validators system-upgrade --all --force")
+        return
+    
+    # Perform the upgrades
+    for node_cfg in nodes_to_upgrade:
+        name = node_cfg['name']
+        click.echo(f"\n🔄 Upgrading system packages on {name}...")
+        click.echo("Running: sudo apt update && sudo apt upgrade -y")
+        
+        upgrade_result = perform_system_upgrade(node_cfg)
+        
+        if upgrade_result.get('upgrade_success'):
+            click.echo(f"✅ {name}: System upgrade completed successfully!")
+        else:
+            click.echo(f"❌ {name}: System upgrade failed!")
+            if upgrade_result.get('upgrade_error'):
+                click.echo(f"Error: {upgrade_result['upgrade_error']}")
+        
+        # Show some output for transparency
+        if upgrade_result.get('upgrade_output'):
+            output_lines = upgrade_result['upgrade_output'].splitlines()
+            if len(output_lines) > 10:
+                click.echo("... (showing last 10 lines of output)")
+                for line in output_lines[-10:]:
+                    click.echo(f"  {line}")
+            else:
+                for line in output_lines:
+                    click.echo(f"  {line}")
+    
+    click.echo(f"\n🎉 Completed system upgrades for {len(nodes_to_upgrade)} node(s)!")
 
 if __name__ == "__main__":
     cli()

@@ -70,6 +70,36 @@ Para ver todos os comandos e opções disponíveis, execute:
 python3 -m eth_validators --help
 ```
 
+### 🚀 **Comandos Principais:**
+
+**📋 Informações dos Nodes:**
+```bash
+python3 -m eth_validators list           # Lista todos os nodes
+python3 -m eth_validators status <node>  # Status detalhado + sincronização
+```
+
+**🐳 Gerenciamento Docker/Ethereum:**
+```bash
+python3 -m eth_validators upgrade <node>      # Upgrade Docker de um node
+python3 -m eth_validators upgrade-all         # Upgrade Docker de todos os nodes
+python3 -m eth_validators versions <node>     # Versões dos clientes de um node
+python3 -m eth_validators versions-all        # Versões de todos os nodes
+```
+
+**🖥️ Gerenciamento Sistema Ubuntu:**
+```bash
+python3 -m eth_validators system-updates            # Verifica atualizações (todos)
+python3 -m eth_validators system-updates <node>     # Verifica atualizações (um node)
+python3 -m eth_validators system-upgrade <node>     # Atualiza sistema de um node
+python3 -m eth_validators system-upgrade --all      # Atualiza sistema (apenas nodes que precisam)
+python3 -m eth_validators system-upgrade --all --force  # Força atualização de todos
+```
+
+**📊 Monitoramento:**
+```bash
+python3 -m eth_validators performance    # Performance dos validadores
+```
+
 Isso mostrará a lista de comandos e instruções de uso do toolkit.
 
 ---
@@ -77,7 +107,9 @@ Isso mostrará a lista de comandos e instruções de uso do toolkit.
 ## 🧑‍💻 O que este projeto faz?
 
 - Gerencia múltiplos nodes e clientes (Nethermind, Reth, Lighthouse, Nimbus, etc)
-- Facilita upgrades, monitoramento e troubleshooting
+- Facilita upgrades de **clientes Ethereum** (Docker containers)
+- Automatiza **atualizações do sistema Ubuntu** com verificação inteligente
+- Monitora performance, sync status e troubleshooting
 - Usa domínios Tailscale para acesso remoto seguro e estável
 - Suporta diferentes Withdrawal Credentials e Fee Recipients por hardware
 - Compatível com stacks: ETH-DOCKER, Rocketpool, Node Set Hyperdrive, SSV, OBOL DV e outros
@@ -99,22 +131,111 @@ Isso mostrará a lista de comandos e instruções de uso do toolkit.
     pip install -r requirements.txt
     ```
 
-3. **Crie seu arquivo de configuração de validadores:**
-    - O projeto espera um arquivo chamado `validators vs hardware.csv` na pasta `eth_validators/`.
+3. **Configure seu arquivo de configuração:**
+    - Copie o arquivo de exemplo:
+      ```bash
+      cp eth_validators/config.example.yaml eth_validators/config.yaml
+      ```
+    - Edite `config.yaml` com seus nodes e configurações
+    - **Importante**: Para atualizações do sistema Ubuntu, configure:
+      - `ssh_user: "root"` (recomendado), OU
+      - Configure sudo sem senha para o usuário no node remoto
+
+4. **Configure seu arquivo de validadores:**
+    - O projeto espera um arquivo chamado `validators vs hardware.csv` na pasta `eth_validators/`
     - **Nunca compartilhe chaves privadas ou dados sensíveis!**
-    - Exemplo de formato:
-        ```
-        validator index,validator public address,Protocol,stack,tailscale dns,AI Monitoring containers1,AI Monitoring containers2,AI Monitoring containers3,AI Monitoring containers4
-        1634582,0xabc...,102 CSM LIDO,VERO,minipcamd.velociraptor-scylla.ts.net,eth-docker-validator-1,eth-docker-consensus-1,eth-docker-execution-1,eth-docker-mev-boost-1
-        ```
-    - Cada linha representa um validador e seu hardware correspondente.
 
-4. **Edite o `config.yaml` conforme seu setup.**
-
-5. **Execute o toolkit:**
+5. **Execute os comandos:**
     ```bash
+    # Verificar status dos nodes
+    python3 -m eth_validators status laptop
+    
+    # Upgrade Docker dos clientes Ethereum
+    python3 -m eth_validators upgrade laptop
+    
+    # Verificar e atualizar sistema Ubuntu
+    python3 -m eth_validators system-updates
+    python3 -m eth_validators system-upgrade --all
+    
+    # Performance dos validadores
     python3 -m eth_validators performance
     ```
+
+## ⚠️ **Configuração SSH para Atualizações do Sistema**
+
+Para usar os comandos `system-upgrade`, você precisa de uma dessas configurações:
+
+### **Opção 1: Usuário Root (Recomendado)**
+```yaml
+# No seu config.yaml
+- name: "meu-node"
+  ssh_user: "root"
+  tailscale_domain: "node.meu-tailnet.ts.net"
+```
+
+### **Opção 2: Sudo sem Senha**
+Se preferir usar um usuário não-root, configure sudo sem senha no node remoto:
+```bash
+# SSH no node remoto
+ssh usuario@node.meu-tailnet.ts.net
+
+# Adicionar sudo sem senha
+echo "usuario ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/usuario
+```
+
+---
+
+## 💡 **Exemplos de Uso Prático**
+
+### **Fluxo Completo de Manutenção:**
+
+```bash
+# 1. Verificar status geral
+python3 -m eth_validators list
+python3 -m eth_validators performance
+
+# 2. Verificar se há atualizações do sistema
+python3 -m eth_validators system-updates
+
+# 3. Atualizar sistema Ubuntu (apenas nodes que precisam)
+python3 -m eth_validators system-upgrade --all
+
+# 4. Verificar versões dos clientes Ethereum
+python3 -m eth_validators versions-all
+
+# 5. Atualizar clientes Ethereum
+python3 -m eth_validators upgrade-all
+
+# 6. Verificar sincronização após upgrades
+python3 -m eth_validators status laptop
+python3 -m eth_validators status minipcamd
+```
+
+### **Gerenciamento Individual:**
+
+```bash
+# Status detalhado de um node específico
+python3 -m eth_validators status laptop
+
+# Upgrade apenas Docker de um node
+python3 -m eth_validators upgrade laptop
+
+# Upgrade apenas sistema Ubuntu de um node
+python3 -m eth_validators system-upgrade laptop
+
+# Versões dos clientes de um node
+python3 -m eth_validators versions laptop
+```
+
+### **Modo Inteligente vs Força:**
+
+```bash
+# Modo inteligente: só atualiza nodes que precisam
+python3 -m eth_validators system-upgrade --all
+
+# Modo força: atualiza todos independente da necessidade
+python3 -m eth_validators system-upgrade --all --force
+```
 
 ---
 
@@ -152,12 +273,27 @@ MIT — Open source, public good!
 
 ## ⚠️ Segurança
 
+### **Arquivos a NÃO incluir no Git:**
 - Adicione ao `.gitignore`:
     ```
     eth_validators/validators vs hardware.csv
+    eth_validators/config.yaml
     venv/
+    .venv/
     __pycache__/
     *.pyc
     .env
     ```
-- Nunca faça commit de arquivos com dados
+
+### **Configuração SSH Segura:**
+- Use chaves SSH em vez de senhas
+- Configure Tailscale para acesso remoto seguro
+- Para sudo sem senha, configure apenas em nodes confiáveis
+- Nunca compartilhe arquivos de configuração com dados sensíveis
+
+### **Dados Sensíveis:**
+- **NUNCA** faça commit de:
+  - Chaves privadas de validadores
+  - Arquivos de configuração com domínios reais
+  - Dados de performance que possam identificar seus validadores
+- Use arquivos `.example` para templates públicos

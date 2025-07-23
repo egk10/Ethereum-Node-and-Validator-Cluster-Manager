@@ -86,3 +86,104 @@ def get_node_status(node_config):
         cl_proc.terminate()
 
     return results
+
+def upgrade_node_docker_clients(node_config):
+    """
+    Upgrades Docker-based Ethereum clients (execution, consensus, mev-boost) 
+    on a node using eth-docker. This does NOT upgrade the Ubuntu system.
+    
+    For Ubuntu system updates, use: sudo apt update && sudo apt upgrade -y
+    """
+    results = {}
+    ssh_user = node_config.get('ssh_user', 'root')
+    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    eth_docker_path = node_config.get('eth_docker_path', '/opt/eth-docker')
+    
+    upgrade_cmd = [
+        'ssh', ssh_target,
+        f'cd {eth_docker_path} && git checkout main && git pull && '
+        'docker compose pull && docker compose build --pull && docker compose up -d'
+    ]
+    
+    try:
+        process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=300)
+        results['upgrade_output'] = process.stdout
+        results['upgrade_error'] = process.stderr
+        results['upgrade_success'] = process.returncode == 0
+    except subprocess.TimeoutExpired:
+        results['upgrade_error'] = "Upgrade timeout after 5 minutes"
+        results['upgrade_success'] = False
+    
+    return results
+
+def get_system_update_status(node_config):
+    """
+    Checks if Ubuntu system updates are available (does not install them).
+    Use this to see if 'sudo apt update && sudo apt upgrade -y' is needed.
+    """
+    results = {}
+    ssh_user = node_config.get('ssh_user', 'root')
+    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    
+    # Check for available updates - use string format for shell=True
+    check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'apt list --upgradable 2>/dev/null | wc -l'"
+    
+    try:
+        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=15)
+        if process.returncode == 0:
+            update_count = int(process.stdout.strip()) - 1  # Subtract header line
+            results['updates_available'] = max(0, update_count)
+            results['needs_system_update'] = update_count > 0
+        else:
+            results['updates_available'] = 'Error'
+            results['needs_system_update'] = False
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
+        results['updates_available'] = f"Error: {e}"
+        results['needs_system_update'] = False
+    
+    return results
+
+def perform_system_upgrade(node_config):
+    """
+    Performs Ubuntu system upgrade via SSH: sudo apt update && sudo apt upgrade -y
+    This will actually install system updates on the remote node.
+    
+    Note: Requires either:
+    - SSH user is 'root', OR
+    - SSH user has passwordless sudo access configured
+    """
+    results = {}
+    ssh_user = node_config.get('ssh_user', 'root')
+    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    
+    # Determine if we need sudo or not
+    if ssh_user == 'root':
+        apt_cmd = 'apt update && apt upgrade -y'
+    else:
+        apt_cmd = 'sudo apt update && sudo apt upgrade -y'
+    
+    # Run the system upgrade command with proper SSH options
+    upgrade_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{apt_cmd}'"
+    
+    try:
+        process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=600)  # 10 minute timeout
+        results['upgrade_output'] = process.stdout
+        results['upgrade_error'] = process.stderr
+        results['upgrade_success'] = process.returncode == 0
+        results['return_code'] = process.returncode
+        
+        # Add helpful error messages
+        if not results['upgrade_success']:
+            if 'sudo: a password is required' in results['upgrade_error']:
+                results['upgrade_error'] += f"\n\nTip: User '{ssh_user}' needs passwordless sudo access. Either:\n" \
+                                          f"1. Use 'root' as ssh_user in config.yaml, OR\n" \
+                                          f"2. Configure passwordless sudo for '{ssh_user}' on the remote node"
+            elif 'Permission denied' in results['upgrade_error']:
+                results['upgrade_error'] += f"\n\nTip: Check SSH key authentication or user permissions"
+                
+    except subprocess.TimeoutExpired:
+        results['upgrade_error'] = "System upgrade timeout after 10 minutes"
+        results['upgrade_success'] = False
+        results['return_code'] = -1
+    
+    return results
