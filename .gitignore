@@ -4,3 +4,5 @@ venv/
 .github/copilot-instructions.md
 eth_validators/config.yaml
 eth_validators/validators_vs_hardware.csv
+__pycache__/
+*.pyc
