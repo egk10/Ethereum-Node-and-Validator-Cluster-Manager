@@ -119,20 +119,24 @@ def upgrade_node_docker_clients(node_config):
 def get_system_update_status(node_config):
     """
     Checks if Ubuntu system updates are available (does not install them).
-    Use this to see if 'sudo apt update && sudo apt upgrade -y' is needed.
+    Uses 'apt upgrade -s' to simulate and count what would actually be upgraded,
+    excluding phased updates that Ubuntu intentionally holds back.
     """
     results = {}
     ssh_user = node_config.get('ssh_user', 'root')
     ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
     
-    # Check for available updates - use string format for shell=True
-    check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'apt list --upgradable 2>/dev/null | wc -l'"
+    # Use apt upgrade simulation to see what would actually be upgraded
+    if ssh_user == 'root':
+        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'apt update >/dev/null 2>&1 && apt upgrade -s 2>/dev/null | grep \"^Inst \" | wc -l'"
+    else:
+        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'sudo apt update >/dev/null 2>&1 && sudo apt upgrade -s 2>/dev/null | grep \"^Inst \" | wc -l'"
     
     try:
-        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=15)
+        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=20)
         if process.returncode == 0:
-            update_count = int(process.stdout.strip()) - 1  # Subtract header line
-            results['updates_available'] = max(0, update_count)
+            update_count = int(process.stdout.strip())
+            results['updates_available'] = update_count
             results['needs_system_update'] = update_count > 0
         else:
             results['updates_available'] = 'Error'
