@@ -42,6 +42,19 @@ Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamen
     - Edite os arquivos `config.yaml` e `validators vs hardware.csv` conforme seu setup.
     - **Nunca compartilhe dados sensíveis!**
 
+6. **(Opcional) Teste a instalação e o ambiente:**
+    - Verifique se o ambiente virtual está ativo e as dependências instaladas:
+      ```bash
+      which python
+      python --version
+      pip list
+      ```
+    - Você pode rodar:
+      ```bash
+      python3 -m eth_validators --help
+      ```
+    - Isso deve mostrar os comandos disponíveis e confirmar que o toolkit está instalado corretamente.
+
 7. **Execute o toolkit:**
     ```bash
     python3 -m eth_validators performance
