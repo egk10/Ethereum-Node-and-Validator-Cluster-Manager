@@ -132,7 +132,7 @@ Isso mostrará a lista de comandos e instruções de uso do toolkit.
 - [Node Set Hyperdrive](https://docs.nodeset.io/)
 - [Lido CSM](https://csm.lido.fi/)
 - [Client Diversity](https://clientdiversity.org/#distribution)
-- [Rocketpool](https://docs.rocketpool.net/guides/node/updates.html)
+- [Rocketpool](https://docs.rocketpool.net/)
 - [SSV Network](https://docs.ssv.network/operators/)
 - [Obol Network](https://docs.obol.org/)
 - [Stakewise](https://docs.stakewise.io/)
