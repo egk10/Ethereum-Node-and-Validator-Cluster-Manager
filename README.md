@@ -49,6 +49,18 @@ Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamen
 
 ---
 
+## 📖 Como ver todos os comandos disponíveis (CLI)
+
+Para ver todos os comandos e opções disponíveis, execute:
+
+```bash
+python3 -m eth_validators --help
+```
+
+Isso mostrará a lista de comandos e instruções de uso do toolkit.
+
+---
+
 ## 🧑‍💻 O que este projeto faz?
 
 - Gerencia múltiplos nodes e clientes (Nethermind, Reth, Lighthouse, Nimbus, etc)
