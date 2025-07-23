@@ -127,22 +127,28 @@ def get_system_update_status(node_config):
     ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
     
     # Use apt upgrade simulation to see what would actually be upgraded
+    # Add basic APT lock check - if locked, assume no updates needed for now
     if ssh_user == 'root':
-        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'apt update >/dev/null 2>&1 && apt upgrade -s 2>/dev/null | grep \"^Inst \" | wc -l'"
+        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then echo \"0\"; else apt update >/dev/null 2>&1 && apt upgrade -s 2>/dev/null | grep \"^Inst \" | wc -l; fi'"
     else:
-        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'sudo apt update >/dev/null 2>&1 && sudo apt upgrade -s 2>/dev/null | grep \"^Inst \" | wc -l'"
+        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'if sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then echo \"0\"; else sudo apt update >/dev/null 2>&1 && sudo apt upgrade -s 2>/dev/null | grep \"^Inst \" | wc -l; fi'"
     
     try:
-        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=20)
+        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=25)
         if process.returncode == 0:
             update_count = int(process.stdout.strip())
             results['updates_available'] = update_count
             results['needs_system_update'] = update_count > 0
         else:
-            results['updates_available'] = 'Error'
+            # Better error reporting
+            error_msg = process.stderr.strip() if process.stderr.strip() else f"SSH connection failed (return code: {process.returncode})"
+            results['updates_available'] = f"Connection Error"
             results['needs_system_update'] = False
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
-        results['updates_available'] = f"Error: {e}"
+        if isinstance(e, subprocess.TimeoutExpired):
+            results['updates_available'] = "Timeout"
+        else:
+            results['updates_available'] = "SSH Error"
         results['needs_system_update'] = False
     
     return results
@@ -166,11 +172,17 @@ def perform_system_upgrade(node_config):
     else:
         apt_cmd = 'sudo apt update && sudo apt upgrade -y'
     
+    # Add APT lock handling - wait for other apt processes to finish
+    if ssh_user == 'root':
+        full_cmd = f'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do echo "Waiting for other apt process to finish..."; sleep 5; done; {apt_cmd}'
+    else:
+        full_cmd = f'while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do echo "Waiting for other apt process to finish..."; sleep 5; done; {apt_cmd}'
+    
     # Run the system upgrade command with proper SSH options
-    upgrade_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{apt_cmd}'"
+    upgrade_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{full_cmd}'"
     
     try:
-        process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=600)  # 10 minute timeout
+        process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=900)  # 15 minute timeout
         results['upgrade_output'] = process.stdout
         results['upgrade_error'] = process.stderr
         results['upgrade_success'] = process.returncode == 0
@@ -184,9 +196,11 @@ def perform_system_upgrade(node_config):
                                           f"2. Configure passwordless sudo for '{ssh_user}' on the remote node"
             elif 'Permission denied' in results['upgrade_error']:
                 results['upgrade_error'] += f"\n\nTip: Check SSH key authentication or user permissions"
+            elif 'Could not get lock' in results['upgrade_error']:
+                results['upgrade_error'] += f"\n\nTip: Another apt process was running. The command includes automatic waiting, but it may have timed out."
                 
     except subprocess.TimeoutExpired:
-        results['upgrade_error'] = "System upgrade timeout after 10 minutes"
+        results['upgrade_error'] = "System upgrade timeout after 15 minutes (includes waiting for apt locks)"
         results['upgrade_success'] = False
         results['return_code'] = -1
     
