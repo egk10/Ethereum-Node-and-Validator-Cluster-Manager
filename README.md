@@ -80,12 +80,12 @@ python3 -m eth_validators status <node>  # Status detalhado + sincronização
 
 **🐳 Gerenciamento Docker/Ethereum:**
 ```bash
-python3 -m eth_validators client-versions         # Versões atuais vs disponíveis (todos)
-python3 -m eth_validators client-versions <node>  # Versões atuais vs disponíveis (um node)
-python3 -m eth_validators upgrade <node>          # Upgrade Docker de um node
-python3 -m eth_validators upgrade-all             # Upgrade Docker de todos os nodes
-python3 -m eth_validators versions <node>         # Versões dos clientes de um node
-python3 -m eth_validators versions-all            # Versões de todos os nodes
+python3 -m eth_validators client-versions         # 🔍 Versões atuais vs GitHub (todos) - NOVO!
+python3 -m eth_validators client-versions <node>  # 🔍 Versões atuais vs GitHub (um node) - NOVO!
+python3 -m eth_validators upgrade <node>          # 🚀 Upgrade Docker de um node
+python3 -m eth_validators upgrade-all             # 🚀 Upgrade Docker de todos os nodes
+python3 -m eth_validators versions <node>         # 📦 Versões dos clientes de um node
+python3 -m eth_validators versions-all            # 📦 Versões de todos os nodes
 ```
 
 **🖥️ Gerenciamento Sistema Ubuntu:**
@@ -108,13 +108,14 @@ Isso mostrará a lista de comandos e instruções de uso do toolkit.
 
 ## 🧑‍💻 O que este projeto faz?
 
-- Gerencia múltiplos nodes e clientes (Nethermind, Reth, Lighthouse, Nimbus, etc)
-- Facilita upgrades de **clientes Ethereum** (Docker containers)
-- Automatiza **atualizações do sistema Ubuntu** com verificação inteligente
-- Monitora performance, sync status e troubleshooting
-- Usa domínios Tailscale para acesso remoto seguro e estável
-- Suporta diferentes Withdrawal Credentials e Fee Recipients por hardware
-- Compatível com stacks: ETH-DOCKER, Rocketpool, Node Set Hyperdrive, SSV, OBOL DV e outros
+- 🎯 Gerencia múltiplos nodes e clientes (Nethermind, Reth, Lighthouse, Nimbus, Grandine, etc)
+- 🔄 Facilita upgrades de **clientes Ethereum** (Docker containers)
+- 🛡️ Automatiza **atualizações do sistema Ubuntu** com verificação inteligente
+- 📊 Monitora performance, sync status e troubleshooting
+- 🌐 Usa domínios Tailscale para acesso remoto seguro e estável
+- 💰 Suporta diferentes Withdrawal Credentials e Fee Recipients por hardware
+- 🔧 Compatível com stacks: ETH-DOCKER, Rocketpool, Node Set Hyperdrive, SSV, OBOL DV e outros
+- 🔍 **NOVO**: Compara versões locais com GitHub releases em tempo real!
 
 ---
 
@@ -196,16 +197,16 @@ echo "usuario ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/usuario
 python3 -m eth_validators list
 python3 -m eth_validators performance
 
-# 2. Verificar se há atualizações do sistema
+# 2. 🔍 NOVO: Verificar versões dos clientes vs GitHub releases
+python3 -m eth_validators client-versions
+
+# 3. Verificar se há atualizações do sistema Ubuntu
 python3 -m eth_validators system-updates
 
-# 3. Atualizar sistema Ubuntu (apenas nodes que precisam)
+# 4. Atualizar sistema Ubuntu (apenas nodes que precisam)
 python3 -m eth_validators system-upgrade --all
 
-# 4. Verificar versões dos clientes Ethereum
-python3 -m eth_validators versions-all
-
-# 5. Atualizar clientes Ethereum
+# 5. Atualizar clientes Ethereum se necessário
 python3 -m eth_validators upgrade-all
 
 # 6. Verificar sincronização após upgrades
@@ -219,13 +220,16 @@ python3 -m eth_validators status minipcamd
 # Status detalhado de um node específico
 python3 -m eth_validators status laptop
 
+# 🔍 NOVO: Verificar versões de clientes vs GitHub (um node)
+python3 -m eth_validators client-versions laptop
+
 # Upgrade apenas Docker de um node
 python3 -m eth_validators upgrade laptop
 
 # Upgrade apenas sistema Ubuntu de um node
 python3 -m eth_validators system-upgrade laptop
 
-# Versões dos clientes de um node
+# Versões dos clientes instalados (sem GitHub)
 python3 -m eth_validators versions laptop
 ```
 
@@ -243,9 +247,12 @@ python3 -m eth_validators system-upgrade --all --force
 
 ## 🦄 Por que é divertido?
 
-- Chega de IPs dinâmicos: use domínios Tailscale!
-- Misture clientes e stacks para máxima resiliência.
-- Open source: contribua, melhore e compartilhe com a comunidade Ethereum!
+- 🎯 Chega de IPs dinâmicos: use domínios Tailscale!
+- 🔄 Misture clientes e stacks para máxima resiliência.
+- 🔍 **NOVO**: Compare versões em tempo real com GitHub - nunca mais fique para trás!
+- 🚀 Suporte ao Grandine (o cliente consenso mais novo da galera!)
+- 🌈 Veja sua diversidade de clientes numa tabela linda
+- 🛠️ Open source: contribua, melhore e compartilhe com a comunidade Ethereum!
 
 ---
 
