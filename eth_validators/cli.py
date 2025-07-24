@@ -7,7 +7,7 @@ import re
 from . import performance
 from .config import get_node_config, get_all_node_configs
 from .performance import get_performance_summary
-from .node_manager import get_node_status, get_system_update_status, perform_system_upgrade
+from .node_manager import get_node_status, upgrade_node_docker_clients, get_system_update_status, perform_system_upgrade, get_docker_client_versions
 
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
 
@@ -215,6 +215,82 @@ def versions(node):
     # Run full .ethd version remotely
     cmd = f"ssh {ssh_target} \"cd {path} && ./ethd version\""
     subprocess.run(cmd, shell=True)
+
+@cli.command('client-versions')
+@click.argument('node_name', required=False)
+def client_versions(node_name):
+    """Check Ethereum client versions (current vs latest) for Docker containers."""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    nodes = config.get('nodes', [])
+    
+    if not nodes:
+        click.echo("❌ No nodes configured. Please check your config.yaml file.")
+        return
+    
+    # Filter nodes if specific node requested
+    if node_name:
+        nodes = [node for node in nodes if node['name'] == node_name]
+        if not nodes:
+            click.echo(f"❌ Node '{node_name}' not found in configuration.")
+            available_nodes = [node['name'] for node in config.get('nodes', [])]
+            click.echo(f"Available nodes: {', '.join(available_nodes)}")
+            return
+    
+    # Collect version information for all nodes
+    results = []
+    for node in nodes:
+        click.echo(f"Checking client versions for {node['name']}...")
+        try:
+            version_info = get_docker_client_versions(node)
+            
+            # Add execution client info
+            exec_client = version_info.get('execution_client', 'Unknown')
+            exec_display = f"{exec_client.title()}" if exec_client != "Unknown" else "Execution"
+            
+            results.append([
+                node['name'],
+                exec_display,
+                version_info.get('execution_current', 'Unknown'),
+                version_info.get('execution_latest', 'Unknown'),
+                'Yes' if version_info.get('execution_needs_update', False) else 'No'
+            ])
+            
+            # Add consensus client info
+            cons_client = version_info.get('consensus_client', 'Unknown')
+            cons_display = f"{cons_client.title()}" if cons_client != "Unknown" else "Consensus"
+            
+            results.append([
+                node['name'],
+                cons_display, 
+                version_info.get('consensus_current', 'Unknown'),
+                version_info.get('consensus_latest', 'Unknown'),
+                'Yes' if version_info.get('consensus_needs_update', False) else 'No'
+            ])
+        except Exception as e:
+            click.echo(f"❌ Error checking {node['name']}: {e}")
+            results.append([node['name'], 'Execution', 'Error', 'Error', 'No'])
+            results.append([node['name'], 'Consensus', 'Error', 'Error', 'No'])
+    
+    # Display results in table format
+    if results:
+        headers = ['Node', 'Client Type', 'Current Version', 'Latest Version', 'Needs Update']
+        click.echo("\n" + tabulate(results, headers=headers, tablefmt='grid'))
+        
+        # Summary
+        nodes_needing_updates = set()
+        for result in results:
+            if result[4] == 'Yes':  # Needs Update column
+                nodes_needing_updates.add(result[0])  # Node name
+        
+        click.echo(f"\n📊 Summary:")
+        if nodes_needing_updates:
+            click.echo(f"🔄 Nodes with client updates available: {', '.join(sorted(nodes_needing_updates))}")
+            click.echo(f"💡 Run 'python -m eth_validators upgrade <node>' to update specific nodes")
+            click.echo(f"💡 Run 'python -m eth_validators upgrade-all' to update all nodes")
+        else:
+            click.echo("✅ All Ethereum clients are up to date!")
+    else:
+        click.echo("❌ No version information collected.")
 
 @cli.command(name='system-updates')
 @click.argument('node', required=False)

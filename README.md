@@ -80,10 +80,12 @@ python3 -m eth_validators status <node>  # Status detalhado + sincronização
 
 **🐳 Gerenciamento Docker/Ethereum:**
 ```bash
-python3 -m eth_validators upgrade <node>      # Upgrade Docker de um node
-python3 -m eth_validators upgrade-all         # Upgrade Docker de todos os nodes
-python3 -m eth_validators versions <node>     # Versões dos clientes de um node
-python3 -m eth_validators versions-all        # Versões de todos os nodes
+python3 -m eth_validators client-versions         # Versões atuais vs disponíveis (todos)
+python3 -m eth_validators client-versions <node>  # Versões atuais vs disponíveis (um node)
+python3 -m eth_validators upgrade <node>          # Upgrade Docker de um node
+python3 -m eth_validators upgrade-all             # Upgrade Docker de todos os nodes
+python3 -m eth_validators versions <node>         # Versões dos clientes de um node
+python3 -m eth_validators versions-all            # Versões de todos os nodes
 ```
 
 **🖥️ Gerenciamento Sistema Ubuntu:**

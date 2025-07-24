@@ -205,3 +205,222 @@ def perform_system_upgrade(node_config):
         results['return_code'] = -1
     
     return results
+
+def get_docker_client_versions(node_config):
+    """
+    Checks current and latest versions of Ethereum clients running in Docker containers.
+    Gets actual running container versions and compares with latest GitHub releases.
+    Returns information about execution client, consensus client, and whether updates are needed.
+    """
+    results = {}
+    ssh_user = node_config.get('ssh_user', 'root')
+    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    
+    try:
+        # Get running containers with their images
+        containers_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker ps --format \"{{{{.Names}}}}:{{{{.Image}}}}\" 2>/dev/null || echo \"Error\"'"
+        containers_process = subprocess.run(containers_cmd, shell=True, capture_output=True, text=True, timeout=20)
+        
+        # Initialize results
+        execution_current = "Unknown"
+        consensus_current = "Unknown"
+        execution_client_name = "Unknown"
+        consensus_client_name = "Unknown"
+        
+        # Parse running containers to identify clients and versions
+        if containers_process.returncode == 0 and "Error" not in containers_process.stdout:
+            container_lines = containers_process.stdout.strip().split('\n')
+            
+            for line in container_lines:
+                if ':' in line:
+                    container_name, image = line.split(':', 1)
+                    
+                    # Identify execution clients
+                    if any(exec_client in container_name.lower() for exec_client in 
+                           ['execution', 'geth', 'nethermind', 'reth', 'besu', 'erigon']):
+                        execution_current = _extract_image_version(f"image: {image}")
+                        execution_client_name = _identify_client_from_image(image, 'execution')
+                    
+                    # Identify consensus clients
+                    elif any(cons_client in container_name.lower() for cons_client in 
+                             ['consensus', 'lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar']):
+                        consensus_current = _extract_image_version(f"image: {image}")
+                        consensus_client_name = _identify_client_from_image(image, 'consensus')
+        
+        # Get latest versions from GitHub releases
+        execution_latest = "Unknown"
+        consensus_latest = "Unknown"
+        
+        if execution_client_name != "Unknown":
+            execution_latest = _get_latest_github_release(execution_client_name)
+        
+        if consensus_client_name != "Unknown":
+            consensus_latest = _get_latest_github_release(consensus_client_name)
+        
+        # Store results
+        results['execution_current'] = execution_current
+        results['execution_latest'] = execution_latest
+        results['execution_client'] = execution_client_name
+        results['consensus_current'] = consensus_current
+        results['consensus_latest'] = consensus_latest
+        results['consensus_client'] = consensus_client_name
+        
+        # Determine if updates are needed
+        exec_needs_update = _version_needs_update(execution_current, execution_latest)
+        consensus_needs_update = _version_needs_update(consensus_current, consensus_latest)
+        
+        results['execution_needs_update'] = exec_needs_update
+        results['consensus_needs_update'] = consensus_needs_update
+        results['needs_client_update'] = exec_needs_update or consensus_needs_update
+        
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        results['execution_current'] = "SSH Error"
+        results['execution_latest'] = "SSH Error"
+        results['execution_client'] = "Unknown"
+        results['consensus_current'] = "SSH Error"  
+        results['consensus_latest'] = "SSH Error"
+        results['consensus_client'] = "Unknown"
+        results['execution_needs_update'] = False
+        results['consensus_needs_update'] = False
+        results['needs_client_update'] = False
+    
+    return results
+
+def _identify_client_from_image(image, client_type):
+    """
+    Identifies the Ethereum client from the Docker image name.
+    Returns the client name for GitHub API lookup.
+    """
+    image_lower = image.lower()
+    
+    if client_type == 'execution':
+        if 'geth' in image_lower:
+            return 'geth'
+        elif 'nethermind' in image_lower:
+            return 'nethermind'
+        elif 'reth' in image_lower:
+            return 'reth'
+        elif 'besu' in image_lower:
+            return 'besu'
+        elif 'erigon' in image_lower:
+            return 'erigon'
+    
+    elif client_type == 'consensus':
+        if 'lighthouse' in image_lower:
+            return 'lighthouse'
+        elif 'prysm' in image_lower:
+            return 'prysm'
+        elif 'teku' in image_lower:
+            return 'teku'
+        elif 'nimbus' in image_lower:
+            return 'nimbus'
+        elif 'lodestar' in image_lower:
+            return 'lodestar'
+    
+    return "Unknown"
+
+def _get_latest_github_release(client_name):
+    """
+    Gets the latest release version from GitHub for a specific Ethereum client.
+    """
+    # GitHub repositories mapping
+    github_repos = {
+        'geth': 'ethereum/go-ethereum',
+        'nethermind': 'NethermindEth/nethermind',
+        'reth': 'paradigmxyz/reth',
+        'besu': 'hyperledger/besu',
+        'erigon': 'ledgerwatch/erigon',
+        'lighthouse': 'sigp/lighthouse',
+        'prysm': 'prysmaticlabs/prysm',
+        'teku': 'Consensys/teku',
+        'nimbus': 'status-im/nimbus-eth2',
+        'lodestar': 'ChainSafe/lodestar'
+    }
+    
+    if client_name not in github_repos:
+        return "Unknown"
+    
+    repo = github_repos[client_name]
+    api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+    
+    try:
+        import requests
+        response = requests.get(api_url, timeout=10)
+        if response.status_code == 200:
+            release_data = response.json()
+            tag_name = release_data.get('tag_name', '')
+            # Clean version tag (remove 'v' prefix if present)
+            version = tag_name.lstrip('v')
+            return version
+        else:
+            return "API Error"
+    except Exception as e:
+        return "Network Error"
+
+def _version_needs_update(current_version, latest_version):
+    """
+    Compares current and latest versions to determine if an update is needed.
+    Handles semantic versioning comparison.
+    """
+    if current_version in ["Unknown", "Error", "SSH Error", "local", "latest"] or \
+       latest_version in ["Unknown", "Error", "API Error", "Network Error"]:
+        return False
+    
+    # Simple string comparison for now - could be enhanced with proper semver
+    if current_version != latest_version:
+        return True
+    
+    return False
+
+def _extract_version_number(version_string):
+    """
+    Extracts version number from client version output.
+    Handles different client output formats.
+    """
+    import re
+    
+    if not version_string or version_string in ["Unknown", "Error"]:
+        return version_string
+        
+    # Common patterns for version extraction
+    patterns = [
+        r'v?(\d+\.\d+\.\d+)',  # Standard semver
+        r'Version:\s*(\d+\.\d+\.\d+)',  # Some clients use "Version: x.y.z"
+        r'version\s*(\d+\.\d+\.\d+)',  # Case insensitive version
+        r'(\d+\.\d+\.\d+)'  # Just numbers
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, version_string, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    
+    # If no version pattern found, return first word that might be version-like
+    words = version_string.strip().split()
+    for word in words:
+        if re.match(r'v?\d+\.\d+', word):
+            return word.lstrip('v')
+    
+    return "Unknown"
+
+def _extract_image_version(image_string):
+    """
+    Extracts version from Docker image name.
+    Example: "nethermind/nethermind:1.25.4" -> "1.25.4"
+    """
+    import re
+    
+    if not image_string or "image:" not in image_string:
+        return "Unknown"
+        
+    # Extract everything after "image:" and clean it
+    image_part = image_string.split("image:")[-1].strip()
+    
+    # Extract version after the last ":"
+    if ":" in image_part:
+        version = image_part.split(":")[-1].strip()
+        # Remove quotes and extra characters
+        version = re.sub(r'["\']', '', version)
+        return version
+    
+    return "latest"
