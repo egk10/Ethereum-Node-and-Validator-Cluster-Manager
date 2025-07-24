@@ -209,7 +209,7 @@ def perform_system_upgrade(node_config):
 def get_docker_client_versions(node_config):
     """
     Checks current and latest versions of Ethereum clients running in Docker containers.
-    Gets actual running container versions and compares with latest GitHub releases.
+    Gets actual running container versions from Docker logs and compares with latest GitHub releases.
     Returns information about execution client, consensus client, and whether updates are needed.
     """
     results = {}
@@ -226,6 +226,10 @@ def get_docker_client_versions(node_config):
         consensus_current = "Unknown"
         execution_client_name = "Unknown"
         consensus_client_name = "Unknown"
+        execution_container = None
+        consensus_container = None
+        execution_image = None
+        consensus_image = None
         
         # Parse running containers to identify clients and versions
         if containers_process.returncode == 0 and "Error" not in containers_process.stdout:
@@ -238,14 +242,29 @@ def get_docker_client_versions(node_config):
                     # Identify execution clients
                     if any(exec_client in container_name.lower() for exec_client in 
                            ['execution', 'geth', 'nethermind', 'reth', 'besu', 'erigon']):
-                        execution_current = _extract_image_version(f"image: {image}")
                         execution_client_name = _identify_client_from_image(image, 'execution')
+                        execution_container = container_name
+                        execution_image = image
                     
                     # Identify consensus clients
                     elif any(cons_client in container_name.lower() for cons_client in 
                              ['consensus', 'lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine']):
-                        consensus_current = _extract_image_version(f"image: {image}")
                         consensus_client_name = _identify_client_from_image(image, 'consensus')
+                        consensus_container = container_name
+                        consensus_image = image
+        
+        # Get actual versions from Docker logs, with fallback to image version
+        if execution_container and execution_client_name != "Unknown":
+            execution_current = _get_client_version_from_logs(ssh_target, execution_container, execution_client_name)
+            # Fallback to image version if logs don't provide version
+            if execution_current in ["No Version Found", "Empty Logs", "Log Error"] or execution_current.startswith("Error:"):
+                execution_current = _extract_image_version(f"image: {execution_image}")
+        
+        if consensus_container and consensus_client_name != "Unknown":
+            consensus_current = _get_client_version_from_logs(ssh_target, consensus_container, consensus_client_name)
+            # Fallback to image version if logs don't provide version  
+            if consensus_current in ["No Version Found", "Empty Logs", "Log Error"] or consensus_current.startswith("Error:"):
+                consensus_current = _extract_image_version(f"image: {consensus_image}")
         
         # Get latest versions from GitHub releases
         execution_latest = "Unknown"
@@ -285,6 +304,124 @@ def get_docker_client_versions(node_config):
         results['needs_client_update'] = False
     
     return results
+
+def _get_client_version_from_logs(ssh_target, container_name, client_name):
+    """
+    Extracts the actual client version from Docker container logs.
+    Each Ethereum client prints its version during startup.
+    """
+    import re
+    
+    try:
+        # Get recent logs from container (last 100 lines to catch version info)
+        logs_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker logs --tail 100 {container_name} 2>&1'"
+        logs_process = subprocess.run(logs_cmd, shell=True, capture_output=True, text=True, timeout=15)
+        
+        if logs_process.returncode != 0:
+            return "Log Error"
+        
+        logs = logs_process.stdout.strip()
+        if not logs:
+            return "Empty Logs"
+        
+        # Client-specific version patterns (more comprehensive)
+        version_patterns = {
+            'geth': [
+                r'Geth/v(\d+\.\d+\.\d+)',
+                r'Version: (\d+\.\d+\.\d+)',
+                r'geth version (\d+\.\d+\.\d+)',
+                r'go-ethereum v(\d+\.\d+\.\d+)'
+            ],
+            'nethermind': [
+                r'Nethermind \((\d+\.\d+\.\d+)\)',
+                r'Version: (\d+\.\d+\.\d+)',
+                r'Nethermind v(\d+\.\d+\.\d+)',
+                r'Starting Nethermind (\d+\.\d+\.\d+)'
+            ],
+            'reth': [
+                r'reth Version: (\d+\.\d+\.\d+)',
+                r'reth v(\d+\.\d+\.\d+)',
+                r'Version (\d+\.\d+\.\d+)',
+                r'Starting reth v(\d+\.\d+\.\d+)'
+            ],
+            'besu': [
+                r'besu/v(\d+\.\d+\.\d+)',
+                r'Besu version: v(\d+\.\d+\.\d+)',
+                r'Version: (\d+\.\d+\.\d+)',
+                r'Starting Besu version v(\d+\.\d+\.\d+)'
+            ],
+            'erigon': [
+                r'Erigon version: v(\d+\.\d+\.\d+)',
+                r'erigon/(\d+\.\d+\.\d+)',
+                r'Version: (\d+\.\d+\.\d+)',
+                r'Starting Erigon (\d+\.\d+\.\d+)'
+            ],
+            'lighthouse': [
+                r'Lighthouse v(\d+\.\d+\.\d+)',
+                r'Version: v(\d+\.\d+\.\d+)',
+                r'lighthouse (\d+\.\d+\.\d+)',
+                r'Starting beacon node.*?v(\d+\.\d+\.\d+)'
+            ],
+            'prysm': [
+                r'Prysm/v(\d+\.\d+\.\d+)',
+                r'Version: v(\d+\.\d+\.\d+)',
+                r'prysm version (\d+\.\d+\.\d+)',
+                r'Starting Prysm v(\d+\.\d+\.\d+)'
+            ],
+            'teku': [
+                r'teku/v(\d+\.\d+\.\d+)',
+                r'Version: (\d+\.\d+\.\d+)',
+                r'Teku version: v(\d+\.\d+\.\d+)',
+                r'Starting Teku.*?(\d+\.\d+\.\d+)'
+            ],
+            'nimbus': [
+                r'Nimbus beacon node v(\d+\.\d+\.\d+)',
+                r'nimbus_beacon_node v(\d+\.\d+\.\d+)',
+                r'Version: (\d+\.\d+\.\d+)',
+                r'Starting Nimbus.*?v(\d+\.\d+\.\d+)'
+            ],
+            'lodestar': [
+                r'Lodestar/(\d+\.\d+\.\d+)',
+                r'lodestar v(\d+\.\d+\.\d+)',
+                r'Version: (\d+\.\d+\.\d+)',
+                r'Starting Lodestar.*?v(\d+\.\d+\.\d+)'
+            ],
+            'grandine': [
+                r'Grandine (\d+\.\d+\.\d+)',
+                r'grandine v(\d+\.\d+\.\d+)',
+                r'Version: (\d+\.\d+\.\d+)',
+                r'Starting Grandine.*?v(\d+\.\d+\.\d+)'
+            ]
+        }
+        
+        # Try client-specific patterns first
+        if client_name in version_patterns:
+            for pattern in version_patterns[client_name]:
+                match = re.search(pattern, logs, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+                if match:
+                    return match.group(1)
+        
+        # Fallback: broader version patterns
+        fallback_patterns = [
+            r'[vV]ersion:?\s*v?(\d+\.\d+\.\d+)',
+            r'v(\d+\.\d+\.\d+)',
+            r'(\d+\.\d+\.\d+[-\w]*)'  # Include pre-release versions
+        ]
+        
+        for pattern in fallback_patterns:
+            match = re.search(pattern, logs, re.IGNORECASE | re.MULTILINE)
+            if match:
+                version = match.group(1)
+                # Clean up the version (remove non-standard suffixes)
+                clean_version = re.match(r'(\d+\.\d+\.\d+)', version)
+                if clean_version:
+                    return clean_version.group(1)
+                return version
+        
+        return "No Version Found"
+        
+    except Exception as e:
+        return f"Error: {str(e)[:20]}"
 
 def _identify_client_from_image(image, client_type):
     """
@@ -366,11 +503,14 @@ def _version_needs_update(current_version, latest_version):
     Compares current and latest versions to determine if an update is needed.
     Handles semantic versioning comparison.
     """
-    if current_version in ["Unknown", "Error", "SSH Error"] or \
+    error_states = ["Unknown", "Error", "SSH Error", "Log Error", "Log Parse Error", 
+                   "Empty Logs", "No Version Found"]
+    
+    if current_version in error_states or current_version.startswith("Error:") or \
        latest_version in ["Unknown", "Error", "API Error", "Network Error"]:
         return False
     
-    # If current version is "local", "latest", or "main", assume it's up to date
+    # If current version is "local", "latest", or "main", try to be more conservative
     if current_version in ["local", "latest", "main", "master"]:
         return False
     
