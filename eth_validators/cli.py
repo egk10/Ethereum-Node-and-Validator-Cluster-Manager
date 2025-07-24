@@ -113,15 +113,61 @@ def versions_all():
         mev_comp = 'mev-boost'
         def find_version(output, keyword):
             lines = output.splitlines()
-            for idx, line in enumerate(lines):
+            
+            # Handle Nethermind special case (multiline version info)
+            if keyword.lower() == 'nethermind':
+                for i, line in enumerate(lines):
+                    if 'Nethermind version' in line and i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if next_line.startswith('Version:'):
+                            version = next_line.split('Version:')[1].strip().split('+')[0]
+                            return f"Nethermind {version}"
+            
+            # Handle Geth special case (multiline version info)
+            if keyword.lower() == 'geth':
+                for i, line in enumerate(lines):
+                    if line.strip() == 'Geth' and i + 1 < len(lines):
+                        next_line = lines[i + 1].strip()
+                        if next_line.startswith('Version:'):
+                            version = next_line.split('Version:')[1].strip().split('-')[0]
+                            return f"Geth {version}"
+            
+            for line in lines:
+                line = line.strip()
                 if keyword.lower() in line.lower():
-                    version_line = line.strip()
-                    # capture next line if it contains version info
-                    if idx + 1 < len(lines):
-                        next_line = lines[idx+1].strip()
-                        if next_line.lower().startswith('version') or re.match(r'v?\d', next_line):
-                            version_line = f"{version_line} {next_line}"
-                    return version_line
+                    # Extract just client name and version
+                    if keyword.lower() == 'reth' and 'reth-ethereum-cli Version:' in line:
+                        version = line.split('Version:')[1].strip()
+                        return f"Reth {version}"
+                    elif keyword.lower() == 'besu' and 'besu/v' in line:
+                        version = line.split('/v')[1].split('/')[0]
+                        return f"Besu {version}"
+                    elif keyword.lower() == 'lighthouse' and line.startswith('Lighthouse v'):
+                        version = line.split('v')[1].split('-')[0]
+                        return f"Lighthouse {version}"
+                    elif keyword.lower() == 'nimbus' and 'Nimbus beacon node v' in line:
+                        version = line.split('v')[1].split('-')[0]
+                        return f"Nimbus {version}"
+                    elif keyword.lower() == 'teku' and 'teku/v' in line:
+                        version = line.split('/v')[1].split('/')[0]
+                        return f"Teku {version}"
+                    elif keyword.lower() == 'grandine' and line.startswith('Grandine '):
+                        version = line.split()[1].split('-')[0]
+                        return f"Grandine {version}"
+                    elif keyword.lower() == 'prysm' and 'prysm' in line.lower():
+                        # Add Prysm pattern when needed
+                        return f"Prysm (detected)"
+                    elif keyword.lower() == 'lodestar' and 'lodestar' in line.lower():
+                        # Add Lodestar pattern when needed  
+                        return f"Lodestar (detected)"
+            
+            # Special case for MEV Boost
+            if keyword.lower() == 'mev-boost':
+                for line in lines:
+                    if 'mev-boost v' in line:
+                        version = line.split('mev-boost v')[1].strip()
+                        return f"MEV-Boost {version}"
+            
             return "N/A"
         exec_ver = find_version(output, exec_comp)
         cons_ver = find_version(output, cons_comp)
