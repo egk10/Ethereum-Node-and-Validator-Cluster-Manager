@@ -254,27 +254,38 @@ def client_versions(node_name):
             cons_latest = version_info.get('consensus_latest', 'Unknown')
             cons_needs_update = version_info.get('consensus_needs_update', False)
             
-            # Format client display names
-            exec_display = f"{exec_client.title()}" if exec_client != "Unknown" else "Unknown"
-            cons_display = f"{cons_client.title()}" if cons_client != "Unknown" else "Unknown"
+            # Format compact client/version display
+            if exec_client != "Unknown" and exec_current != "Unknown":
+                exec_display = f"{exec_client}/{exec_current}"
+            else:
+                exec_display = "Unknown"
+                
+            if cons_client != "Unknown" and cons_current != "Unknown":
+                cons_display = f"{cons_client}/{cons_current}"
+            else:
+                cons_display = "Unknown"
+            
+            # Format latest versions compactly
+            exec_latest_display = exec_latest if exec_latest != "Unknown" else "-"
+            cons_latest_display = cons_latest if cons_latest != "Unknown" else "-"
             
             # Add single row with both clients
             results.append([
                 node['name'],
                 exec_display,
-                f"{exec_current} → {exec_latest}" if exec_current != "Unknown" and exec_latest != "Unknown" else f"{exec_current}",
-                'Yes' if exec_needs_update else 'No',
+                exec_latest_display,
+                '🔄' if exec_needs_update else '✅',
                 cons_display,
-                f"{cons_current} → {cons_latest}" if cons_current != "Unknown" and cons_latest != "Unknown" else f"{cons_current}",
-                'Yes' if cons_needs_update else 'No'
+                cons_latest_display,
+                '🔄' if cons_needs_update else '✅'
             ])
         except Exception as e:
             click.echo(f"❌ Error checking {node['name']}: {e}")
-            results.append([node['name'], 'Error', 'Error', 'No', 'Error', 'Error', 'No'])
+            results.append([node['name'], 'Error', '-', '❌', 'Error', '-', '❌'])
     
     # Display results in table format
     if results:
-        headers = ['Node', 'Execution Client', 'Exec Version', 'Exec Update', 'Consensus Client', 'Cons Version', 'Cons Update']
+        headers = ['Node', 'Execution', 'Latest', '🔄', 'Consensus', 'Latest', '🔄']
         click.echo("\n" + tabulate(results, headers=headers, tablefmt='grid'))
         
         # Summary

@@ -289,7 +289,8 @@ def get_docker_client_versions(node_config):
 def _identify_client_from_image(image, client_type):
     """
     Identifies the Ethereum client from the Docker image name.
-    Returns the client name for GitHub API lookup.
+    Returns the client name for GitHub API lookup and display.
+    Extracts clean client name from complex image strings.
     """
     image_lower = image.lower()
     
@@ -365,8 +366,12 @@ def _version_needs_update(current_version, latest_version):
     Compares current and latest versions to determine if an update is needed.
     Handles semantic versioning comparison.
     """
-    if current_version in ["Unknown", "Error", "SSH Error", "local", "latest"] or \
+    if current_version in ["Unknown", "Error", "SSH Error"] or \
        latest_version in ["Unknown", "Error", "API Error", "Network Error"]:
+        return False
+    
+    # If current version is "local", "latest", or "main", assume it's up to date
+    if current_version in ["local", "latest", "main", "master"]:
         return False
     
     # Simple string comparison for now - could be enhanced with proper semver
@@ -408,8 +413,9 @@ def _extract_version_number(version_string):
 
 def _extract_image_version(image_string):
     """
-    Extracts version from Docker image name.
+    Extracts version from Docker image name and formats it compactly.
     Example: "nethermind/nethermind:1.25.4" -> "1.25.4"
+    Example: "besu/v25.7.0/linux-x86_64/openjdk-java-21" -> "25.7.0"
     """
     import re
     
@@ -424,6 +430,16 @@ def _extract_image_version(image_string):
         version = image_part.split(":")[-1].strip()
         # Remove quotes and extra characters
         version = re.sub(r'["\']', '', version)
+        
+        # Clean up complex version strings to show only version number
+        # Handle formats like: v25.7.0/linux-x86_64/openjdk-java-21 -> 25.7.0
+        if "/" in version:
+            version = version.split("/")[0]  # Take only first part before slash
+        
+        # Remove 'v' prefix if present
+        if version.startswith('v'):
+            version = version[1:]
+            
         return version
     
     return "latest"
