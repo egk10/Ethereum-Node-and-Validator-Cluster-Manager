@@ -386,9 +386,6 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
         if not logs:
             return "Empty Logs"
         
-        # Debug mode: save first 500 chars of logs to understand content
-        debug_snippet = logs[:500].replace('\n', '\\n')
-        
         # Client-specific version patterns (more comprehensive)
         version_patterns = {
             'geth': [
@@ -580,7 +577,6 @@ def _get_latest_github_release(client_name):
     api_url = f"https://api.github.com/repos/{repo}/releases/latest"
     
     try:
-        import requests
         response = requests.get(api_url, timeout=10)
         if response.status_code == 200:
             release_data = response.json()

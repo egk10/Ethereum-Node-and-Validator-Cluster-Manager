@@ -294,10 +294,10 @@ def client_versions(node_name):
         cons_updates = 0
         
         for result in results:
-            if result[3] == 'Yes':  # Execution Update column
+            if result[3] == '🔄':  # Execution Update column
                 nodes_needing_updates.add(result[0])  # Node name
                 exec_updates += 1
-            if result[6] == 'Yes':  # Consensus Update column  
+            if result[6] == '🔄':  # Consensus Update column  
                 nodes_needing_updates.add(result[0])  # Node name
                 cons_updates += 1
         
