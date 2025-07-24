@@ -243,48 +243,60 @@ def client_versions(node_name):
         try:
             version_info = get_docker_client_versions(node)
             
-            # Add execution client info
+            # Get client names and versions
             exec_client = version_info.get('execution_client', 'Unknown')
-            exec_display = f"{exec_client.title()}" if exec_client != "Unknown" else "Execution"
+            exec_current = version_info.get('execution_current', 'Unknown')
+            exec_latest = version_info.get('execution_latest', 'Unknown')
+            exec_needs_update = version_info.get('execution_needs_update', False)
             
+            cons_client = version_info.get('consensus_client', 'Unknown')
+            cons_current = version_info.get('consensus_current', 'Unknown') 
+            cons_latest = version_info.get('consensus_latest', 'Unknown')
+            cons_needs_update = version_info.get('consensus_needs_update', False)
+            
+            # Format client display names
+            exec_display = f"{exec_client.title()}" if exec_client != "Unknown" else "Unknown"
+            cons_display = f"{cons_client.title()}" if cons_client != "Unknown" else "Unknown"
+            
+            # Add single row with both clients
             results.append([
                 node['name'],
                 exec_display,
-                version_info.get('execution_current', 'Unknown'),
-                version_info.get('execution_latest', 'Unknown'),
-                'Yes' if version_info.get('execution_needs_update', False) else 'No'
-            ])
-            
-            # Add consensus client info
-            cons_client = version_info.get('consensus_client', 'Unknown')
-            cons_display = f"{cons_client.title()}" if cons_client != "Unknown" else "Consensus"
-            
-            results.append([
-                node['name'],
-                cons_display, 
-                version_info.get('consensus_current', 'Unknown'),
-                version_info.get('consensus_latest', 'Unknown'),
-                'Yes' if version_info.get('consensus_needs_update', False) else 'No'
+                f"{exec_current} → {exec_latest}" if exec_current != "Unknown" and exec_latest != "Unknown" else f"{exec_current}",
+                'Yes' if exec_needs_update else 'No',
+                cons_display,
+                f"{cons_current} → {cons_latest}" if cons_current != "Unknown" and cons_latest != "Unknown" else f"{cons_current}",
+                'Yes' if cons_needs_update else 'No'
             ])
         except Exception as e:
             click.echo(f"❌ Error checking {node['name']}: {e}")
-            results.append([node['name'], 'Execution', 'Error', 'Error', 'No'])
-            results.append([node['name'], 'Consensus', 'Error', 'Error', 'No'])
+            results.append([node['name'], 'Error', 'Error', 'No', 'Error', 'Error', 'No'])
     
     # Display results in table format
     if results:
-        headers = ['Node', 'Client Type', 'Current Version', 'Latest Version', 'Needs Update']
+        headers = ['Node', 'Execution Client', 'Exec Version', 'Exec Update', 'Consensus Client', 'Cons Version', 'Cons Update']
         click.echo("\n" + tabulate(results, headers=headers, tablefmt='grid'))
         
         # Summary
         nodes_needing_updates = set()
+        exec_updates = 0
+        cons_updates = 0
+        
         for result in results:
-            if result[4] == 'Yes':  # Needs Update column
+            if result[3] == 'Yes':  # Execution Update column
                 nodes_needing_updates.add(result[0])  # Node name
+                exec_updates += 1
+            if result[6] == 'Yes':  # Consensus Update column  
+                nodes_needing_updates.add(result[0])  # Node name
+                cons_updates += 1
         
         click.echo(f"\n📊 Summary:")
         if nodes_needing_updates:
             click.echo(f"🔄 Nodes with client updates available: {', '.join(sorted(nodes_needing_updates))}")
+            if exec_updates > 0:
+                click.echo(f"⚡ Execution clients needing updates: {exec_updates}")
+            if cons_updates > 0:
+                click.echo(f"⛵ Consensus clients needing updates: {cons_updates}")
             click.echo(f"💡 Run 'python -m eth_validators upgrade <node>' to update specific nodes")
             click.echo(f"💡 Run 'python -m eth_validators upgrade-all' to update all nodes")
         else:

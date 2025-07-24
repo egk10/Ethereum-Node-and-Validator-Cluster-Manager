@@ -243,7 +243,7 @@ def get_docker_client_versions(node_config):
                     
                     # Identify consensus clients
                     elif any(cons_client in container_name.lower() for cons_client in 
-                             ['consensus', 'lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar']):
+                             ['consensus', 'lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine']):
                         consensus_current = _extract_image_version(f"image: {image}")
                         consensus_client_name = _identify_client_from_image(image, 'consensus')
         
@@ -316,6 +316,8 @@ def _identify_client_from_image(image, client_type):
             return 'nimbus'
         elif 'lodestar' in image_lower:
             return 'lodestar'
+        elif 'grandine' in image_lower:
+            return 'grandine'
     
     return "Unknown"
 
@@ -334,7 +336,8 @@ def _get_latest_github_release(client_name):
         'prysm': 'prysmaticlabs/prysm',
         'teku': 'Consensys/teku',
         'nimbus': 'status-im/nimbus-eth2',
-        'lodestar': 'ChainSafe/lodestar'
+        'lodestar': 'ChainSafe/lodestar',
+        'grandine': 'grandinetech/grandine'
     }
     
     if client_name not in github_repos:
