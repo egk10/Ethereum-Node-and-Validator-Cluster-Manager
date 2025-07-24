@@ -253,18 +253,28 @@ def get_docker_client_versions(node_config):
                         consensus_container = container_name
                         consensus_image = image
         
-        # Get actual versions from Docker logs, with fallback to image version
+        # Get actual versions from Docker logs, with fallback to image version and exec command
         if execution_container and execution_client_name != "Unknown":
             execution_current = _get_client_version_from_logs(ssh_target, execution_container, execution_client_name)
             # Fallback to image version if logs don't provide version
-            if execution_current in ["No Version Found", "Empty Logs", "Log Error"] or execution_current.startswith("Error:"):
-                execution_current = _extract_image_version(f"image: {execution_image}")
+            if execution_current in ["No Version Found", "Empty Logs", "Log Error"] or execution_current.startswith("Error:") or execution_current.startswith("Debug:"):
+                # Try to get version via docker exec command
+                exec_version = _get_version_via_docker_exec(ssh_target, execution_container, execution_client_name)
+                if exec_version and exec_version not in ["Error", "Unknown"]:
+                    execution_current = exec_version
+                else:
+                    execution_current = _extract_image_version(f"image: {execution_image}")
         
         if consensus_container and consensus_client_name != "Unknown":
             consensus_current = _get_client_version_from_logs(ssh_target, consensus_container, consensus_client_name)
             # Fallback to image version if logs don't provide version  
-            if consensus_current in ["No Version Found", "Empty Logs", "Log Error"] or consensus_current.startswith("Error:"):
-                consensus_current = _extract_image_version(f"image: {consensus_image}")
+            if consensus_current in ["No Version Found", "Empty Logs", "Log Error"] or consensus_current.startswith("Error:") or consensus_current.startswith("Debug:"):
+                # Try to get version via docker exec command
+                exec_version = _get_version_via_docker_exec(ssh_target, consensus_container, consensus_client_name)
+                if exec_version and exec_version not in ["Error", "Unknown"]:
+                    consensus_current = exec_version
+                else:
+                    consensus_current = _extract_image_version(f"image: {consensus_image}")
         
         # Get latest versions from GitHub releases
         execution_latest = "Unknown"
@@ -305,6 +315,58 @@ def get_docker_client_versions(node_config):
     
     return results
 
+def _get_version_via_docker_exec(ssh_target, container_name, client_name):
+    """
+    Tries to get version by executing version commands directly in the container.
+    Some clients respond to --version flags.
+    """
+    import re
+    
+    # Client-specific version commands
+    version_commands = {
+        'geth': ['geth', 'version'],
+        'nethermind': ['nethermind', '--version'],
+        'reth': ['reth', '--version'], 
+        'besu': ['besu', '--version'],
+        'erigon': ['erigon', '--version'],
+        'lighthouse': ['lighthouse', '--version'],
+        'prysm': ['prysm', '--version'],
+        'teku': ['teku', '--version'],
+        'nimbus': ['nimbus_beacon_node', '--version'],
+        'lodestar': ['lodestar', '--version'],
+        'grandine': ['grandine', '--version']
+    }
+    
+    if client_name not in version_commands:
+        return "Unknown"
+    
+    try:
+        # Try to execute version command in container
+        cmd_parts = version_commands[client_name]
+        exec_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker exec {container_name} {' '.join(cmd_parts)} 2>&1'"
+        
+        exec_process = subprocess.run(exec_cmd, shell=True, capture_output=True, text=True, timeout=10)
+        
+        if exec_process.returncode == 0:
+            output = exec_process.stdout.strip()
+            
+            # Try to extract version from output
+            version_patterns = [
+                r'v?(\d+\.\d+\.\d+)',
+                r'Version:?\s*v?(\d+\.\d+\.\d+)',
+                r'version\s*v?(\d+\.\d+\.\d+)'
+            ]
+            
+            for pattern in version_patterns:
+                match = re.search(pattern, output, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+        
+        return "Exec Error"
+        
+    except Exception as e:
+        return "Error"
+
 def _get_client_version_from_logs(ssh_target, container_name, client_name):
     """
     Extracts the actual client version from Docker container logs.
@@ -324,73 +386,94 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
         if not logs:
             return "Empty Logs"
         
+        # Debug mode: save first 500 chars of logs to understand content
+        debug_snippet = logs[:500].replace('\n', '\\n')
+        
         # Client-specific version patterns (more comprehensive)
         version_patterns = {
             'geth': [
                 r'Geth/v(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
                 r'geth version (\d+\.\d+\.\d+)',
-                r'go-ethereum v(\d+\.\d+\.\d+)'
+                r'go-ethereum v(\d+\.\d+\.\d+)',
+                r'ethereum/client-go:v(\d+\.\d+\.\d+)',
+                r'Starting Geth.*?(\d+\.\d+\.\d+)',
+                r'Welcome to Geth.*?v(\d+\.\d+\.\d+)'
             ],
             'nethermind': [
                 r'Nethermind \((\d+\.\d+\.\d+)\)',
                 r'Version: (\d+\.\d+\.\d+)',
                 r'Nethermind v(\d+\.\d+\.\d+)',
-                r'Starting Nethermind (\d+\.\d+\.\d+)'
+                r'Starting Nethermind (\d+\.\d+\.\d+)',
+                r'Nethermind Ethereum Client (\d+\.\d+\.\d+)'
             ],
             'reth': [
                 r'reth Version: (\d+\.\d+\.\d+)',
                 r'reth v(\d+\.\d+\.\d+)',
                 r'Version (\d+\.\d+\.\d+)',
-                r'Starting reth v(\d+\.\d+\.\d+)'
+                r'Starting reth v(\d+\.\d+\.\d+)',
+                r'reth (\d+\.\d+\.\d+)',
+                r'paradigmxyz/reth:v(\d+\.\d+\.\d+)',
+                r'Reth version v(\d+\.\d+\.\d+)',
+                r'Starting up reth v(\d+\.\d+\.\d+)'
             ],
             'besu': [
                 r'besu/v(\d+\.\d+\.\d+)',
                 r'Besu version: v(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
-                r'Starting Besu version v(\d+\.\d+\.\d+)'
+                r'Starting Besu version v(\d+\.\d+\.\d+)',
+                r'hyperledger/besu:(\d+\.\d+\.\d+)',
+                r'Hyperledger Besu v(\d+\.\d+\.\d+)',
+                r'Starting Hyperledger Besu.*?(\d+\.\d+\.\d+)'
             ],
             'erigon': [
                 r'Erigon version: v(\d+\.\d+\.\d+)',
                 r'erigon/(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
-                r'Starting Erigon (\d+\.\d+\.\d+)'
+                r'Starting Erigon (\d+\.\d+\.\d+)',
+                r'ledgerwatch/erigon:v(\d+\.\d+\.\d+)'
             ],
             'lighthouse': [
                 r'Lighthouse v(\d+\.\d+\.\d+)',
                 r'Version: v(\d+\.\d+\.\d+)',
                 r'lighthouse (\d+\.\d+\.\d+)',
-                r'Starting beacon node.*?v(\d+\.\d+\.\d+)'
+                r'Starting beacon node.*?v(\d+\.\d+\.\d+)',
+                r'sigp/lighthouse:v(\d+\.\d+\.\d+)'
             ],
             'prysm': [
                 r'Prysm/v(\d+\.\d+\.\d+)',
                 r'Version: v(\d+\.\d+\.\d+)',
                 r'prysm version (\d+\.\d+\.\d+)',
-                r'Starting Prysm v(\d+\.\d+\.\d+)'
+                r'Starting Prysm v(\d+\.\d+\.\d+)',
+                r'prysmaticlabs/prysm.*?:v(\d+\.\d+\.\d+)'
             ],
             'teku': [
                 r'teku/v(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
                 r'Teku version: v(\d+\.\d+\.\d+)',
-                r'Starting Teku.*?(\d+\.\d+\.\d+)'
+                r'Starting Teku.*?(\d+\.\d+\.\d+)',
+                r'consensys/teku:(\d+\.\d+\.\d+)'
             ],
             'nimbus': [
                 r'Nimbus beacon node v(\d+\.\d+\.\d+)',
                 r'nimbus_beacon_node v(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
-                r'Starting Nimbus.*?v(\d+\.\d+\.\d+)'
+                r'Starting Nimbus.*?v(\d+\.\d+\.\d+)',
+                r'statusim/nimbus-eth2:.*?(\d+\.\d+\.\d+)'
             ],
             'lodestar': [
                 r'Lodestar/(\d+\.\d+\.\d+)',
                 r'lodestar v(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
-                r'Starting Lodestar.*?v(\d+\.\d+\.\d+)'
+                r'Starting Lodestar.*?v(\d+\.\d+\.\d+)',
+                r'chainsafe/lodestar:v(\d+\.\d+\.\d+)'
             ],
             'grandine': [
                 r'Grandine (\d+\.\d+\.\d+)',
                 r'grandine v(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
-                r'Starting Grandine.*?v(\d+\.\d+\.\d+)'
+                r'Starting Grandine.*?v(\d+\.\d+\.\d+)',
+                r'grandinetech/grandine:v(\d+\.\d+\.\d+)'
             ]
         }
         
@@ -405,7 +488,10 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
         fallback_patterns = [
             r'[vV]ersion:?\s*v?(\d+\.\d+\.\d+)',
             r'v(\d+\.\d+\.\d+)',
-            r'(\d+\.\d+\.\d+[-\w]*)'  # Include pre-release versions
+            r'(\d+\.\d+\.\d+[-\w]*)',  # Include pre-release versions
+            r'Starting.*?(\d+\.\d+\.\d+)',
+            r'Welcome.*?(\d+\.\d+\.\d+)',
+            r'Client.*?(\d+\.\d+\.\d+)'
         ]
         
         for pattern in fallback_patterns:
@@ -417,6 +503,15 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
                 if clean_version:
                     return clean_version.group(1)
                 return version
+        
+        # Debug: If no version found, check if logs contain any numbers
+        # This helps us understand what's in the logs
+        if re.search(r'\d+\.\d+', logs):
+            # There are version-like numbers, but our patterns didn't catch them
+            # Let's try a very broad search for the first occurrence
+            broad_match = re.search(r'(\d+\.\d+\.\d+)', logs)
+            if broad_match:
+                return broad_match.group(1)
         
         return "No Version Found"
         
