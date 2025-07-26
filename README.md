@@ -99,7 +99,8 @@ python3 -m eth_validators system-upgrade --all --force  # Força atualização d
 
 **📊 Monitoramento:**
 ```bash
-python3 -m eth_validators performance    # Performance dos validadores
+python3 -m eth_validators performance        # Performance dos validadores
+python3 -m eth_validators analyze-node <node>  # 🆕 Análise detalhada de validadores por node
 ```
 
 Isso mostrará a lista de comandos e instruções de uso do toolkit.
@@ -231,6 +232,19 @@ python3 -m eth_validators system-upgrade laptop
 
 # Versões dos clientes instalados (sem GitHub)
 python3 -m eth_validators versions laptop
+```
+
+### **Análise Multi-Stack (NOVO):**
+
+```bash
+# 🆕 Análise detalhada de nodes multi-stack
+python3 -m eth_validators analyze-node minipcamd3
+
+# Exibe todos os validadores, protocolos e containers de um node
+# Especialmente útil para setups complexos como:
+# - Stakewise + Obol DVT no mesmo hardware
+# - Múltiplos validator clients (Teku + Lodestar)
+# - Validadores em diferentes protocolos
 ```
 
 ### **Modo Inteligente vs Força:**
