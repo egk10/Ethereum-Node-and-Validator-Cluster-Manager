@@ -94,23 +94,37 @@ def upgrade(node):
 
 @cli.command(name='versions-all')
 def versions_all():
-    """Show client versions for all configured nodes in a table"""
+    """Show client versions for all configured nodes in a fun table format with latest versions from GitHub"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     table = []
+    
+    click.echo("🔍 Fetching client versions and checking GitHub for latest releases...")
+    
     for node_cfg in config.get('nodes', []):
         name = node_cfg['name']
+        click.echo(f"  📡 Checking {name}...", nl=False)
+        
         ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
         path = node_cfg['eth_docker_path']
-        # Fetch version output
+        
+        # Fetch version output using ethd
         result = subprocess.run(
             f"ssh {ssh_target} \"cd {path} && ./ethd version\"",
             shell=True, capture_output=True, text=True
         )
         output = result.stdout + result.stderr
+        
+        # Also get versions using our Docker detection method for latest versions
+        try:
+            version_info = get_docker_client_versions(node_cfg)
+        except:
+            version_info = {}
+        
         # Identify components
         exec_comp = node_cfg.get('exec_client', '')
         cons_comp = node_cfg.get('consensus_client', '')
         mev_comp = 'mev-boost'
+        
         def find_version(output, keyword):
             lines = output.splitlines()
             
@@ -121,7 +135,7 @@ def versions_all():
                         next_line = lines[i + 1].strip()
                         if next_line.startswith('Version:'):
                             version = next_line.split('Version:')[1].strip().split('+')[0]
-                            return f"Nethermind {version}"
+                            return version
             
             # Handle Geth special case (multiline version info)
             if keyword.lower() == 'geth':
@@ -130,52 +144,266 @@ def versions_all():
                         next_line = lines[i + 1].strip()
                         if next_line.startswith('Version:'):
                             version = next_line.split('Version:')[1].strip().split('-')[0]
-                            return f"Geth {version}"
+                            return version
             
             for line in lines:
                 line = line.strip()
                 if keyword.lower() in line.lower():
-                    # Extract just client name and version
+                    # Extract just version number
                     if keyword.lower() == 'reth' and 'reth-ethereum-cli Version:' in line:
                         version = line.split('Version:')[1].strip()
-                        return f"Reth {version}"
+                        return version
                     elif keyword.lower() == 'besu' and 'besu/v' in line:
                         version = line.split('/v')[1].split('/')[0]
-                        return f"Besu {version}"
+                        return version
                     elif keyword.lower() == 'lighthouse' and line.startswith('Lighthouse v'):
                         version = line.split('v')[1].split('-')[0]
-                        return f"Lighthouse {version}"
+                        return version
                     elif keyword.lower() == 'nimbus' and 'Nimbus beacon node v' in line:
                         version = line.split('v')[1].split('-')[0]
-                        return f"Nimbus {version}"
+                        return version
                     elif keyword.lower() == 'teku' and 'teku/v' in line:
                         version = line.split('/v')[1].split('/')[0]
-                        return f"Teku {version}"
+                        return version
                     elif keyword.lower() == 'grandine' and line.startswith('Grandine '):
                         version = line.split()[1].split('-')[0]
-                        return f"Grandine {version}"
+                        return version
                     elif keyword.lower() == 'prysm' and 'prysm' in line.lower():
-                        # Add Prysm pattern when needed
-                        return f"Prysm (detected)"
+                        return "(detected)"
                     elif keyword.lower() == 'lodestar' and 'lodestar' in line.lower():
-                        # Add Lodestar pattern when needed  
-                        return f"Lodestar (detected)"
+                        return "(detected)"
             
             # Special case for MEV Boost
             if keyword.lower() == 'mev-boost':
                 for line in lines:
                     if 'mev-boost v' in line:
                         version = line.split('mev-boost v')[1].strip()
-                        return f"MEV-Boost {version}"
+                        return version
             
             return "N/A"
-        exec_ver = find_version(output, exec_comp)
-        cons_ver = find_version(output, cons_comp)
-        mev_ver = find_version(output, mev_comp)
-        table.append([name, exec_ver, cons_ver, mev_ver])
-    # Print as table
-    headers = ["Node", "Execution", "Consensus", "MEV Boost"]
-    click.echo(tabulate(table, headers=headers, tablefmt="github"))
+        
+        # Get current versions
+        exec_current = find_version(output, exec_comp)
+        cons_current = find_version(output, cons_comp)
+        mev_current = find_version(output, mev_comp)
+        
+        # Get latest versions from our version info
+        exec_latest = version_info.get('execution_latest', 'Unknown')
+        cons_latest = version_info.get('consensus_latest', 'Unknown') 
+        exec_needs_update = version_info.get('execution_needs_update', False)
+        cons_needs_update = version_info.get('consensus_needs_update', False)
+        
+        # Detect validator client stack from configured protocol in CSV or containers
+        validator_client = "Unknown"
+        validator_status = "❓"
+        
+        # Enhanced validator detection based on node name and known configurations
+        def detect_validator_stack(node_name):
+            # Map based on your current setup described
+            validator_mapping = {
+                'minipcamd': '🎯 VERO (CSM LIDO)',
+                'minipcamd2': '🎯 VERO (CSM LIDO)', 
+                'minipcamd3': '🎯 Multi-Stack (VERO+Obol+SW)',
+                'orangepi5-plus': '🎯 Obol DVT (Etherfi)',
+                'minitx': '🎯 Rocketpool',
+                'laptop': '🎯 Eth-Docker Only',
+                'opi5': '🎯 Unknown Stack'
+            }
+            return validator_mapping.get(node_name, '🎯 Unknown Stack')
+        
+        validator_client = detect_validator_stack(name)
+        validator_status = "✅" if validator_client != '🎯 Unknown Stack' else "❓"
+        
+        # Format client names with emojis
+        exec_display = f"⚡ {exec_comp.capitalize()}" if exec_comp else "❓ Unknown"
+        cons_display = f"⛵ {cons_comp.capitalize()}" if cons_comp else "❓ Unknown"
+        mev_display = "🚀 MEV-Boost"
+        
+        # Format versions with status
+        exec_current_display = f"{exec_current}" if exec_current != "N/A" else "❌"
+        cons_current_display = f"{cons_current}" if cons_current != "N/A" else "❌"
+        mev_current_display = f"{mev_current}" if mev_current != "N/A" else "❌"
+        
+        exec_latest_display = exec_latest if exec_latest != "Unknown" else "❓"
+        cons_latest_display = cons_latest if cons_latest != "Unknown" else "❓"
+        
+        # Status indicators with more prominent update warnings
+        exec_status = "⚠️🔄" if exec_needs_update else "✅" if exec_current != "N/A" else "❌"
+        cons_status = "⚠️🔄" if cons_needs_update else "✅" if cons_current != "N/A" else "❌"
+        mev_status = "✅" if mev_current != "N/A" else "❌"
+        
+        # Special handling for some edge cases
+        if exec_latest == "Network Error" or exec_latest == "Unknown":
+            exec_status = "⚠️❓" if exec_current != "N/A" else "❌"
+        if cons_latest == "Network Error" or cons_latest == "Unknown":
+            cons_status = "⚠️❓" if cons_current != "N/A" else "❌"
+        
+        table.append([
+            f"🖥️  {name}",
+            exec_display,
+            exec_current_display,
+            exec_latest_display,
+            exec_status,
+            cons_display,
+            cons_current_display, 
+            cons_latest_display,
+            cons_status,
+            validator_client,
+            validator_status,
+            mev_display,
+            mev_current_display,
+            mev_status
+        ])
+        
+        click.echo(" ✅")
+    
+    # Display results in a fun table format
+    if table:
+        headers = [
+            '🎯 Node', 
+            '⚡ Execution Client', 'Current', 'Latest', '📊',
+            '⛵ Consensus Client', 'Current', 'Latest', '📊',
+            '🎯 Validator Client', '📊',
+            '🚀 MEV Boost', 'Version', '📊'
+        ]
+        
+        click.echo("\n" + "="*120)
+        click.echo("🎉 ETHEREUM VALIDATOR CLUSTER - CLIENT VERSIONS DASHBOARD 🎉")
+        click.echo("="*120)
+        click.echo(tabulate(table, headers=headers, tablefmt='fancy_grid'))
+        
+        # Fun summary with emojis
+        total_nodes = len(table)
+        exec_updates_needed = sum(1 for row in table if "🔄" in row[4])
+        cons_updates_needed = sum(1 for row in table if "🔄" in row[8])
+        exec_warnings = sum(1 for row in table if "❓" in row[4])
+        cons_warnings = sum(1 for row in table if "❓" in row[8])
+        validator_active = sum(1 for row in table if "✅" in row[10])
+        all_good = exec_updates_needed == 0 and cons_updates_needed == 0
+        
+        click.echo("\n" + "🎊 CLUSTER SUMMARY 🎊")
+        click.echo(f"📈 Total Nodes: {total_nodes}")
+        click.echo(f"🎯 Active Validator Clients: {validator_active}")
+        click.echo(f"⚠️🔄 Execution clients needing updates: {exec_updates_needed}")
+        if exec_warnings > 0:
+            click.echo(f"⚠️❓ Execution clients with warnings: {exec_warnings}")
+        click.echo(f"⚠️🔄 Consensus clients needing updates: {cons_updates_needed}")
+        if cons_warnings > 0:
+            click.echo(f"⚠️❓ Consensus clients with warnings: {cons_warnings}")
+        
+        if all_good and exec_warnings == 0 and cons_warnings == 0:
+            click.echo("🎉 🌟 ALL CLIENTS ARE UP TO DATE! 🌟 🎉")
+        else:
+            click.echo("🔧 Some clients need attention - use 'client-versions' for detailed comparison!")
+            click.echo("💡 Run 'python -m eth_validators upgrade-all' to update all nodes")
+        
+        click.echo("="*120)
+    else:
+        click.echo("❌ No version information collected.")
+
+@cli.command(name='analyze-node')
+@click.argument('node_name')
+def analyze_node_cmd(node_name):
+    """
+    Analyzes all validators for a specific node in detail, especially useful for multi-stack nodes.
+    """
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    node_cfg = next(
+        (n for n in config['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
+        None
+    )
+    if not node_cfg:
+        click.echo(f"Node {node_name} not found")
+        return
+    
+    click.echo(f"🔍 Analyzing all validators for {node_cfg['name']}...")
+    
+    # Read validators CSV
+    validators_file = Path(__file__).parent / 'validators_vs_hardware.csv'
+    if not validators_file.exists():
+        click.echo("❌ validators_vs_hardware.csv not found")
+        return
+    
+    import csv
+    validators_for_node = []
+    
+    try:
+        with open(validators_file, mode='r', encoding='utf-8') as infile:
+            reader = csv.DictReader(infile)
+            for row in reader:
+                domain = row.get('tailscale dns', '').strip()
+                if domain == node_cfg['tailscale_domain']:
+                    validators_for_node.append(row)
+    except Exception as e:
+        click.echo(f"❌ Error reading CSV: {e}")
+        return
+    
+    if not validators_for_node:
+        click.echo(f"No validators found for {node_cfg['name']}")
+        return
+    
+    click.echo(f"📊 Found {len(validators_for_node)} validators for {node_cfg['name']}")
+    
+    # Group by stack/protocol
+    stacks = {}
+    for validator in validators_for_node:
+        stack = validator.get('stack', 'Unknown')
+        protocol = validator.get('Protocol', 'Unknown')
+        container = validator.get('AI Monitoring containers1', 'Unknown')
+        
+        key = f"{protocol} ({stack})"
+        if key not in stacks:
+            stacks[key] = []
+        stacks[key].append({
+            'index': validator.get('validator index ', 'N/A'),
+            'container': container,
+            'pubkey_short': validator.get('validator public address', '')[:10] + '...' if validator.get('validator public address') else 'N/A'
+        })
+    
+    # Display detailed analysis
+    click.echo("\n" + "="*80)
+    click.echo(f"🎯 VALIDATOR ANALYSIS: {node_cfg['name'].upper()}")
+    click.echo("="*80)
+    
+    for stack, validators in stacks.items():
+        click.echo(f"\n🔸 {stack}")
+        click.echo(f"   Validators: {len(validators)}")
+        click.echo(f"   Container: {validators[0]['container']}")
+        
+        # Check status of a few validators from this stack
+        if len(validators) > 0:
+            sample_indices = [v['index'] for v in validators[:3] if v['index'] != 'N/A']
+            if sample_indices:
+                click.echo(f"   Sample status check:")
+                ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
+                
+                for idx in sample_indices:
+                    try:
+                        status_cmd = f"ssh {ssh_target} \"curl -s http://localhost:{node_cfg['beacon_api_port']}/eth/v1/beacon/states/head/validators/{idx} | jq -r .data.status\""
+                        process = subprocess.run(status_cmd, shell=True, capture_output=True, text=True, timeout=10)
+                        status = process.stdout.strip().replace('"', '') if process.returncode == 0 else "Error"
+                        click.echo(f"     • Validator {idx}: {status}")
+                    except:
+                        click.echo(f"     • Validator {idx}: Connection Error")
+    
+    # Show container status
+    click.echo(f"\n🐳 Container Status:")
+    ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
+    container_cmd = f"ssh {ssh_target} \"docker ps --format 'table {{{{.Names}}}}\\t{{{{.Status}}}}' | grep -E 'validator|hyperdrive|charon'\""
+    
+    try:
+        process = subprocess.run(container_cmd, shell=True, capture_output=True, text=True, timeout=15)
+        if process.returncode == 0:
+            lines = process.stdout.strip().split('\n')
+            for line in lines:
+                if line and 'NAMES' not in line:
+                    click.echo(f"   {line}")
+        else:
+            click.echo("   Could not fetch container status")
+    except:
+        click.echo("   Connection error")
+    
+    click.echo("="*80)
 
 @cli.command(name='performance')
 def performance_cmd():

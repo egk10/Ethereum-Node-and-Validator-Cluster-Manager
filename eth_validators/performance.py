@@ -37,8 +37,47 @@ def _get_validator_status(api_url, index):
     except requests.RequestException:
         return 'API Error'
 
+def _get_metrics_period_info(api_url, index, total_attestations):
+    """Calculates the period covered by the metrics based on validator activation and current epoch."""
+    try:
+        # Get validator activation info
+        validator_url = f"{api_url}/eth/v1/beacon/states/head/validators/{index}"
+        response = requests.get(validator_url, timeout=7)
+        if response.status_code != 200:
+            return "Period Unknown"
+        
+        validator_data = response.json().get('data', {}).get('validator', {})
+        activation_epoch = validator_data.get('activation_epoch')
+        
+        # Get current epoch
+        finality_url = f"{api_url}/eth/v1/beacon/states/head/finality_checkpoints"
+        response = requests.get(finality_url, timeout=7)
+        if response.status_code != 200:
+            return "Period Unknown"
+        
+        current_epoch = response.json().get('data', {}).get('current_justified', {}).get('epoch')
+        
+        if activation_epoch and current_epoch:
+            epochs_active = int(current_epoch) - int(activation_epoch)
+            days_active = (epochs_active * 32 * 12) / (60 * 60 * 24)  # 32 slots per epoch, 12 seconds per slot
+            
+            # Estimate when metrics collection started
+            if total_attestations > 0:
+                # If we have fewer attestations than expected, metrics collection might have started later
+                if total_attestations < epochs_active * 0.5:  # Less than 50% of expected
+                    estimated_days = (total_attestations * 32 * 12) / (60 * 60 * 24)
+                    return f"~{estimated_days:.0f} days (node restart/re-sync)"
+                else:
+                    return f"~{days_active:.0f} days (since activation)"
+            else:
+                return f"~{days_active:.0f} days (since activation)"
+        
+        return "Period Unknown"
+    except Exception:
+        return "Period Unknown"
+
 def _get_lighthouse_performance(api_url, index):
-    """Fetches performance data from a Lighthouse node."""
+    """Fetches performance data from a Lighthouse node with period information."""
     try:
         perf_url = f"{api_url}/lighthouse/ui/validator_metrics"
         headers = {'Content-Type': 'application/json'}
@@ -48,10 +87,18 @@ def _get_lighthouse_performance(api_url, index):
             data = response.json().get('data', {}).get('validators', {})
             if data and str(index) in data:
                 perf = data[str(index)]
+                
+                # Calculate period information from attestation counts
+                hits = perf.get('attestation_hits', 0)
+                misses = perf.get('attestation_misses', 0)
+                total_attestations = hits + misses
+                
                 return {
                     'attestation_hit_percentage': perf.get('attestation_hit_percentage'),
                     'attestation_misses': perf.get('attestation_misses'),
-                    'inclusion_distance': perf.get('latest_attestation_inclusion_distance')
+                    'inclusion_distance': perf.get('latest_attestation_inclusion_distance'),
+                    'total_attestations': total_attestations,
+                    'source': 'lighthouse'
                 }
         return None
     except requests.RequestException:
@@ -73,7 +120,9 @@ def _get_teku_performance(api_url, index):
             return {
                 'attestation_hit_percentage': hit_percentage,
                 'attestation_misses': misses,
-                'inclusion_distance': perf.get('inclusion_distance_average')
+                'inclusion_distance': perf.get('inclusion_distance_average'),
+                'total_attestations': total_attestations,
+                'source': 'teku'
             }
         return None
     except requests.RequestException:
@@ -161,6 +210,10 @@ def get_performance_summary():
                     performance = _get_teku_performance(api_url, index)
                 
                 if performance is not None:
+                    # Add period information to performance data
+                    total_attestations = performance.get('total_attestations', 0)
+                    period_info = _get_metrics_period_info(api_url, index, total_attestations)
+                    performance['period_info'] = period_info
                     break
 
             final_results[node_name] = {'status': status, 'performance': performance, 'index': index}
@@ -189,7 +242,20 @@ def get_performance_summary():
             eff = perf.get('attestation_hit_percentage')
             misses = perf.get('attestation_misses')
             dist = perf.get('inclusion_distance')
-            table_data.append([node_name, index, f"{eff:.2f}%" if eff is not None else "N/A", misses, dist, status])
+            total_attestations = perf.get('total_attestations', 0)
+            period_info = perf.get('period_info', 'Unknown period')
+            source = perf.get('source', 'unknown')
+            
+            # Format misses with period context
+            misses_display = f"{misses}"
+            if total_attestations > 0:
+                misses_display = f"{misses}/{total_attestations}"
+            
+            # Create detailed status with period info
+            status_with_period = f"{status} | {period_info} ({source})"
+            
+            table_data.append([node_name, index, f"{eff:.2f}%" if eff is not None else "N/A", 
+                             misses_display, dist, status_with_period])
         else:
             # Lógica de status aprimorada
             final_status = status
