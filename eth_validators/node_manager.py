@@ -213,6 +213,28 @@ def get_docker_client_versions(node_config):
     Returns information about execution client, consensus client, and whether updates are needed.
     """
     results = {}
+    
+    # Skip nodes with disabled eth-docker
+    stack = node_config.get('stack', 'eth-docker')
+    exec_client = node_config.get('exec_client', '')
+    consensus_client = node_config.get('consensus_client', '')
+    
+    if (stack == 'disabled' or 
+        (not exec_client and not consensus_client) or
+        (exec_client == '' and consensus_client == '')):
+        results = {
+            'execution_current': 'Disabled',
+            'execution_latest': 'N/A',
+            'execution_client': 'Disabled',
+            'consensus_current': 'Disabled',
+            'consensus_latest': 'N/A',
+            'consensus_client': 'Disabled',
+            'execution_needs_update': False,
+            'consensus_needs_update': False,
+            'needs_client_update': False
+        }
+        return results
+    
     ssh_user = node_config.get('ssh_user', 'root')
     ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
     

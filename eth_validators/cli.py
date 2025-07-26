@@ -84,6 +84,18 @@ def upgrade(node):
     if not node_cfg:
         click.echo(f"Node {node} not found")
         return
+    
+    # Check if Ethereum clients are disabled
+    stack = node_cfg.get('stack', 'eth-docker')
+    exec_client = node_cfg.get('exec_client', '')
+    consensus_client = node_cfg.get('consensus_client', '')
+    
+    if (stack == 'disabled' or 
+        (not exec_client and not consensus_client) or
+        (exec_client == '' and consensus_client == '')):
+        click.echo(f"⚪ Skipping {node} (Ethereum clients disabled)")
+        return
+        
     # SSH into node using ssh_user, pull new eth-docker, and restart
     ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
     cmd = (
@@ -102,6 +114,18 @@ def versions_all():
     
     for node_cfg in config.get('nodes', []):
         name = node_cfg['name']
+        
+        # Skip nodes with disabled eth-docker
+        stack = node_cfg.get('stack', 'eth-docker')
+        exec_client = node_cfg.get('exec_client', '')
+        consensus_client = node_cfg.get('consensus_client', '')
+        
+        if (stack == 'disabled' or 
+            (not exec_client and not consensus_client) or
+            (exec_client == '' and consensus_client == '')):
+            click.echo(f"  ⚪ Skipping {name} (Ethereum clients disabled)")
+            continue
+            
         click.echo(f"  📡 Checking {name}...", nl=False)
         
         ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
@@ -460,10 +484,22 @@ def performance_cmd():
 
 @cli.command(name='upgrade-all')
 def upgrade_all():
-    """Upgrade all configured nodes"""
+    """Upgrade all configured nodes with active Ethereum clients"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     for node_cfg in config.get('nodes', []):
         name = node_cfg['name']
+        
+        # Skip nodes with disabled eth-docker
+        stack = node_cfg.get('stack', 'eth-docker')
+        exec_client = node_cfg.get('exec_client', '')
+        consensus_client = node_cfg.get('consensus_client', '')
+        
+        if (stack == 'disabled' or 
+            (not exec_client and not consensus_client) or
+            (exec_client == '' and consensus_client == '')):
+            click.echo(f"⚪ Skipping {name} (Ethereum clients disabled)")
+            continue
+            
         click.echo(f"Upgrading {name}...")
         ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
         cmd = (
@@ -484,6 +520,18 @@ def versions(node):
     if not node_cfg:
         click.echo(f"Node {node} not found")
         return
+    
+    # Check if Ethereum clients are disabled
+    stack = node_cfg.get('stack', 'eth-docker')
+    exec_client = node_cfg.get('exec_client', '')
+    consensus_client = node_cfg.get('consensus_client', '')
+    
+    if (stack == 'disabled' or 
+        (not exec_client and not consensus_client) or
+        (exec_client == '' and consensus_client == '')):
+        click.echo(f"⚪ Node {node} has Ethereum clients disabled")
+        return
+        
     ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
     path = node_cfg['eth_docker_path']
     # Run full .ethd version remotely
@@ -513,6 +561,17 @@ def client_versions(node_name):
     # Collect version information for all nodes
     results = []
     for node in nodes:
+        # Skip nodes with disabled eth-docker
+        stack = node.get('stack', 'eth-docker')
+        exec_client = node.get('exec_client', '')
+        consensus_client = node.get('consensus_client', '')
+        
+        if (stack == 'disabled' or 
+            (not exec_client and not consensus_client) or
+            (exec_client == '' and consensus_client == '')):
+            click.echo(f"⚪ Skipping {node['name']} (Ethereum clients disabled)")
+            continue
+            
         click.echo(f"Checking client versions for {node['name']}...")
         try:
             version_info = get_docker_client_versions(node)
