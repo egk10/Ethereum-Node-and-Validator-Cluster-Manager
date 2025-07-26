@@ -121,24 +121,58 @@ def get_system_update_status(node_config):
     Checks if Ubuntu system updates are available (does not install them).
     Uses 'apt upgrade -s' to simulate and count what would actually be upgraded,
     excluding phased updates that Ubuntu intentionally holds back.
+    
+    Fallback strategy: If APT is locked/busy, uses apt-check as alternative.
     """
     results = {}
     ssh_user = node_config.get('ssh_user', 'root')
     ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
     
-    # Use apt upgrade simulation to see what would actually be upgraded
-    # Add basic APT lock check - if locked, assume no updates needed for now
+    # Primary method: Wait for APT locks to be released, then check updates
     if ssh_user == 'root':
-        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then echo \"0\"; else apt update >/dev/null 2>&1 && apt upgrade -s 2>/dev/null | grep \"^Inst \" | wc -l; fi'"
+        # Wait for locks (max 30 seconds), then check updates
+        apt_wait_cmd = 'timeout=30; while [ $timeout -gt 0 ] && (fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1); do sleep 2; timeout=$((timeout-2)); done'
+        apt_check_cmd = 'if [ $timeout -gt 0 ]; then apt update >/dev/null 2>&1 && apt upgrade -s 2>/dev/null | grep "^Inst " | wc -l; else echo "FALLBACK"; fi'
+        full_cmd = f'{apt_wait_cmd}; {apt_check_cmd}'
+        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{full_cmd}'"
     else:
-        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'if sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; then echo \"0\"; else sudo apt update >/dev/null 2>&1 && sudo apt upgrade -s 2>/dev/null | grep \"^Inst \" | wc -l; fi'"
+        # Wait for locks (max 30 seconds), then check updates  
+        apt_wait_cmd = 'timeout=30; while [ $timeout -gt 0 ] && (sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1); do sleep 2; timeout=$((timeout-2)); done'
+        apt_check_cmd = 'if [ $timeout -gt 0 ]; then sudo apt update >/dev/null 2>&1 && sudo apt upgrade -s 2>/dev/null | grep "^Inst " | wc -l; else echo "FALLBACK"; fi'
+        full_cmd = f'{apt_wait_cmd}; {apt_check_cmd}'
+        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{full_cmd}'"
     
     try:
-        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=25)
+        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=60)
         if process.returncode == 0:
-            update_count = int(process.stdout.strip())
-            results['updates_available'] = update_count
-            results['needs_system_update'] = update_count > 0
+            output = process.stdout.strip()
+            
+            # Check if we need to use fallback method
+            if output == "FALLBACK":
+                # Use apt-check as fallback when APT is locked/busy
+                fallback_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '/usr/lib/update-notifier/apt-check 2>&1'"
+                if ssh_user != 'root':
+                    fallback_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'sudo /usr/lib/update-notifier/apt-check 2>&1'"
+                
+                fallback_process = subprocess.run(fallback_cmd, shell=True, capture_output=True, text=True, timeout=15)
+                if fallback_process.returncode == 0:
+                    # apt-check returns "packages;security" format (e.g., "3;2")
+                    apt_check_output = fallback_process.stdout.strip()
+                    if ';' in apt_check_output:
+                        update_count = int(apt_check_output.split(';')[0])
+                        results['updates_available'] = f"{update_count} (apt-check)"
+                        results['needs_system_update'] = update_count > 0
+                    else:
+                        results['updates_available'] = f"Fallback Error"
+                        results['needs_system_update'] = False
+                else:
+                    results['updates_available'] = f"Fallback Failed"
+                    results['needs_system_update'] = False
+            else:
+                # Normal apt upgrade simulation worked
+                update_count = int(output)
+                results['updates_available'] = update_count
+                results['needs_system_update'] = update_count > 0
         else:
             # Better error reporting
             error_msg = process.stderr.strip() if process.stderr.strip() else f"SSH connection failed (return code: {process.returncode})"
