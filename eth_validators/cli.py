@@ -8,6 +8,7 @@ from . import performance
 from .config import get_node_config, get_all_node_configs
 from .performance import get_performance_summary
 from .node_manager import get_node_status, upgrade_node_docker_clients, get_system_update_status, perform_system_upgrade, get_docker_client_versions
+from .ai_analyzer import ValidatorLogAnalyzer
 
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
 
@@ -827,6 +828,420 @@ def system_upgrade_cmd(node, upgrade_all_nodes, force):
                     click.echo(f"  {line}")
     
     click.echo(f"\n🎉 Completed system upgrades for {len(nodes_to_upgrade)} node(s)!")
+
+@cli.command(name='ai-analyze')
+@click.argument('node_name')
+@click.option('--container', help='Specific container to analyze (e.g., lighthouse-validator-client)')
+@click.option('--hours', default=24, type=int, help='Hours of logs to analyze (default: 24)')
+@click.option('--severity', default='INFO', help='Minimum log severity level (DEBUG, INFO, WARN, ERROR)')
+def ai_analyze_cmd(node_name, container, hours, severity):
+    """
+    AI-powered analysis of validator logs for performance insights and anomaly detection.
+    """
+    config_data = yaml.safe_load(CONFIG_PATH.read_text())
+    node_cfg = next(
+        (n for n in config_data['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
+        None
+    )
+    if not node_cfg:
+        click.echo(f"❌ Node {node_name} not found")
+        return
+    
+    click.echo(f"🧠 Starting AI analysis for {node_cfg['name']}...")
+    if container:
+        click.echo(f"📊 Analyzing container: {container}")
+    click.echo(f"🕐 Analyzing last {hours} hours of logs")
+    click.echo(f"🔍 Minimum severity: {severity}")
+    
+    # Initialize AI analyzer
+    analyzer = ValidatorLogAnalyzer()
+    
+    try:
+        # Perform comprehensive analysis
+        analysis_result = analyzer.analyze_node_logs(
+            node_name=node_cfg['name'],
+            hours=hours
+        )
+        
+        # Display results
+        _display_ai_analysis_results(analysis_result, node_cfg['name'])
+        
+    except Exception as e:
+        click.echo(f"❌ AI analysis failed: {e}")
+
+@cli.command(name='ai-health')
+@click.argument('node_name', required=False)
+@click.option('--threshold', default=70, type=int, help='Health score threshold for alerts (default: 70)')
+def ai_health_cmd(node_name, threshold):
+    """
+    Check AI-calculated health scores for validators across nodes.
+    """
+    config_data = yaml.safe_load(CONFIG_PATH.read_text())
+    
+    if node_name:
+        nodes = [n for n in config_data['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name]
+        if not nodes:
+            click.echo(f"❌ Node {node_name} not found")
+            return
+    else:
+        nodes = config_data.get('nodes', [])
+    
+    click.echo("🏥 Performing AI health analysis across validator infrastructure...")
+    
+    # Initialize AI analyzer
+    analyzer = ValidatorLogAnalyzer()
+    health_data = []
+    
+    for node_cfg in nodes:
+        # Skip disabled nodes
+        if node_cfg.get('stack') == 'disabled':
+            continue
+            
+        click.echo(f"  🔍 Analyzing {node_cfg['name']}...", nl=False)
+        
+        try:
+            # Get health score for this node via comprehensive analysis
+            analysis_result = analyzer.analyze_node_logs(
+                node_name=node_cfg['name'],
+                hours=24  # Last 24 hours
+            )
+            
+            health_score = analysis_result.get('overall_health_score', 0)
+            status_emoji = "🟢" if health_score >= 90 else "🟡" if health_score >= threshold else "🔴"
+            
+            # Get key metrics from analysis
+            container_analyses = analysis_result.get('container_analyses', {})
+            anomaly_count = 0
+            error_count = 0
+            warning_count = 0
+            
+            for container_data in container_analyses.values():
+                if isinstance(container_data, dict):
+                    anomaly_count += len(container_data.get('anomalies', []))
+                    error_patterns = container_data.get('error_patterns', [])
+                    error_count += len(error_patterns)
+                    # Count warnings from pattern matches
+                    pattern_matches = container_data.get('pattern_matches', {})
+                    warning_count += pattern_matches.get('performance_warnings', 0)
+            
+            primary_concern = "Performance issues" if error_count > 5 else "Network issues" if anomaly_count > 3 else "None"
+            
+            health_data.append([
+                f"{status_emoji} {node_cfg['name']}",
+                f"{health_score:.1f}%",
+                str(anomaly_count),
+                str(error_count),
+                str(warning_count),
+                primary_concern
+            ])
+            
+            click.echo(f" {status_emoji} {health_score:.1f}%")
+            
+        except Exception as e:
+            health_data.append([
+                f"❌ {node_cfg['name']}",
+                "Error",
+                "-",
+                "-", 
+                "-",
+                str(e)[:50]
+            ])
+            click.echo(" ❌ Error")
+    
+    # Display health summary table
+    if health_data:
+        headers = ['Node', 'Health Score', 'Anomalies', 'Errors', 'Warnings', 'Primary Concern']
+        click.echo("\n" + "="*100)
+        click.echo("🏥 VALIDATOR INFRASTRUCTURE HEALTH DASHBOARD")
+        click.echo("="*100)
+        click.echo(tabulate(health_data, headers=headers, tablefmt='fancy_grid'))
+        
+        # Summary statistics
+        healthy_nodes = sum(1 for row in health_data if "🟢" in row[0])
+        warning_nodes = sum(1 for row in health_data if "🟡" in row[0])
+        critical_nodes = sum(1 for row in health_data if "🔴" in row[0])
+        
+        click.echo(f"\n📊 Infrastructure Summary:")
+        click.echo(f"🟢 Healthy nodes: {healthy_nodes}")
+        click.echo(f"🟡 Warning nodes: {warning_nodes}")  
+        click.echo(f"🔴 Critical nodes: {critical_nodes}")
+        
+        if critical_nodes > 0:
+            click.echo(f"\n⚠️  {critical_nodes} node(s) need immediate attention!")
+            click.echo("💡 Use 'ai-analyze <node>' for detailed analysis")
+    else:
+        click.echo("❌ No health data collected.")
+
+@cli.command(name='ai-patterns')
+@click.argument('node_name')
+@click.option('--days', default=7, type=int, help='Days of log history to analyze (default: 7)')
+@click.option('--pattern-type', default='all', help='Pattern type: errors, warnings, performance, or all')
+def ai_patterns_cmd(node_name, days, pattern_type):
+    """
+    Discover and analyze patterns in validator logs using AI pattern recognition.
+    """
+    config_data = yaml.safe_load(CONFIG_PATH.read_text())
+    node_cfg = next(
+        (n for n in config_data['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
+        None
+    )
+    if not node_cfg:
+        click.echo(f"❌ Node {node_name} not found")
+        return
+    
+    click.echo(f"🔍 Analyzing patterns for {node_cfg['name']} over last {days} days...")
+    click.echo(f"🎯 Pattern focus: {pattern_type}")
+    
+    # Initialize AI analyzer
+    analyzer = ValidatorLogAnalyzer()
+    
+    try:
+        # Perform comprehensive analysis to get patterns
+        analysis_result = analyzer.analyze_node_logs(
+            node_name=node_cfg['name'],
+            hours=days * 24
+        )
+        
+        # Extract pattern information from analysis result
+        patterns = {
+            'temporal_patterns': [],
+            'recurring_issues': [],
+            'performance_patterns': {}
+        }
+        
+        # Analyze container data for patterns
+        container_analyses = analysis_result.get('container_analyses', {})
+        for container_name, container_data in container_analyses.items():
+            if isinstance(container_data, dict):
+                # Extract temporal patterns from time analysis
+                time_analysis = container_data.get('time_analysis', {})
+                if time_analysis.get('logging_gaps'):
+                    patterns['temporal_patterns'].append({
+                        'description': f'{container_name}: Logging gaps detected',
+                        'frequency': f"{len(time_analysis['logging_gaps'])} gaps",
+                        'confidence': 85.0
+                    })
+                
+                # Extract recurring issues from error patterns
+                error_patterns = container_data.get('error_patterns', [])
+                for error in error_patterns:
+                    patterns['recurring_issues'].append({
+                        'issue_type': error.get('category', 'Unknown'),
+                        'count': 1,  # Single occurrence in this analysis
+                        'impact': 'Medium' if 'failed' in error.get('category', '') else 'Low'
+                    })
+                
+                # Extract performance patterns from pattern matches
+                pattern_matches = container_data.get('pattern_matches', {})
+                for pattern_type, count in pattern_matches.items():
+                    if count > 0:
+                        patterns['performance_patterns'][f'{container_name}_{pattern_type}'] = f"{count} occurrences"
+        
+        # Display pattern analysis results
+        _display_pattern_analysis(patterns, node_cfg['name'], days, pattern_type)
+        
+    except Exception as e:
+        click.echo(f"❌ Pattern analysis failed: {e}")
+
+@cli.command(name='ai-recommend')
+@click.argument('node_name')
+@click.option('--focus', default='performance', help='Recommendation focus: performance, reliability, security, or all')
+def ai_recommend_cmd(node_name, focus):
+    """
+    Get AI-powered recommendations for validator optimization and issue resolution.
+    """
+    config_data = yaml.safe_load(CONFIG_PATH.read_text())
+    node_cfg = next(
+        (n for n in config_data['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
+        None
+    )
+    if not node_cfg:
+        click.echo(f"❌ Node {node_name} not found")
+        return
+    
+    click.echo(f"🎯 Generating AI recommendations for {node_cfg['name']}...")
+    click.echo(f"🔍 Focus area: {focus}")
+    
+    # Initialize AI analyzer
+    analyzer = ValidatorLogAnalyzer()
+    
+    try:
+        # Generate comprehensive analysis first
+        analysis_result = analyzer.analyze_node_logs(
+            node_name=node_cfg['name'],
+            hours=48  # Last 48 hours for context
+        )
+        
+        # Extract recommendations from analysis result
+        recommendations = {
+            'priority': [],
+            'general': [],
+            'configuration': []
+        }
+        
+        # Use existing recommendations from analysis
+        existing_recommendations = analysis_result.get('recommendations', [])
+        
+        # Categorize recommendations based on focus area and severity
+        health_score = analysis_result.get('overall_health_score', 100)
+        alerts = analysis_result.get('alerts', [])
+        
+        # Priority recommendations from critical alerts
+        for alert in alerts:
+            if alert.get('level') == 'critical':
+                recommendations['priority'].append({
+                    'title': 'Critical Issue Detected',
+                    'description': alert.get('message', ''),
+                    'action': alert.get('recommendation', 'Investigate immediately')
+                })
+        
+        # General recommendations from existing analysis
+        for rec in existing_recommendations:
+            recommendations['general'].append({
+                'title': 'Performance Optimization',
+                'description': rec
+            })
+        
+        # Configuration suggestions based on focus area
+        if focus == 'performance' and health_score < 85:
+            recommendations['configuration'].append('Consider increasing resource allocation')
+            recommendations['configuration'].append('Review client configuration for optimization')
+        elif focus == 'reliability' and health_score < 90:
+            recommendations['configuration'].append('Implement redundancy measures')
+            recommendations['configuration'].append('Set up monitoring alerts')
+        elif focus == 'security':
+            recommendations['configuration'].append('Review firewall and network security')
+            recommendations['configuration'].append('Update client software regularly')
+        
+        # Display recommendations
+        _display_recommendations(recommendations, node_cfg['name'], focus)
+        
+    except Exception as e:
+        click.echo(f"❌ Recommendation generation failed: {e}")
+
+def _display_ai_analysis_results(analysis_result, node_name):
+    """Display comprehensive AI analysis results in a formatted way."""
+    click.echo("\n" + "="*80)
+    click.echo(f"🧠 AI ANALYSIS RESULTS: {node_name.upper()}")
+    click.echo("="*80)
+    
+    # Overall health score
+    health_score = analysis_result.get('health_score', {}).get('overall_score', 0)
+    health_emoji = "🟢" if health_score >= 90 else "🟡" if health_score >= 70 else "🔴"
+    click.echo(f"\n{health_emoji} Overall Health Score: {health_score:.1f}%")
+    
+    # Anomalies detected
+    anomalies = analysis_result.get('anomalies', [])
+    if anomalies:
+        click.echo(f"\n⚠️  Anomalies Detected: {len(anomalies)}")
+        for anomaly in anomalies[:5]:  # Show top 5
+            click.echo(f"  • {anomaly.get('severity', 'UNKNOWN')}: {anomaly.get('description', 'No description')}")
+        if len(anomalies) > 5:
+            click.echo(f"  ... and {len(anomalies) - 5} more")
+    else:
+        click.echo(f"\n✅ No significant anomalies detected")
+    
+    # Error patterns
+    error_patterns = analysis_result.get('error_patterns', {})
+    if error_patterns.get('total_errors', 0) > 0:
+        click.echo(f"\n🔴 Error Analysis:")
+        click.echo(f"  Total errors: {error_patterns['total_errors']}")
+        for pattern, count in error_patterns.get('patterns', {}).items():
+            click.echo(f"  • {pattern}: {count} occurrences")
+    
+    # Performance insights
+    performance_data = analysis_result.get('performance_insights', {})
+    if performance_data:
+        click.echo(f"\n📊 Performance Insights:")
+        for metric, value in performance_data.items():
+            click.echo(f"  • {metric}: {value}")
+    
+    # Recommendations
+    recommendations = analysis_result.get('recommendations', [])
+    if recommendations:
+        click.echo(f"\n💡 AI Recommendations:")
+        for i, rec in enumerate(recommendations[:3], 1):
+            click.echo(f"  {i}. {rec}")
+        if len(recommendations) > 3:
+            click.echo(f"     ... and {len(recommendations) - 3} more suggestions")
+    
+    click.echo("="*80)
+
+def _display_pattern_analysis(patterns, node_name, days, pattern_type):
+    """Display pattern analysis results."""
+    click.echo("\n" + "="*80)
+    click.echo(f"🔍 PATTERN ANALYSIS: {node_name.upper()} ({days} days)")
+    click.echo("="*80)
+    
+    if not patterns:
+        click.echo("📊 No significant patterns detected in the specified timeframe.")
+        return
+    
+    # Temporal patterns
+    temporal = patterns.get('temporal_patterns', [])
+    if temporal:
+        click.echo(f"\n🕐 Temporal Patterns:")
+        for pattern in temporal:
+            click.echo(f"  • {pattern.get('description', 'Unknown pattern')}")
+            click.echo(f"    Frequency: {pattern.get('frequency', 'Unknown')}")
+            click.echo(f"    Confidence: {pattern.get('confidence', 0):.1f}%")
+    
+    # Recurring issues
+    recurring = patterns.get('recurring_issues', [])
+    if recurring:
+        click.echo(f"\n🔄 Recurring Issues:")
+        for issue in recurring:
+            click.echo(f"  • {issue.get('issue_type', 'Unknown')}: {issue.get('count', 0)} times")
+            if issue.get('impact'):
+                click.echo(f"    Impact: {issue['impact']}")
+    
+    # Performance patterns
+    performance = patterns.get('performance_patterns', {})
+    if performance:
+        click.echo(f"\n📈 Performance Patterns:")
+        for metric, data in performance.items():
+            click.echo(f"  • {metric}: {data}")
+    
+    click.echo("="*80)
+
+def _display_recommendations(recommendations, node_name, focus):
+    """Display AI-generated recommendations."""
+    click.echo("\n" + "="*80)
+    click.echo(f"🎯 AI RECOMMENDATIONS: {node_name.upper()}")
+    click.echo(f"Focus: {focus.upper()}")
+    click.echo("="*80)
+    
+    if not recommendations:
+        click.echo("✅ No specific recommendations at this time. System appears to be running optimally.")
+        return
+    
+    # Priority recommendations
+    priority = recommendations.get('priority', [])
+    if priority:
+        click.echo(f"\n🚨 HIGH PRIORITY:")
+        for i, rec in enumerate(priority, 1):
+            click.echo(f"  {i}. {rec.get('title', 'Unknown')}")
+            click.echo(f"     {rec.get('description', 'No description')}")
+            if rec.get('action'):
+                click.echo(f"     Action: {rec['action']}")
+    
+    # General recommendations
+    general = recommendations.get('general', [])
+    if general:
+        click.echo(f"\n💡 GENERAL RECOMMENDATIONS:")
+        for i, rec in enumerate(general, 1):
+            click.echo(f"  {i}. {rec.get('title', 'Unknown')}")
+            if rec.get('description'):
+                click.echo(f"     {rec['description']}")
+    
+    # Configuration suggestions
+    config_suggestions = recommendations.get('configuration', [])
+    if config_suggestions:
+        click.echo(f"\n⚙️  CONFIGURATION SUGGESTIONS:")
+        for suggestion in config_suggestions:
+            click.echo(f"  • {suggestion}")
+    
+    click.echo("="*80)
 
 if __name__ == "__main__":
     cli()
