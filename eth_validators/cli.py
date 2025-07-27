@@ -1265,6 +1265,386 @@ def ai_dashboard(port, host, demo):
         click.echo(f"❌ Failed to start dashboard server: {e}")
         click.echo("💡 Try running manually: python ai_dashboard_server.py")
 
+@cli.command(name='performance-deep')
+@click.argument('node_name')
+@click.option('--hours', default=6, help='Hours of data to analyze (default: 6)')
+@click.option('--export', help='Export results to JSON file')
+@click.option('--beacon-only', is_flag=True, help='Only extract beacon node performance data')
+@click.option('--logs-only', is_flag=True, help='Only extract log performance data')
+def performance_deep(node_name, hours, export, beacon_only, logs_only):
+    """🔍 Deep performance analysis with beacon node API integration"""
+    import json
+    from datetime import datetime
+    
+    click.echo("🔍 DEEP VALIDATOR PERFORMANCE ANALYSIS")
+    click.echo("=" * 60)
+    click.echo(f"🎯 Node: {node_name}")
+    click.echo(f"⏱️  Analysis period: {hours} hours")
+    click.echo(f"📊 Mode: {'Beacon only' if beacon_only else 'Logs only' if logs_only else 'Comprehensive'}")
+    click.echo("=" * 60)
+    
+    try:
+        from eth_validators.enhanced_performance_extractor import ValidatorPerformanceExtractor
+        extractor = ValidatorPerformanceExtractor()
+        
+        start_time = datetime.now()
+        click.echo("🚀 Starting deep performance analysis...")
+        
+        if beacon_only:
+            # Get node config and validator indices
+            node_config = None
+            for node in extractor.config.get('nodes', []):
+                if node.get('name') == node_name:
+                    node_config = node
+                    break
+            
+            if not node_config:
+                click.echo(f"❌ Node {node_name} not found in configuration")
+                return
+            
+            validator_indices = extractor._get_validator_indices_for_node(node_name)
+            results = extractor.extract_beacon_node_performance(node_config, validator_indices)
+            
+        elif logs_only:
+            node_config = None
+            for node in extractor.config.get('nodes', []):
+                if node.get('name') == node_name:
+                    node_config = node
+                    break
+            
+            if not node_config:
+                click.echo(f"❌ Node {node_name} not found in configuration")
+                return
+                
+            results = extractor.extract_log_performance_metrics(node_config, hours)
+            
+        else:
+            # Comprehensive analysis
+            results = extractor.extract_comprehensive_performance(node_name, hours=hours)
+        
+        analysis_time = (datetime.now() - start_time).total_seconds()
+        click.echo(f"✅ Analysis completed in {analysis_time:.1f} seconds")
+        
+        # Display results
+        _display_deep_performance_results(results, beacon_only, logs_only)
+        
+        # Export if requested
+        if export:
+            with open(export, 'w') as f:
+                json.dump(results, f, indent=2)
+            click.echo(f"💾 Results exported to: {export}")
+            
+    except ImportError:
+        click.echo("❌ Enhanced performance extractor not available")
+        click.echo("💡 Falling back to basic AI analysis...")
+        
+        # Fallback to AI analyzer
+        from eth_validators.ai_analyzer import ValidatorLogAnalyzer
+        analyzer = ValidatorLogAnalyzer()
+        
+        results = analyzer.analyze_node_logs(node_name, hours)
+        _display_ai_analysis_results(results, node_name)
+        
+    except Exception as e:
+        click.echo(f"❌ Deep performance analysis failed: {e}")
+
+def _display_deep_performance_results(results, beacon_only=False, logs_only=False):
+    """Display comprehensive performance analysis results"""
+    if 'error' in results:
+        click.echo(f"❌ Analysis failed: {results['error']}")
+        return
+    
+    if not beacon_only and not logs_only:
+        # Comprehensive results
+        click.echo("\n📊 COMPREHENSIVE PERFORMANCE ANALYSIS")
+        click.echo("=" * 50)
+        
+        # Overall summary
+        summary = results.get('summary', {})
+        overall_health = summary.get('overall_health_score', 0)
+        health_emoji = "🟢" if overall_health >= 80 else "🟡" if overall_health >= 60 else "🔴"
+        click.echo(f"\n{health_emoji} OVERALL HEALTH SCORE: {overall_health:.1f}/100")
+        
+        # Beacon node performance
+        beacon_data = results.get('beacon_node_performance', {})
+        if beacon_data and 'error' not in beacon_data:
+            click.echo(f"\n🛰️  BEACON NODE PERFORMANCE:")
+            
+            # Node health
+            node_info = beacon_data.get('beacon_node_info', {})
+            if node_info:
+                is_healthy = node_info.get('is_healthy', False)
+                health_status = "Healthy ✅" if is_healthy else "Issues detected ⚠️"
+                click.echo(f"  Status: {health_status}")
+                
+                version = node_info.get('version', {})
+                if version:
+                    click.echo(f"  Version: {version.get('version', 'Unknown')}")
+            
+            # Sync status
+            sync_status = beacon_data.get('sync_status', {})
+            if sync_status:
+                if sync_status.get('is_syncing', False):
+                    sync_pct = sync_status.get('sync_percentage', 0)
+                    click.echo(f"  Sync: In progress ({sync_pct:.1f}%) 🔄")
+                else:
+                    click.echo(f"  Sync: Fully synced ✅")
+            
+            # Peer connectivity
+            peer_info = beacon_data.get('peer_info', {})
+            if peer_info:
+                connected_peers = peer_info.get('connected_peers', 0)
+                total_peers = peer_info.get('total_peers', 0)
+                click.echo(f"  Peers: {connected_peers} connected / {total_peers} total 📡")
+            
+            # Validator performance
+            validator_performance = beacon_data.get('validator_performance', {})
+            if validator_performance:
+                click.echo(f"  Validators: {len(validator_performance)} analyzed 👤")
+                
+                for idx, val_data in list(validator_performance.items())[:3]:  # Show first 3
+                    if isinstance(val_data, dict):
+                        status = val_data.get('status', 'unknown')
+                        balance = val_data.get('balance')
+                        click.echo(f"    {idx}: {status}")
+                        if balance:
+                            balance_eth = int(balance) / 1000000000  # Gwei to ETH
+                            click.echo(f"      Balance: {balance_eth:.4f} ETH")
+                        
+                        perf_metrics = val_data.get('performance_metrics', {})
+                        if perf_metrics:
+                            client = perf_metrics.get('client', 'unknown')
+                            hit_rate = perf_metrics.get('attestation_hit_percentage')
+                            if hit_rate is not None:
+                                click.echo(f"      Attestation success: {hit_rate:.1f}% ({client})")
+        
+        # Log performance
+        log_data = results.get('log_performance', {})
+        if log_data and 'error' not in log_data:
+            click.echo(f"\n📋 LOG PERFORMANCE ANALYSIS:")
+            
+            for container, metrics in log_data.items():
+                if 'error' in metrics:
+                    continue
+                
+                click.echo(f"\n  📦 {container}:")
+                
+                # Attestation metrics
+                attestation_metrics = metrics.get('attestation_performance', {})
+                if attestation_metrics:
+                    success_rate = attestation_metrics.get('success_rate')
+                    successful = attestation_metrics.get('successful_attestations', 0)
+                    failed = attestation_metrics.get('failed_attestations', 0)
+                    
+                    if success_rate is not None:
+                        rate_emoji = "🟢" if success_rate >= 95 else "🟡" if success_rate >= 90 else "🔴"
+                        click.echo(f"    {rate_emoji} Attestations: {successful} success, {failed} failed ({success_rate:.1f}%)")
+                    
+                    avg_distance = attestation_metrics.get('average_inclusion_distance')
+                    if avg_distance:
+                        click.echo(f"    📏 Avg inclusion distance: {avg_distance:.1f}")
+                
+                # Error analysis
+                error_metrics = metrics.get('error_analysis', {})
+                total_errors = error_metrics.get('total_errors', 0)
+                critical_errors = error_metrics.get('critical_errors', 0)
+                
+                if total_errors > 0:
+                    error_emoji = "🔴" if critical_errors > 0 else "🟡"
+                    click.echo(f"    {error_emoji} Errors: {total_errors} total, {critical_errors} critical")
+                    
+                    # Show error categories
+                    error_categories = error_metrics.get('error_categories', {})
+                    for category, count in error_categories.items():
+                        if count > 0:
+                            click.echo(f"      {category}: {count}")
+                
+                # Resource metrics
+                resource_metrics = metrics.get('resource_performance', {})
+                memory_warnings = resource_metrics.get('memory_warnings', 0)
+                disk_warnings = resource_metrics.get('disk_warnings', 0)
+                
+                if memory_warnings > 0 or disk_warnings > 0:
+                    click.echo(f"    ⚠️  Resource warnings: {memory_warnings} memory, {disk_warnings} disk")
+        
+        # Alerts and recommendations
+        alerts = summary.get('alerts', [])
+        if alerts:
+            click.echo(f"\n🚨 ALERTS:")
+            for alert in alerts[:5]:  # Show first 5
+                severity = alert.get('severity', 'info')
+                message = alert.get('message', '')
+                severity_emoji = "🔴" if severity == 'critical' else "🟡" if severity == 'warning' else "🔵"
+                click.echo(f"  {severity_emoji} {message}")
+        
+        recommendations = summary.get('recommendations', [])
+        if recommendations:
+            click.echo(f"\n💡 RECOMMENDATIONS:")
+            for rec in recommendations[:5]:  # Show first 5
+                click.echo(f"  • {rec}")
+    
+    elif beacon_only:
+        # Beacon-only results
+        click.echo("\n🛰️  BEACON NODE PERFORMANCE ANALYSIS")
+        click.echo("=" * 40)
+        
+        if 'error' in results:
+            click.echo(f"❌ {results['error']}")
+            return
+        
+        # Display beacon node specific data
+        _display_beacon_performance(results)
+    
+    elif logs_only:
+        # Logs-only results  
+        click.echo("\n📋 LOG PERFORMANCE ANALYSIS")
+        click.echo("=" * 30)
+        
+        if 'error' in results:
+            click.echo(f"❌ {results['error']}")
+            return
+        
+        # Display log specific data
+        _display_log_performance(results)
+
+def _display_beacon_performance(beacon_data):
+    """Display beacon node performance data"""
+    # Implementation for beacon-only display
+    node_info = beacon_data.get('beacon_node_info', {})
+    if node_info:
+        click.echo(f"Health: {'✅ Healthy' if node_info.get('is_healthy') else '⚠️  Issues'}")
+        
+        version = node_info.get('version', {})
+        if version:
+            click.echo(f"Version: {version.get('version', 'Unknown')}")
+    
+    sync_status = beacon_data.get('sync_status', {})
+    if sync_status:
+        if sync_status.get('is_syncing'):
+            pct = sync_status.get('sync_percentage', 0)
+            click.echo(f"Sync: {pct:.1f}% complete 🔄")
+        else:
+            click.echo(f"Sync: Complete ✅")
+
+def _display_log_performance(log_data):
+    """Display log performance data"""
+    click.echo(f"Containers analyzed: {len(log_data)}")
+    
+    for container, metrics in log_data.items():
+        if 'error' in metrics:
+            continue
+        
+        click.echo(f"\n📦 {container}:")
+        
+        # Quick summary
+        total_lines = metrics.get('total_log_lines', 0)
+        click.echo(f"  Total log lines: {total_lines:,}")
+        
+        # Attestation summary
+        attestation_metrics = metrics.get('attestation_performance', {})
+        if attestation_metrics:
+            success_rate = attestation_metrics.get('success_rate')
+            if success_rate is not None:
+                click.echo(f"  Attestation success rate: {success_rate:.1f}%")
+        
+        # Error summary
+        error_metrics = metrics.get('error_analysis', {})
+        total_errors = error_metrics.get('total_errors', 0)
+        if total_errors > 0:
+            click.echo(f"  Total errors: {total_errors}")
+
+@cli.command(name='performance-live')
+@click.argument('node_name')
+@click.option('--interval', default=30, help='Update interval in seconds (default: 30)')
+def performance_live(node_name, interval):
+    """📊 Live validator performance monitoring"""
+    import time
+    import os
+    from datetime import datetime
+    
+    click.echo("📊 LIVE VALIDATOR PERFORMANCE MONITOR")
+    click.echo("=" * 50)
+    click.echo(f"🎯 Node: {node_name}")
+    click.echo(f"🔄 Update interval: {interval} seconds")
+    click.echo("=" * 50)
+    click.echo("Press Ctrl+C to stop monitoring")
+    click.echo()
+    
+    try:
+        from eth_validators.enhanced_performance_extractor import ValidatorPerformanceExtractor
+        extractor = ValidatorPerformanceExtractor()
+        
+        while True:
+            # Clear screen
+            os.system('clear' if os.name == 'posix' else 'cls')
+            
+            # Header
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            click.echo(f"📊 LIVE PERFORMANCE - {current_time}")
+            click.echo("=" * 60)
+            click.echo(f"🎯 Node: {node_name}")
+            click.echo()
+            
+            try:
+                # Quick performance check
+                node_config = None
+                for node in extractor.config.get('nodes', []):
+                    if node.get('name') == node_name:
+                        node_config = node
+                        break
+                
+                if not node_config:
+                    click.echo(f"❌ Node {node_name} not found")
+                    break
+                
+                # Basic beacon check
+                beacon_data = extractor._basic_beacon_health_check(node_config)
+                
+                if 'error' not in beacon_data:
+                    health_status = "🟢 Healthy" if beacon_data.get('is_healthy') else "🔴 Issues"
+                    click.echo(f"Beacon Node: {health_status}")
+                    
+                    sync_data = beacon_data.get('sync_status', {})
+                    if sync_data:
+                        if sync_data.get('is_syncing'):
+                            click.echo(f"Sync: 🔄 In progress")
+                        else:
+                            click.echo(f"Sync: ✅ Complete")
+                    
+                    click.echo(f"Last check: {current_time}")
+                else:
+                    click.echo(f"❌ Beacon check failed: {beacon_data['error']}")
+                
+                # Quick log analysis (last 5 minutes)
+                log_data = extractor.extract_log_performance_metrics(node_config, hours=0.083)  # 5 minutes
+                
+                click.echo("\n📋 Recent Activity (last 5 minutes):")
+                if log_data and 'error' not in log_data:
+                    for container, metrics in list(log_data.items())[:3]:  # Show first 3 containers
+                        if 'error' in metrics:
+                            continue
+                        
+                        attestation_metrics = metrics.get('attestation_performance', {})
+                        error_metrics = metrics.get('error_analysis', {})
+                        
+                        successful = attestation_metrics.get('successful_attestations', 0)
+                        failed = attestation_metrics.get('failed_attestations', 0)
+                        total_errors = error_metrics.get('total_errors', 0)
+                        
+                        status_emoji = "🟢" if total_errors == 0 and failed == 0 else "🟡" if total_errors < 5 else "🔴"
+                        click.echo(f"  {status_emoji} {container}: {successful} attestations, {total_errors} errors")
+                
+            except Exception as e:
+                click.echo(f"❌ Monitor update failed: {e}")
+            
+            click.echo(f"\n⏰ Next update in {interval} seconds... (Ctrl+C to stop)")
+            time.sleep(interval)
+            
+    except KeyboardInterrupt:
+        click.echo("\n\n🛑 Live monitoring stopped by user")
+    except Exception as e:
+        click.echo(f"\n❌ Live monitoring failed: {e}")
+
 @cli.command(name='ai-hybrid')
 @click.argument('node_name')
 @click.option('--disable-ml', is_flag=True, help='Disable machine learning components')

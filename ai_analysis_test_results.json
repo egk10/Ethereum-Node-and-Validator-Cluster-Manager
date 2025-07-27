@@ -1,0 +1,432 @@
+{
+  "node": "minipcamd",
+  "analysis_period_hours": 6,
+  "timestamp": "2025-07-27T19:41:23.099147",
+  "containers_analyzed": 8,
+  "container_analyses": {
+    "eth-docker-validator-1": {
+      "container": "eth-docker-validator-1",
+      "total_log_lines": 6223,
+      "pattern_matches": {
+        "block_proposal": 748,
+        "attestation_failed": 1079,
+        "attestation_success": 956,
+        "network_issues": 14,
+        "peer_issues": 16
+      },
+      "severity_score": 6828,
+      "error_patterns": [
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:09:02,501 - BeaconNode           - ERROR: Failed to get response from minitx.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:09:02,502 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:11:14,225 - BeaconNode           - ERROR: Failed to get response from minitx.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:11:14,225 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:13:38,861 - BeaconNode           - ERROR: Failed to get response from minipcamd2.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:13:38,861 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:33:50,474 - BeaconNode           - ERROR: Failed to get response from minitx.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:33:50,474 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:34:50,078 - BeaconNode           - ERROR: Failed to get response from minitx.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "2025-07-27 23:34:50,078 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "pattern": "Error.*attestation"
+        }
+      ],
+      "time_analysis": {
+        "first_log": "2025-07-27T13:41:35",
+        "last_log": "2025-07-27T23:41:25",
+        "total_events": 6222,
+        "event_rate_per_hour": 622.37,
+        "logging_gaps": []
+      },
+      "anomalies": [
+        {
+          "type": "high_error_rate",
+          "category": "attestation_failed",
+          "error_rate_percent": 17.34,
+          "error_count": 1079,
+          "severity": "high"
+        }
+      ],
+      "health_indicators": {
+        "success_operations": 1704,
+        "failed_operations": 1079,
+        "success_rate_percent": 61.23,
+        "sync_stability": "stable",
+        "peer_connectivity": "poor",
+        "resource_health": "healthy"
+      }
+    },
+    "eth-docker-execution-1": {
+      "container": "eth-docker-execution-1",
+      "total_log_lines": 20426,
+      "pattern_matches": {
+        "sync_issues": 120
+      },
+      "severity_score": 960,
+      "error_patterns": [
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.262 |      0.660 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.225 |      0.381 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.275 |      0.939 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.263 |      0.682 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.285 |      0.739 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.268 |      0.599 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.200 |      0.501 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.264 |      0.767 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.210 |      0.565 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        },
+        {
+          "category": "sync_issues",
+          "line": "eth_syncing                             |        20 |      0.228 |      1.055 |         0 |      0.000 |      0.000 |         44 |       0.86 |",
+          "pattern": "Syncing"
+        }
+      ],
+      "time_analysis": {
+        "error": "No timestamps found in logs"
+      },
+      "anomalies": [
+        {
+          "type": "repeated_error",
+          "error_message": "method                                  | successes |   avg (ms) |   max (ms) |    errors |   avg (m",
+          "occurrences": 120,
+          "severity": "high"
+        }
+      ],
+      "health_indicators": {
+        "success_operations": 0,
+        "failed_operations": 0,
+        "success_rate_percent": 0,
+        "sync_stability": "unstable",
+        "peer_connectivity": "good",
+        "resource_health": "healthy"
+      }
+    },
+    "charon-distributed-validator-node-charon-1": {
+      "container": "charon-distributed-validator-node-charon-1",
+      "total_log_lines": 1750,
+      "pattern_matches": {},
+      "severity_score": 0,
+      "error_patterns": [],
+      "time_analysis": {
+        "error": "No timestamps found in logs"
+      },
+      "anomalies": [],
+      "health_indicators": {
+        "success_operations": 0,
+        "failed_operations": 0,
+        "success_rate_percent": 0,
+        "sync_stability": "stable",
+        "peer_connectivity": "good",
+        "resource_health": "healthy"
+      }
+    },
+    "charon-distributed-validator-node-lodestar-1": {
+      "container": "charon-distributed-validator-node-lodestar-1",
+      "total_log_lines": 284,
+      "pattern_matches": {
+        "attestation_success": 183
+      },
+      "severity_score": -366,
+      "error_patterns": [],
+      "time_analysis": {
+        "error": "No timestamps found in logs"
+      },
+      "anomalies": [],
+      "health_indicators": {
+        "success_operations": 183,
+        "failed_operations": 0,
+        "success_rate_percent": 100.0,
+        "sync_stability": "stable",
+        "peer_connectivity": "good",
+        "resource_health": "healthy"
+      }
+    },
+    "eth-docker-consensus-1": {
+      "container": "eth-docker-consensus-1",
+      "total_log_lines": 9492,
+      "pattern_matches": {
+        "attestation_success": 2520,
+        "attestation_failed": 61,
+        "peer_issues": 304
+      },
+      "severity_score": -2606,
+      "error_patterns": [
+        {
+          "category": "attestation_failed",
+          "line": "NTC 2025-07-27 23:31:34.535+00:00 Attestation failed to match head           topics=\"chaindag\" epoch=382381 validator=a60a0bf4",
+          "pattern": "Attestation.*failed"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "NTC 2025-07-27 23:31:34.535+00:00 Attestation failed to match head           topics=\"chaindag\" epoch=382381 validator=8c0f9576",
+          "pattern": "Attestation.*failed"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "NTC 2025-07-27 23:31:34.535+00:00 Attestation failed to match head           topics=\"chaindag\" epoch=382381 validator=b5f194f9",
+          "pattern": "Attestation.*failed"
+        },
+        {
+          "category": "peer_issues",
+          "line": "NTC 2025-07-27 23:34:27.051+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 43, attester_index: 1958893, data: (slot: 12236270, index: 0, beacon_block_",
+          "pattern": "No peers"
+        },
+        {
+          "category": "peer_issues",
+          "line": "NTC 2025-07-27 23:34:27.051+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 43, attester_index: 1958893, data: (slot: 12236270, index: 0, beacon_block_",
+          "pattern": "No peers"
+        },
+        {
+          "category": "peer_issues",
+          "line": "NTC 2025-07-27 23:35:03.047+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 56, attester_index: 1958892, data: (slot: 12236273, index: 0, beacon_block_",
+          "pattern": "No peers"
+        },
+        {
+          "category": "peer_issues",
+          "line": "NTC 2025-07-27 23:35:03.047+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 56, attester_index: 1958892, data: (slot: 12236273, index: 0, beacon_block_",
+          "pattern": "No peers"
+        },
+        {
+          "category": "attestation_failed",
+          "line": "NTC 2025-07-27 23:37:58.609+00:00 Attestation failed to match head           topics=\"chaindag\" epoch=382382 validator=b2790d14",
+          "pattern": "Attestation.*failed"
+        },
+        {
+          "category": "peer_issues",
+          "line": "NTC 2025-07-27 23:40:03.055+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 33, attester_index: 1958893, data: (slot: 12236298, index: 0, beacon_block_",
+          "pattern": "No peers"
+        },
+        {
+          "category": "peer_issues",
+          "line": "NTC 2025-07-27 23:40:03.055+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 33, attester_index: 1958893, data: (slot: 12236298, index: 0, beacon_block_",
+          "pattern": "No peers"
+        }
+      ],
+      "time_analysis": {
+        "first_log": "2025-07-27T13:41:33",
+        "last_log": "2025-07-27T23:41:27",
+        "total_events": 9491,
+        "event_rate_per_hour": 949.26,
+        "logging_gaps": []
+      },
+      "anomalies": [],
+      "health_indicators": {
+        "success_operations": 2520,
+        "failed_operations": 61,
+        "success_rate_percent": 97.64,
+        "sync_stability": "stable",
+        "peer_connectivity": "poor",
+        "resource_health": "healthy"
+      }
+    },
+    "eth-docker-mev-boost-1": {
+      "container": "eth-docker-mev-boost-1",
+      "total_log_lines": 189,
+      "pattern_matches": {},
+      "severity_score": 0,
+      "error_patterns": [],
+      "time_analysis": {
+        "first_log": "2025-07-27T13:42:58",
+        "last_log": "2025-07-27T23:38:10",
+        "total_events": 188,
+        "event_rate_per_hour": 18.95,
+        "logging_gaps": []
+      },
+      "anomalies": [],
+      "health_indicators": {
+        "success_operations": 0,
+        "failed_operations": 0,
+        "success_rate_percent": 0,
+        "sync_stability": "stable",
+        "peer_connectivity": "good",
+        "resource_health": "healthy"
+      }
+    },
+    "charon-distributed-validator-node-grafana-1": {
+      "container": "charon-distributed-validator-node-grafana-1",
+      "total_log_lines": 171,
+      "pattern_matches": {},
+      "severity_score": 0,
+      "error_patterns": [],
+      "time_analysis": {
+        "first_log": "2025-07-27T13:44:07",
+        "last_log": "2025-07-27T23:34:07",
+        "total_events": 170,
+        "event_rate_per_hour": 17.29,
+        "logging_gaps": []
+      },
+      "anomalies": [],
+      "health_indicators": {
+        "success_operations": 0,
+        "failed_operations": 0,
+        "success_rate_percent": 0,
+        "sync_stability": "stable",
+        "peer_connectivity": "good",
+        "resource_health": "healthy"
+      }
+    },
+    "charon-distributed-validator-node-prometheus-1": {
+      "container": "charon-distributed-validator-node-prometheus-1",
+      "total_log_lines": 31,
+      "pattern_matches": {},
+      "severity_score": 0,
+      "error_patterns": [],
+      "time_analysis": {
+        "first_log": "2025-07-27T15:00:05",
+        "last_log": "2025-07-27T23:00:05",
+        "total_events": 30,
+        "event_rate_per_hour": 3.75,
+        "logging_gaps": [
+          {
+            "start": "2025-07-27T15:00:05",
+            "end": "2025-07-27T16:48:15",
+            "duration_minutes": 108.2
+          },
+          {
+            "start": "2025-07-27T16:48:15",
+            "end": "2025-07-27T17:00:05",
+            "duration_minutes": 11.8
+          },
+          {
+            "start": "2025-07-27T17:00:05",
+            "end": "2025-07-27T18:07:47",
+            "duration_minutes": 67.7
+          },
+          {
+            "start": "2025-07-27T18:07:47",
+            "end": "2025-07-27T19:00:05",
+            "duration_minutes": 52.3
+          },
+          {
+            "start": "2025-07-27T19:00:05",
+            "end": "2025-07-27T21:00:05",
+            "duration_minutes": 120.0
+          }
+        ]
+      },
+      "anomalies": [],
+      "health_indicators": {
+        "success_operations": 0,
+        "failed_operations": 0,
+        "success_rate_percent": 0,
+        "sync_stability": "stable",
+        "peer_connectivity": "good",
+        "resource_health": "healthy"
+      }
+    }
+  },
+  "overall_health_score": 30.0,
+  "alerts": [
+    {
+      "level": "critical",
+      "message": "Overall health score is low: 30.0/100",
+      "recommendation": "Immediate investigation required"
+    },
+    {
+      "level": "critical",
+      "message": "eth-docker-validator-1: high_error_rate",
+      "recommendation": "Check eth-docker-validator-1 logs immediately"
+    },
+    {
+      "level": "critical",
+      "message": "eth-docker-execution-1: repeated_error",
+      "recommendation": "Check eth-docker-execution-1 logs immediately"
+    }
+  ],
+  "recommendations": [
+    "Consider checking network connectivity and peer connections",
+    "Review firewall settings and network configuration",
+    "Schedule maintenance window to address accumulated issues"
+  ],
+  "performance_insights": {
+    "efficiency_trend": "declining",
+    "resource_utilization": "normal",
+    "network_performance": "good",
+    "predicted_issues": []
+  },
+  "beacon_performance": {
+    "beacon_node_info": {
+      "error": "('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"
+    },
+    "sync_status": {
+      "error": "('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"
+    },
+    "peer_info": {
+      "error": "('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"
+    },
+    "validator_performance": {},
+    "chain_info": {
+      "error": "('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))"
+    }
+  }
+}

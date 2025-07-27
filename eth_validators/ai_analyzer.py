@@ -2,6 +2,7 @@
 AI-powered log analyzer for Ethereum validators.
 Uses machine learning algorithms to analyze container logs and detect patterns,
 anomalies, and performance issues automatically.
+Enhanced with comprehensive beacon node performance data extraction.
 """
 import re
 import subprocess
@@ -16,10 +17,9 @@ from pathlib import Path
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
 
 class ValidatorLogAnalyzer:
-    """AI-powered analyzer for validator and consensus client logs."""
+    """AI-powered analyzer for validator and consensus client logs with enhanced performance extraction."""
     
-    def __init__(self, config=None):
-        self.config = config or {}
+    def __init__(self):
         self.log_patterns = {
             # Performance indicators
             'attestation_success': [
@@ -134,8 +134,16 @@ class ValidatorLogAnalyzer:
                 'overall_health_score': 0,
                 'alerts': [],
                 'recommendations': [],
-                'performance_insights': {}
+                'performance_insights': {},
+                'beacon_performance': {}  # New: Beacon node performance data
             }
+            
+            # Enhanced performance analysis with beacon node data
+            try:
+                beacon_performance = self._extract_beacon_performance(node_config)
+                analysis_results['beacon_performance'] = beacon_performance
+            except Exception as e:
+                analysis_results['beacon_performance'] = {'error': f'Beacon analysis failed: {e}'}
             
             total_severity = 0
             container_count = 0
@@ -153,6 +161,12 @@ class ValidatorLogAnalyzer:
                 avg_severity = total_severity / container_count
                 # Convert severity to health score (invert and normalize)
                 health_score = max(0, min(100, 100 - (avg_severity * 2)))
+                
+                # Factor in beacon performance if available
+                if 'error' not in analysis_results['beacon_performance']:
+                    beacon_health = self._calculate_beacon_health_score(analysis_results['beacon_performance'])
+                    health_score = (health_score + beacon_health) / 2
+                
                 analysis_results['overall_health_score'] = round(health_score, 1)
             
             # Generate insights and recommendations
@@ -164,6 +178,100 @@ class ValidatorLogAnalyzer:
             
         except Exception as e:
             return {'error': f'Analysis failed: {str(e)}'}
+
+    def _extract_beacon_performance(self, node_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract performance data from beacon node API"""
+        try:
+            from .enhanced_performance_extractor import ValidatorPerformanceExtractor
+            extractor = ValidatorPerformanceExtractor()
+            
+            # Get validator indices for this node
+            validator_indices = extractor._get_validator_indices_for_node(node_config.get('name'))
+            
+            # Extract beacon performance data
+            beacon_data = extractor.extract_beacon_node_performance(node_config, validator_indices)
+            
+            return beacon_data
+            
+        except ImportError:
+            # Fallback to basic beacon API queries if enhanced extractor not available
+            return self._basic_beacon_health_check(node_config)
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _basic_beacon_health_check(self, node_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Basic beacon node health check as fallback"""
+        try:
+            ssh_target = f"{node_config.get('ssh_user', 'root')}@{node_config['tailscale_domain']}"
+            beacon_port = node_config.get('beacon_api_port', 5052)
+            
+            # Simple health check via curl
+            health_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'curl -s --max-time 5 http://localhost:{beacon_port}/eth/v1/node/health'"
+            result = subprocess.run(health_cmd, shell=True, capture_output=True, text=True, timeout=15)
+            
+            is_healthy = result.returncode == 0
+            
+            # Get sync status
+            sync_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'curl -s --max-time 5 http://localhost:{beacon_port}/eth/v1/node/syncing'"
+            sync_result = subprocess.run(sync_cmd, shell=True, capture_output=True, text=True, timeout=15)
+            
+            sync_data = {}
+            if sync_result.returncode == 0:
+                try:
+                    sync_data = json.loads(sync_result.stdout).get('data', {})
+                except:
+                    pass
+            
+            return {
+                'basic_health_check': True,
+                'is_healthy': is_healthy,
+                'sync_status': sync_data,
+                'health_check_timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _calculate_beacon_health_score(self, beacon_data: Dict[str, Any]) -> float:
+        """Calculate health score from beacon node data"""
+        if 'error' in beacon_data:
+            return 50.0  # Neutral score if beacon data unavailable
+        
+        score = 100.0
+        
+        # Check basic health
+        if not beacon_data.get('is_healthy', True):
+            score -= 30
+        
+        # Check sync status
+        sync_status = beacon_data.get('sync_status', {})
+        if sync_status.get('is_syncing', False):
+            # Penalize based on sync distance
+            sync_distance = sync_status.get('sync_distance', 0)
+            if sync_distance > 100:  # Behind by more than 100 slots
+                score -= min(40, sync_distance / 10)
+        
+        # Check peer connectivity (if available)
+        peer_info = beacon_data.get('peer_info', {})
+        if peer_info:
+            connected_peers = peer_info.get('connected_peers', 0)
+            if connected_peers < 8:  # Minimum recommended peers
+                score -= (8 - connected_peers) * 5
+        
+        # Check validator performance (if available)
+        validator_performance = beacon_data.get('validator_performance', {})
+        if validator_performance:
+            for validator_data in validator_performance.values():
+                if isinstance(validator_data, dict) and 'performance_metrics' in validator_data:
+                    perf_metrics = validator_data['performance_metrics']
+                    
+                    # Factor in attestation success rate
+                    if 'attestation_hit_percentage' in perf_metrics:
+                        hit_rate = perf_metrics['attestation_hit_percentage']
+                        if hit_rate is not None and hit_rate < 95:
+                            score -= (95 - hit_rate) * 2
+        
+        return max(0, score)
 
     def _get_ethereum_containers(self, ssh_target: str) -> List[str]:
         """Get list of Ethereum-related containers on the node."""
@@ -456,207 +564,3 @@ def analyze_validator_performance_ai(node_name: str = None, hours: int = 24) -> 
             
         except Exception as e:
             return {'error': f'Multi-node analysis failed: {str(e)}'}
-
-    # Additional methods required by CLI integration
-    def analyze_node_performance(self, node_name: str, hours: int = 24, container_filter: str = None, min_severity: str = 'INFO') -> Dict[str, Any]:
-        """Analyze node performance with comprehensive AI analysis."""
-        try:
-            # Get node configuration
-            node_cfg = self._get_node_config(node_name)
-            if not node_cfg:
-                return {'error': f'Node {node_name} not found in configuration'}
-            
-            # Perform basic log analysis
-            basic_analysis = self.analyze_node_logs(node_name, hours)
-            
-            # Add AI-specific enhancements
-            enhanced_analysis = {
-                'node_name': node_name,
-                'analysis_period_hours': hours,
-                'timestamp': datetime.now().isoformat(),
-                'basic_analysis': basic_analysis,
-                'health_score': self._calculate_comprehensive_health_score(basic_analysis),
-                'anomalies': self._detect_comprehensive_anomalies(basic_analysis),
-                'error_patterns': self._analyze_error_patterns(basic_analysis),
-                'performance_insights': self._generate_performance_insights(basic_analysis),
-                'recommendations': self._generate_recommendations(basic_analysis)
-            }
-            
-            return enhanced_analysis
-            
-        except Exception as e:
-            return {'error': f'Analysis failed: {str(e)}'}
-
-    def calculate_health_score(self, node_name: str, hours: int = 24) -> Dict[str, Any]:
-        """Calculate comprehensive health score for a node."""
-        try:
-            analysis = self.analyze_node_logs(node_name, hours)
-            health_data = self._calculate_health_indicators(analysis.get('pattern_matches', {}))
-            
-            # Calculate overall score
-            overall_score = health_data.get('overall_health_score', 0)
-            
-            # Determine primary concern
-            primary_concern = 'None'
-            if overall_score < 70:
-                pattern_matches = analysis.get('pattern_matches', {})
-                error_count = sum(pattern_matches.get(key, 0) for key in pattern_matches if 'error' in key or 'failed' in key)
-                if error_count > 0:
-                    primary_concern = f'{error_count} errors detected'
-                else:
-                    primary_concern = 'Performance degradation'
-            
-            return {
-                'overall_score': overall_score,
-                'anomalies': self._detect_anomalies(analysis.get('pattern_matches', {}), analysis.get('recent_logs', [])),
-                'error_patterns': {'total_errors': sum(analysis.get('pattern_matches', {}).get(key, 0) for key in analysis.get('pattern_matches', {}) if 'error' in key)},
-                'warning_patterns': {'total_warnings': sum(analysis.get('pattern_matches', {}).get(key, 0) for key in analysis.get('pattern_matches', {}) if 'warning' in key)},
-                'primary_concern': primary_concern
-            }
-            
-        except Exception as e:
-            return {'overall_score': 0, 'error': str(e), 'primary_concern': 'Analysis failed'}
-
-    def detect_temporal_patterns(self, node_name: str, hours: int = 24, pattern_type: str = 'all') -> Dict[str, Any]:
-        """Detect temporal patterns in logs."""
-        try:
-            analysis = self.analyze_node_logs(node_name, hours)
-            
-            # Extract temporal data
-            timestamps = analysis.get('timestamps', [])
-            pattern_matches = analysis.get('pattern_matches', {})
-            
-            temporal_analysis = self._analyze_temporal_patterns(timestamps, pattern_matches)
-            
-            # Filter by pattern type if specified
-            if pattern_type != 'all':
-                filtered_patterns = {}
-                for key, value in temporal_analysis.items():
-                    if pattern_type.lower() in key.lower():
-                        filtered_patterns[key] = value
-                temporal_analysis = filtered_patterns
-            
-            return {
-                'temporal_patterns': [
-                    {
-                        'description': f'Pattern detected in {key}',
-                        'frequency': f'{value} occurrences',
-                        'confidence': min(100, (value / hours) * 10)  # Simple confidence calculation
-                    }
-                    for key, value in temporal_analysis.items() if value > 0
-                ],
-                'recurring_issues': [
-                    {
-                        'issue_type': key,
-                        'count': value,
-                        'impact': 'High' if value > hours else 'Medium' if value > hours/2 else 'Low'
-                    }
-                    for key, value in pattern_matches.items() if 'error' in key or 'failed' in key
-                ],
-                'performance_patterns': temporal_analysis
-            }
-            
-        except Exception as e:
-            return {'error': str(e)}
-
-    def generate_recommendations(self, node_name: str, focus_area: str = 'performance', hours: int = 48) -> Dict[str, Any]:
-        """Generate AI-powered recommendations."""
-        try:
-            analysis = self.analyze_node_logs(node_name, hours)
-            pattern_matches = analysis.get('pattern_matches', {})
-            
-            priority_recommendations = []
-            general_recommendations = []
-            config_suggestions = []
-            
-            # Analyze based on focus area
-            if focus_area in ['performance', 'all']:
-                # Performance recommendations
-                success_rate = self._calculate_success_rate(pattern_matches)
-                if success_rate < 95:
-                    priority_recommendations.append({
-                        'title': 'Low Attestation Success Rate',
-                        'description': f'Current success rate: {success_rate:.1f}%',
-                        'action': 'Check network connectivity and beacon node sync status'
-                    })
-                
-                if pattern_matches.get('sync_issues', 0) > 0:
-                    priority_recommendations.append({
-                        'title': 'Sync Issues Detected',
-                        'description': 'Node experiencing synchronization problems',
-                        'action': 'Restart consensus client and check peer connections'
-                    })
-            
-            if focus_area in ['reliability', 'all']:
-                # Reliability recommendations
-                error_count = sum(pattern_matches.get(key, 0) for key in pattern_matches if 'error' in key)
-                if error_count > hours:  # More than 1 error per hour
-                    priority_recommendations.append({
-                        'title': 'High Error Rate',
-                        'description': f'{error_count} errors in {hours} hours',
-                        'action': 'Review error logs and consider client update'
-                    })
-            
-            # General recommendations
-            general_recommendations.extend(self._generate_recommendations(analysis))
-            
-            # Configuration suggestions
-            if pattern_matches.get('memory_warnings', 0) > 0:
-                config_suggestions.append('Consider increasing memory allocation for containers')
-            if pattern_matches.get('peer_issues', 0) > 0:
-                config_suggestions.append('Review firewall and port configuration')
-            
-            return {
-                'priority': priority_recommendations,
-                'general': [{'title': rec, 'description': ''} for rec in general_recommendations],
-                'configuration': config_suggestions
-            }
-            
-        except Exception as e:
-            return {'error': str(e)}
-
-    def _get_node_config(self, node_name: str) -> Dict[str, Any]:
-        """Get node configuration from config."""
-        if not self.config:
-            return None
-        
-        nodes = self.config.get('nodes', [])
-        for node in nodes:
-            if node.get('name') == node_name or node.get('tailscale_domain') == node_name:
-                return node
-        return None
-
-    def _calculate_comprehensive_health_score(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate comprehensive health score."""
-        return self._calculate_health_indicators(analysis.get('pattern_matches', {}))
-
-    def _detect_comprehensive_anomalies(self, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Detect comprehensive anomalies."""
-        return self._detect_anomalies(analysis.get('pattern_matches', {}), analysis.get('recent_logs', []))
-
-    def _analyze_error_patterns(self, analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze error patterns in detail."""
-        pattern_matches = analysis.get('pattern_matches', {})
-        error_patterns = {}
-        total_errors = 0
-        
-        for key, count in pattern_matches.items():
-            if 'error' in key or 'failed' in key:
-                error_patterns[key] = count
-                total_errors += count
-        
-        return {
-            'total_errors': total_errors,
-            'patterns': error_patterns
-        }
-
-    def _calculate_success_rate(self, pattern_matches: Dict[str, int]) -> float:
-        """Calculate overall success rate."""
-        success = pattern_matches.get('attestation_success', 0)
-        failed = pattern_matches.get('attestation_failed', 0)
-        total = success + failed
-        
-        if total == 0:
-            return 100.0
-        
-        return (success / total) * 100
