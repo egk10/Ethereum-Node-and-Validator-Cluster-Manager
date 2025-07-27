@@ -587,6 +587,11 @@ def client_versions(node_name):
             cons_latest = version_info.get('consensus_latest', 'Unknown')
             cons_needs_update = version_info.get('consensus_needs_update', False)
             
+            val_client = version_info.get('validator_client', 'Unknown')
+            val_current = version_info.get('validator_current', 'Unknown')
+            val_latest = version_info.get('validator_latest', 'Unknown')
+            val_needs_update = version_info.get('validator_needs_update', False)
+            
             # Format compact client/version display
             if exec_client != "Unknown" and exec_current != "Unknown":
                 exec_display = f"{exec_client}/{exec_current}"
@@ -597,12 +602,18 @@ def client_versions(node_name):
                 cons_display = f"{cons_client}/{cons_current}"
             else:
                 cons_display = "Unknown"
+                
+            if val_client != "Unknown" and val_current not in ["Unknown", "Not Running"] and val_client != "Disabled":
+                val_display = f"{val_client}/{val_current}"
+            else:
+                val_display = "-"
             
             # Format latest versions compactly
             exec_latest_display = exec_latest if exec_latest != "Unknown" else "-"
             cons_latest_display = cons_latest if cons_latest != "Unknown" else "-"
+            val_latest_display = val_latest if val_latest not in ["Unknown", "Not Running"] and val_client != "Disabled" else "-"
             
-            # Add single row with both clients
+            # Add single row with all clients
             results.append([
                 node['name'],
                 exec_display,
@@ -610,21 +621,25 @@ def client_versions(node_name):
                 '🔄' if exec_needs_update else '✅',
                 cons_display,
                 cons_latest_display,
-                '🔄' if cons_needs_update else '✅'
+                '🔄' if cons_needs_update else '✅',
+                val_display,
+                val_latest_display,
+                '🔄' if val_needs_update else '✅' if val_display != "-" else '-'
             ])
         except Exception as e:
             click.echo(f"❌ Error checking {node['name']}: {e}")
-            results.append([node['name'], 'Error', '-', '❌', 'Error', '-', '❌'])
+            results.append([node['name'], 'Error', '-', '❌', 'Error', '-', '❌', 'Error', '-', '❌'])
     
     # Display results in table format
     if results:
-        headers = ['Node', 'Execution', 'Latest', '🔄', 'Consensus', 'Latest', '🔄']
+        headers = ['Node', 'Execution', 'Latest', '🔄', 'Consensus', 'Latest', '🔄', 'Validator', 'Latest', '🔄']
         click.echo("\n" + tabulate(results, headers=headers, tablefmt='grid'))
         
         # Summary
         nodes_needing_updates = set()
         exec_updates = 0
         cons_updates = 0
+        val_updates = 0
         
         for result in results:
             if result[3] == '🔄':  # Execution Update column
@@ -633,6 +648,9 @@ def client_versions(node_name):
             if result[6] == '🔄':  # Consensus Update column  
                 nodes_needing_updates.add(result[0])  # Node name
                 cons_updates += 1
+            if result[9] == '🔄':  # Validator Update column
+                nodes_needing_updates.add(result[0])  # Node name
+                val_updates += 1
         
         click.echo(f"\n📊 Summary:")
         if nodes_needing_updates:
@@ -641,6 +659,8 @@ def client_versions(node_name):
                 click.echo(f"⚡ Execution clients needing updates: {exec_updates}")
             if cons_updates > 0:
                 click.echo(f"⛵ Consensus clients needing updates: {cons_updates}")
+            if val_updates > 0:
+                click.echo(f"🔒 Validator clients needing updates: {val_updates}")
             click.echo(f"💡 Run 'python -m eth_validators upgrade <node>' to update specific nodes")
             click.echo(f"💡 Run 'python -m eth_validators upgrade-all' to update all nodes")
         else:

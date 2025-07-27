@@ -244,7 +244,7 @@ def get_docker_client_versions(node_config):
     """
     Checks current and latest versions of Ethereum clients running in Docker containers.
     Gets actual running container versions from Docker logs and compares with latest GitHub releases.
-    Returns information about execution client, consensus client, and whether updates are needed.
+    Returns information about execution client, consensus client, validator client, and whether updates are needed.
     """
     results = {}
     
@@ -252,6 +252,7 @@ def get_docker_client_versions(node_config):
     stack = node_config.get('stack', 'eth-docker')
     exec_client = node_config.get('exec_client', '')
     consensus_client = node_config.get('consensus_client', '')
+    validator_client = node_config.get('validator_client', '')
     
     if (stack == 'disabled' or 
         (not exec_client and not consensus_client) or
@@ -263,8 +264,12 @@ def get_docker_client_versions(node_config):
             'consensus_current': 'Disabled',
             'consensus_latest': 'N/A',
             'consensus_client': 'Disabled',
+            'validator_current': 'Disabled',
+            'validator_latest': 'N/A', 
+            'validator_client': 'Disabled',
             'execution_needs_update': False,
             'consensus_needs_update': False,
+            'validator_needs_update': False,
             'needs_client_update': False
         }
         return results
@@ -280,12 +285,16 @@ def get_docker_client_versions(node_config):
         # Initialize results
         execution_current = "Unknown"
         consensus_current = "Unknown"
+        validator_current = "Unknown"
         execution_client_name = "Unknown"
         consensus_client_name = "Unknown"
+        validator_client_name = "Unknown"
         execution_container = None
         consensus_container = None
+        validator_container = None
         execution_image = None
         consensus_image = None
+        validator_image = None
         
         # Parse running containers to identify clients and versions
         if containers_process.returncode == 0 and "Error" not in containers_process.stdout:
@@ -302,24 +311,45 @@ def get_docker_client_versions(node_config):
                         execution_container = container_name
                         execution_image = image
                     
-                    # Identify consensus clients
+                    # Identify consensus clients (beacon nodes)
                     elif any(cons_client in container_name.lower() for cons_client in 
-                             ['consensus', 'lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine']):
+                             ['consensus', 'lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine']) and 'validator' not in container_name.lower():
                         consensus_client_name = _identify_client_from_image(image, 'consensus')
                         consensus_container = container_name
                         consensus_image = image
+                    
+                    # Identify validator clients (separate from consensus)
+                    # Prioritize Lodestar validator containers in DVT setups if configured
+                    elif ('lodestar' in image.lower() and 'lodestar' in container_name.lower() and 
+                          consensus_container != container_name and 
+                          validator_client == "lodestar"):
+                        # Specific detection for Lodestar validator containers in DVT setups
+                        validator_client_name = "lodestar"
+                        validator_container = container_name
+                        validator_image = image
+                    elif (any(val_client in container_name.lower() for val_client in 
+                             ['validator', 'vc']) and 'grafana' not in container_name.lower() and 'prometheus' not in container_name.lower()):
+                        # Standard validator containers (only if no lodestar DVT already found)
+                        if not (validator_client == "lodestar" and validator_container):
+                            validator_client_name = _identify_client_from_image(image, 'validator')
+                            validator_container = container_name
+                            validator_image = image
         
         # Get actual versions from Docker logs, with fallback to image version and exec command
         if execution_container and execution_client_name != "Unknown":
-            execution_current = _get_client_version_from_logs(ssh_target, execution_container, execution_client_name)
-            # Fallback to image version if logs don't provide version
-            if execution_current in ["No Version Found", "Empty Logs", "Log Error"] or execution_current.startswith("Error:") or execution_current.startswith("Debug:"):
-                # Try to get version via docker exec command
+            # For certain clients, try docker exec first as it's more reliable than old logs
+            if execution_client_name.lower() in ['nethermind', 'reth', 'besu', 'geth']:
                 exec_version = _get_version_via_docker_exec(ssh_target, execution_container, execution_client_name)
-                if exec_version and exec_version not in ["Error", "Unknown"]:
+                if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
                     execution_current = exec_version
                 else:
-                    execution_current = _extract_image_version(f"image: {execution_image}")
+                    execution_current = _get_client_version_from_logs(ssh_target, execution_container, execution_client_name)
+            else:
+                execution_current = _get_client_version_from_logs(ssh_target, execution_container, execution_client_name)
+            
+            # Fallback to image version if both methods fail
+            if execution_current in ["No Version Found", "Empty Logs", "Log Error", "Error", "Unknown", "Exec Error"] or execution_current.startswith("Error:") or execution_current.startswith("Debug:"):
+                execution_current = _extract_image_version(f"image: {execution_image}")
         
         if consensus_container and consensus_client_name != "Unknown":
             consensus_current = _get_client_version_from_logs(ssh_target, consensus_container, consensus_client_name)
@@ -332,15 +362,55 @@ def get_docker_client_versions(node_config):
                 else:
                     consensus_current = _extract_image_version(f"image: {consensus_image}")
         
+        if validator_container and validator_client_name != "Unknown":
+            # For Lodestar in DVT setup, use special version detection first
+            if 'lodestar' in validator_client_name.lower():
+                validator_current = _get_lodestar_version_from_container(ssh_target, validator_container)
+            else:
+                validator_current = _get_client_version_from_logs(ssh_target, validator_container, validator_client_name)
+            
+            # Fallback to other methods if needed  
+            if validator_current in ["No Version Found", "Empty Logs", "Log Error", "Unknown"] or validator_current.startswith("Error:") or validator_current.startswith("Debug:"):
+                # Try to get version via docker exec command (for non-Lodestar clients)
+                if 'lodestar' not in validator_client_name.lower():
+                    exec_version = _get_version_via_docker_exec(ssh_target, validator_container, validator_client_name)
+                    if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
+                        validator_current = exec_version
+                
+                # Final fallback to image version
+                if validator_current in ["No Version Found", "Empty Logs", "Log Error", "Unknown", "Exec Error"]:
+                    validator_current = _extract_image_version(f"image: {validator_image}")
+        
+        # Handle case where validator client is configured but not detected as separate container
+        # This can happen in all-in-one setups or when config specifies a separate validator client
+        if validator_client and validator_current == "Unknown":
+            # If validator_client is specified in config but not found as separate container,
+            # check if it might be the same as consensus client (all-in-one setup)
+            if validator_client.lower() == consensus_client_name.lower():
+                validator_current = consensus_current
+                validator_client_name = consensus_client_name
+            else:
+                # Try to detect from configured validator_client name
+                validator_client_name = validator_client
+                # Special case for DVT setups where lodestar runs inside charon container
+                if validator_client.lower() == "lodestar" and consensus_container and "charon" in consensus_container.lower():
+                    validator_current = _get_lodestar_version_from_container(ssh_target, consensus_container)
+                else:
+                    validator_current = "Not Running"
+        
         # Get latest versions from GitHub releases
         execution_latest = "Unknown"
         consensus_latest = "Unknown"
+        validator_latest = "Unknown"
         
         if execution_client_name != "Unknown":
             execution_latest = _get_latest_github_release(execution_client_name)
         
         if consensus_client_name != "Unknown":
             consensus_latest = _get_latest_github_release(consensus_client_name)
+            
+        if validator_client_name != "Unknown" and validator_client_name != "Not Running":
+            validator_latest = _get_latest_github_release(validator_client_name)
         
         # Store results
         results['execution_current'] = execution_current
@@ -349,14 +419,19 @@ def get_docker_client_versions(node_config):
         results['consensus_current'] = consensus_current
         results['consensus_latest'] = consensus_latest
         results['consensus_client'] = consensus_client_name
+        results['validator_current'] = validator_current
+        results['validator_latest'] = validator_latest
+        results['validator_client'] = validator_client_name
         
         # Determine if updates are needed
         exec_needs_update = _version_needs_update(execution_current, execution_latest)
         consensus_needs_update = _version_needs_update(consensus_current, consensus_latest)
+        validator_needs_update = _version_needs_update(validator_current, validator_latest)
         
         results['execution_needs_update'] = exec_needs_update
         results['consensus_needs_update'] = consensus_needs_update
-        results['needs_client_update'] = exec_needs_update or consensus_needs_update
+        results['validator_needs_update'] = validator_needs_update
+        results['needs_client_update'] = exec_needs_update or consensus_needs_update or validator_needs_update
         
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         results['execution_current'] = "SSH Error"
@@ -365,8 +440,12 @@ def get_docker_client_versions(node_config):
         results['consensus_current'] = "SSH Error"  
         results['consensus_latest'] = "SSH Error"
         results['consensus_client'] = "Unknown"
+        results['validator_current'] = "SSH Error"
+        results['validator_latest'] = "SSH Error"
+        results['validator_client'] = "Unknown"
         results['execution_needs_update'] = False
         results['consensus_needs_update'] = False
+        results['validator_needs_update'] = False
         results['needs_client_update'] = False
     
     return results
@@ -381,7 +460,7 @@ def _get_version_via_docker_exec(ssh_target, container_name, client_name):
     # Client-specific version commands
     version_commands = {
         'geth': ['geth', 'version'],
-        'nethermind': ['nethermind', '--version'],
+        'nethermind': ['/nethermind/nethermind', '--version'],
         'reth': ['reth', '--version'], 
         'besu': ['besu', '--version'],
         'erigon': ['erigon', '--version'],
@@ -408,9 +487,10 @@ def _get_version_via_docker_exec(ssh_target, container_name, client_name):
             
             # Try to extract version from output
             version_patterns = [
-                r'v?(\d+\.\d+\.\d+)',
-                r'Version:?\s*v?(\d+\.\d+\.\d+)',
-                r'version\s*v?(\d+\.\d+\.\d+)'
+                r'Version:\s*(\d+\.\d+\.\d+)\+',  # Nethermind: "Version: 1.32.3+hash"
+                r'Version:\s*v?(\d+\.\d+\.\d+)',  # General: "Version: v1.32.3" or "Version: 1.32.3"
+                r'v?(\d+\.\d+\.\d+)',             # Simple: "v1.32.3" or "1.32.3"
+                r'version\s*v?(\d+\.\d+\.\d+)'    # General: "version v1.32.3"
             ]
             
             for pattern in version_patterns:
@@ -422,6 +502,54 @@ def _get_version_via_docker_exec(ssh_target, container_name, client_name):
         
     except Exception as e:
         return "Error"
+
+def _get_lodestar_version_from_container(ssh_target, container_name):
+    """
+    Special version detection for Lodestar in DVT/Charon setups.
+    Tries multiple methods to extract version information.
+    """
+    try:
+        # Try the Lodestar-specific version command first
+        lodestar_cmd = f"docker exec {container_name} /usr/app/node_modules/.bin/lodestar --version 2>/dev/null"
+        full_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{lodestar_cmd}'"
+        result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0 and result.stdout.strip():
+            output = result.stdout.strip()
+            # Parse version from Lodestar output like "Version: v1.32.0/8f56b55"
+            import re
+            version_match = re.search(r'Version:\s*v?(\d+\.\d+\.\d+)', output)
+            if version_match:
+                return version_match.group(1)
+        
+        # Fallback methods
+        fallback_commands = [
+            f"docker exec {container_name} cat package.json 2>/dev/null | grep '\"version\"' | head -1",
+            f"docker inspect {container_name} --format '{{{{.Config.Image}}}}' 2>/dev/null"
+        ]
+        
+        for cmd in fallback_commands:
+            full_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{cmd}'"
+            result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                output = result.stdout.strip()
+                
+                # Parse from package.json
+                if '"version"' in output:
+                    import re
+                    version_match = re.search(r'"version":\s*"([^"]+)"', output)
+                    if version_match:
+                        return version_match.group(1)
+                
+                # Parse from image tag
+                if ':' in output and 'lodestar' in output.lower():
+                    return _extract_image_version(f"image: {output}")
+        
+        return "Unknown"
+        
+    except Exception:
+        return "Unknown"
 
 def _get_client_version_from_logs(ssh_target, container_name, client_name):
     """
@@ -454,8 +582,9 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
                 r'Welcome to Geth.*?v(\d+\.\d+\.\d+)'
             ],
             'nethermind': [
+                r'Version: (\d+\.\d+\.\d+)\+',  # Match version with commit hash
+                r'Version: (\d+\.\d+\.\d+)',    # Match version without commit hash
                 r'Nethermind \((\d+\.\d+\.\d+)\)',
-                r'Version: (\d+\.\d+\.\d+)',
                 r'Nethermind v(\d+\.\d+\.\d+)',
                 r'Starting Nethermind (\d+\.\d+\.\d+)',
                 r'Nethermind Ethereum Client (\d+\.\d+\.\d+)'
@@ -591,7 +720,7 @@ def _identify_client_from_image(image, client_type):
         elif 'erigon' in image_lower:
             return 'erigon'
     
-    elif client_type == 'consensus':
+    elif client_type in ['consensus', 'validator']:
         if 'lighthouse' in image_lower:
             return 'lighthouse'
         elif 'prysm' in image_lower:
