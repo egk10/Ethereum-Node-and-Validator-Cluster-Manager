@@ -1204,6 +1204,202 @@ def _display_pattern_analysis(patterns, node_name, days, pattern_type):
     
     click.echo("="*80)
 
+@cli.command(name='ai-dashboard')
+@click.option('--port', default=8080, help='Port for the web dashboard (default: 8080)')
+@click.option('--host', default='localhost', help='Host for the web dashboard (default: localhost)')
+@click.option('--demo', is_flag=True, help='Start in demo mode without real analysis')
+def ai_dashboard(port, host, demo):
+    """🌐 Launch AI analysis web dashboard for visual monitoring"""
+    import webbrowser
+    import threading
+    import time
+    from pathlib import Path
+    
+    dashboard_server_path = Path(__file__).parent.parent / 'ai_dashboard_server.py'
+    
+    if not dashboard_server_path.exists():
+        click.echo("❌ Dashboard server not found. Please ensure ai_dashboard_server.py is in the project root.")
+        return
+    
+    click.echo("🧠 AI Validator Analysis Dashboard")
+    click.echo("="*50)
+    click.echo(f"🌐 Starting server on {host}:{port}...")
+    
+    if demo:
+        click.echo("🎭 Demo mode enabled - using simulated data")
+    else:
+        click.echo("🚀 Real analysis mode - connecting to your validators")
+    
+    dashboard_url = f"http://{host}:{port}"
+    click.echo(f"📊 Dashboard URL: {dashboard_url}")
+    click.echo("🚀 Press Ctrl+C to stop the server")
+    click.echo("="*50)
+    
+    # Auto-open browser after a short delay
+    def open_browser():
+        time.sleep(2)
+        try:
+            webbrowser.open(dashboard_url)
+            click.echo(f"🌐 Opened browser to {dashboard_url}")
+        except Exception as e:
+            click.echo(f"⚠️  Could not auto-open browser: {e}")
+            click.echo(f"📱 Please manually open: {dashboard_url}")
+    
+    browser_thread = threading.Thread(target=open_browser, daemon=True)
+    browser_thread.start()
+    
+    # Start the dashboard server
+    try:
+        import subprocess
+        import sys
+        
+        cmd = [sys.executable, str(dashboard_server_path), str(port)]
+        if demo:
+            cmd.append('--demo')
+            
+        subprocess.run(cmd)
+        
+    except KeyboardInterrupt:
+        click.echo("\n🛑 Dashboard server stopped by user")
+    except Exception as e:
+        click.echo(f"❌ Failed to start dashboard server: {e}")
+        click.echo("💡 Try running manually: python ai_dashboard_server.py")
+
+@cli.command(name='ai-hybrid')
+@click.argument('node_name')
+@click.option('--disable-ml', is_flag=True, help='Disable machine learning components')
+@click.option('--disable-llm', is_flag=True, help='Disable LLM components')
+@click.option('--hours', default=24, help='Hours of logs to analyze (default: 24)')
+@click.option('--export', help='Export results to JSON file')
+def ai_hybrid(node_name, disable_ml, disable_llm, hours, export):
+    """🧠 Advanced hybrid AI analysis combining Classical AI + ML + LLM"""
+    import json
+    from datetime import datetime
+    
+    click.echo("🧠 HYBRID AI VALIDATOR ANALYSIS")
+    click.echo("="*80)
+    click.echo(f"🎯 Target: {node_name}")
+    click.echo(f"⏱️  Timeframe: {hours} hours")
+    
+    # Show enabled components
+    components = []
+    components.append("🔧 Classical AI")
+    if not disable_ml:
+        components.append("🤖 Machine Learning")
+    if not disable_llm:
+        components.append("🧠 Large Language Model")
+    
+    click.echo(f"🚀 Active Components: {' + '.join(components)}")
+    click.echo("="*80)
+    
+    try:
+        # Try to import hybrid analyzer
+        try:
+            from eth_validators.hybrid_ai_analyzer import HybridValidatorAnalyzer
+            analyzer = HybridValidatorAnalyzer(
+                enable_ml=not disable_ml,
+                enable_llm=not disable_llm
+            )
+            hybrid_available = True
+        except ImportError as e:
+            click.echo(f"⚠️  Hybrid AI not fully available: {e}")
+            click.echo("📦 Falling back to classical AI analysis")
+            from eth_validators.ai_analyzer import ValidatorLogAnalyzer
+            analyzer = ValidatorLogAnalyzer()
+            hybrid_available = False
+        
+        # Show system status
+        if hybrid_available:
+            status = analyzer.get_system_status()
+            click.echo(f"\n📊 SYSTEM STATUS:")
+            for component, state in status.items():
+                icon = "✅" if state in ['Available', True] else "❌"
+                click.echo(f"  {icon} {component}: {state}")
+        
+        click.echo(f"\n🔍 Starting analysis...")
+        start_time = datetime.now()
+        
+        # Run analysis
+        if hybrid_available:
+            results = analyzer.analyze_node_comprehensive(node_name, hours)
+        else:
+            # Fallback to classical analysis
+            results = analyzer.analyze_node_logs(node_name, hours)
+            # Wrap in hybrid format
+            results = {
+                'timestamp': datetime.now().isoformat(),
+                'node': node_name,
+                'analysis_type': 'classical_only',
+                'classical_ai': results,
+                'combined_score': results.get('overall_health_score', 50),
+                'hybrid_recommendations': results.get('recommendations', [])
+            }
+        
+        analysis_time = (datetime.now() - start_time).total_seconds()
+        click.echo(f"✅ Analysis completed in {analysis_time:.1f} seconds")
+        
+        # Display results
+        _display_hybrid_results(results)
+        
+        # Export if requested
+        if export:
+            with open(export, 'w') as f:
+                json.dump(results, f, indent=2)
+            click.echo(f"💾 Results exported to: {export}")
+            
+    except Exception as e:
+        click.echo(f"❌ Hybrid analysis failed: {e}")
+        import traceback
+        click.echo(f"🔍 Debug info: {traceback.format_exc()}")
+
+def _display_hybrid_results(results):
+    """Display hybrid AI analysis results"""
+    click.echo("\n" + "="*80)
+    click.echo("🧠 HYBRID AI ANALYSIS RESULTS")
+    click.echo("="*80)
+    
+    # Combined score
+    combined_score = results.get('combined_score', 0)
+    score_color = "🟢" if combined_score >= 80 else "🟡" if combined_score >= 60 else "🔴"
+    click.echo(f"\n{score_color} COMBINED HEALTH SCORE: {combined_score}/100")
+    
+    # Classical AI results
+    classical = results.get('classical_ai', {})
+    if classical:
+        click.echo(f"\n🔧 CLASSICAL AI RESULTS:")
+        click.echo(f"  📊 Health Score: {classical.get('overall_health_score', 'N/A')}/100")
+        click.echo(f"  📦 Containers: {classical.get('containers_analyzed', 0)}")
+        click.echo(f"  🚨 Alerts: {len(classical.get('alerts', []))}")
+    
+    # ML results
+    ml = results.get('machine_learning', {})
+    if ml and not ml.get('error'):
+        click.echo(f"\n🤖 MACHINE LEARNING RESULTS:")
+        anomaly = ml.get('anomaly_detection', {})
+        if anomaly:
+            anomaly_status = "🚨 ANOMALY DETECTED" if anomaly.get('is_anomaly') else "✅ Normal Pattern"
+            click.echo(f"  {anomaly_status}")
+            click.echo(f"  📊 ML Health Score: {ml.get('ml_health_score', 'N/A')}/100")
+            click.echo(f"  🎯 Confidence: {anomaly.get('confidence', 'N/A')}%")
+    
+    # LLM results
+    llm = results.get('llm_insights', {})
+    if llm and not llm.get('error'):
+        click.echo(f"\n🧠 LLM INSIGHTS:")
+        if llm.get('summary'):
+            click.echo(f"  📝 Summary: {llm['summary'][:200]}...")
+        if llm.get('risk_assessment'):
+            click.echo(f"  ⚡ Risk: {llm['risk_assessment']}")
+    
+    # Hybrid recommendations
+    recommendations = results.get('hybrid_recommendations', [])
+    if recommendations:
+        click.echo(f"\n💡 HYBRID RECOMMENDATIONS:")
+        for i, rec in enumerate(recommendations[:8], 1):
+            click.echo(f"  {i}. {rec}")
+    
+    click.echo("="*80)
+
 def _display_recommendations(recommendations, node_name, focus):
     """Display AI-generated recommendations."""
     click.echo("\n" + "="*80)

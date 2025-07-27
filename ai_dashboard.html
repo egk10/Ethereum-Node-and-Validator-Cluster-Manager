@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧠 AI Validator Analysis Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .dashboard-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            animation: fadeInUp 1s ease-out;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4, #45b7d1);
+            background-size: 200% 200%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: gradientShift 3s ease-in-out infinite;
+        }
+
+        .status-panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            animation: fadeInUp 1s ease-out 0.2s both;
+        }
+
+        .ai-brain {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .brain-animation {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: radial-gradient(circle, #ff6b6b, #4ecdc4);
+            position: relative;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .brain-waves {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            animation: brainWaves 3s ease-in-out infinite;
+        }
+
+        .analysis-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .analysis-card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            animation: fadeInUp 1s ease-out var(--delay) both;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .analysis-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .card-icon {
+            font-size: 1.5rem;
+            margin-right: 10px;
+            animation: bounce 2s ease-in-out infinite;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #ff6b6b, #4ecdc4, #45b7d1);
+            background-size: 200% 100%;
+            animation: progressMove 2s ease-in-out infinite;
+            border-radius: 4px;
+        }
+
+        .log-stream {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+            opacity: 0;
+            animation: fadeIn 0.5s ease-out forwards;
+        }
+
+        .log-info { color: #4ecdc4; }
+        .log-warning { color: #ffd93d; }
+        .log-error { color: #ff6b6b; }
+        .log-success { color: #6bcf7f; }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .metric-card {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .recommendations {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 20px;
+            margin-top: 20px;
+            animation: fadeInUp 1s ease-out 1s both;
+        }
+
+        .recommendation-item {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 10px 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-left: 4px solid #4ecdc4;
+            animation: slideInLeft 0.5s ease-out var(--delay) both;
+        }
+
+        /* Animations */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideInLeft {
+            from {
+                opacity: 0;
+                transform: translateX(-30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+
+        @keyframes brainWaves {
+            0% {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 1;
+            }
+            100% {
+                transform: translate(-50%, -50%) scale(2);
+                opacity: 0;
+            }
+        }
+
+        @keyframes gradientShift {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        @keyframes progressMove {
+            0% { background-position: -200% 0; }
+            100% { background-position: 200% 0; }
+        }
+
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-10px); }
+            60% { transform: translateY(-5px); }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .dashboard-container {
+                padding: 10px;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .analysis-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Custom scrollbar */
+        .log-stream::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .log-stream::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+        }
+
+        .log-stream::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+        }
+
+        .log-stream::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="header">
+            <h1>🧠 AI Validator Analysis Dashboard</h1>
+            <p>Real-time AI-powered Ethereum validator monitoring and analysis</p>
+        </div>
+
+        <div class="status-panel">
+            <div class="ai-brain">
+                <div class="brain-animation">
+                    <div class="brain-waves"></div>
+                </div>
+            </div>
+            <div style="text-align: center;">
+                <h3 id="ai-status">🔍 AI Analysis Engine: Ready</h3>
+                <div style="margin: 15px 0;">
+                    <button id="start-real-analysis" onclick="startRealAnalysis()" 
+                            style="background: linear-gradient(45deg, #ff6b6b, #4ecdc4); color: white; border: none; padding: 12px 24px; border-radius: 8px; font-size: 1rem; cursor: pointer; margin: 0 10px;">
+                        🚀 Start Real AI Analysis
+                    </button>
+                    <button id="start-demo-analysis" onclick="startDemoAnalysis()" 
+                            style="background: linear-gradient(45deg, #45b7d1, #96d1ff); color: white; border: none; padding: 12px 24px; border-radius: 8px; font-size: 1rem; cursor: pointer; margin: 0 10px;">
+                        🎭 Demo Analysis
+                    </button>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="main-progress" style="width: 0%"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="analysis-grid">
+            <div class="analysis-card" style="--delay: 0.3s">
+                <div class="card-header">
+                    <span class="card-icon">📊</span>
+                    <h3>Pattern Recognition</h3>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="pattern-progress" style="width: 0%"></div>
+                </div>
+                <div class="log-stream" id="pattern-logs"></div>
+            </div>
+
+            <div class="analysis-card" style="--delay: 0.5s">
+                <div class="card-header">
+                    <span class="card-icon">🚨</span>
+                    <h3>Anomaly Detection</h3>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="anomaly-progress" style="width: 0%"></div>
+                </div>
+                <div class="log-stream" id="anomaly-logs"></div>
+            </div>
+
+            <div class="analysis-card" style="--delay: 0.7s">
+                <div class="card-header">
+                    <span class="card-icon">🏥</span>
+                    <h3>Health Scoring</h3>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="health-progress" style="width: 0%"></div>
+                </div>
+                <div class="log-stream" id="health-logs"></div>
+            </div>
+
+            <div class="analysis-card" style="--delay: 0.9s">
+                <div class="card-header">
+                    <span class="card-icon">🕐</span>
+                    <h3>Temporal Analysis</h3>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="temporal-progress" style="width: 0%"></div>
+                </div>
+                <div class="log-stream" id="temporal-logs"></div>
+            </div>
+        </div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-value" id="nodes-analyzed">0</div>
+                <div>Nodes Analyzed</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="patterns-found">0</div>
+                <div>Patterns Found</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="anomalies-detected">0</div>
+                <div>Anomalies Detected</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="avg-health">--</div>
+                <div>Avg Health Score</div>
+            </div>
+        </div>
+
+        <div class="recommendations" id="recommendations-panel" style="display: none;">
+            <h3>💡 AI Recommendations</h3>
+            <div id="recommendations-list"></div>
+        </div>
+    </div>
+
+    <script>
+        class AIAnalysisDashboard {
+            constructor() {
+                this.currentStep = 0;
+                this.isRealAnalysis = false;
+                this.pollInterval = null;
+                this.steps = [
+                    { name: 'Initializing AI Engine', duration: 2000 },
+                    { name: 'Loading Node Configurations', duration: 1500 },
+                    { name: 'Establishing SSH Connections', duration: 2000 },
+                    { name: 'Collecting Container Logs', duration: 3000 },
+                    { name: 'Pattern Recognition Analysis', duration: 4000 },
+                    { name: 'Anomaly Detection Processing', duration: 3500 },
+                    { name: 'Health Score Calculation', duration: 2500 },
+                    { name: 'Temporal Pattern Analysis', duration: 3000 },
+                    { name: 'Generating Recommendations', duration: 2000 },
+                    { name: 'Analysis Complete', duration: 1000 }
+                ];
+                this.metrics = {
+                    nodes: 0,
+                    patterns: 0,
+                    anomalies: 0,
+                    healthScores: []
+                };
+                this.init();
+            }
+
+            init() {
+                // Check server status on load
+                this.checkServerStatus();
+            }
+
+            async checkServerStatus() {
+                try {
+                    const response = await fetch('/api/status');
+                    const status = await response.json();
+                    
+                    if (status.analyzer_ready) {
+                        document.getElementById('ai-status').textContent = '✅ AI Analysis Engine: Ready';
+                        document.getElementById('start-real-analysis').disabled = false;
+                    }
+                } catch (error) {
+                    console.log('Server not available, using demo mode only');
+                    document.getElementById('ai-status').textContent = '🎭 Demo Mode Only (Server not connected)';
+                    document.getElementById('start-real-analysis').disabled = true;
+                }
+            }
+
+            async startRealAnalysis() {
+                try {
+                    document.getElementById('start-real-analysis').disabled = true;
+                    document.getElementById('start-demo-analysis').disabled = true;
+                    
+                    const response = await fetch('/api/start-analysis');
+                    const result = await response.json();
+                    
+                    if (result.status === 'started') {
+                        this.isRealAnalysis = true;
+                        this.pollRealAnalysis();
+                    }
+                } catch (error) {
+                    console.error('Failed to start real analysis:', error);
+                    alert('Failed to start real analysis. Server may not be running.');
+                    this.enableButtons();
+                }
+            }
+
+            pollRealAnalysis() {
+                this.pollInterval = setInterval(async () => {
+                    try {
+                        const response = await fetch('/api/status');
+                        const status = await response.json();
+                        
+                        if (status.progress) {
+                            this.updateRealProgress(status.progress);
+                        }
+                        
+                        // Check if analysis is complete
+                        if (status.progress && status.progress.step >= 8) {
+                            clearInterval(this.pollInterval);
+                            this.loadRealResults();
+                        }
+                    } catch (error) {
+                        console.error('Failed to poll status:', error);
+                    }
+                }, 1000);
+            }
+
+            updateRealProgress(progress) {
+                document.getElementById('ai-status').textContent = `🧠 ${progress.current_step}...`;
+                document.getElementById('main-progress').style.width = `${progress.progress_percent}%`;
+                
+                // Update metrics
+                if (progress.nodes_analyzed) {
+                    document.getElementById('nodes-analyzed').textContent = progress.nodes_analyzed;
+                }
+                if (progress.patterns_found) {
+                    document.getElementById('patterns-found').textContent = progress.patterns_found;
+                }
+                if (progress.anomalies_detected) {
+                    document.getElementById('anomalies-detected').textContent = progress.anomalies_detected;
+                }
+                if (progress.health_scores && progress.health_scores.length > 0) {
+                    const avgHealth = progress.health_scores.reduce((a, b) => a + b, 0) / progress.health_scores.length;
+                    document.getElementById('avg-health').textContent = `${avgHealth.toFixed(1)}%`;
+                }
+            }
+
+            async loadRealResults() {
+                try {
+                    const response = await fetch('/api/analysis-data');
+                    const data = await response.json();
+                    
+                    if (data.results) {
+                        this.displayRealResults(data);
+                    }
+                    
+                    this.enableButtons();
+                } catch (error) {
+                    console.error('Failed to load results:', error);
+                    this.enableButtons();
+                }
+            }
+
+            displayRealResults(data) {
+                // Update status
+                document.getElementById('ai-status').textContent = '✅ Real AI Analysis Complete!';
+                
+                // Display real logs in containers
+                Object.entries(data.results).forEach(([nodeName, nodeData], index) => {
+                    const containers = ['pattern-logs', 'anomaly-logs', 'health-logs', 'temporal-logs'];
+                    const container = document.getElementById(containers[index % containers.length]);
+                    
+                    if (container) {
+                        const logEntry = document.createElement('div');
+                        logEntry.className = 'log-entry log-info';
+                        logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${nodeName}: Health ${nodeData.health_score || 'N/A'}%`;
+                        container.appendChild(logEntry);
+                        container.scrollTop = container.scrollHeight;
+                    }
+                });
+                
+                // Show real recommendations
+                if (data.recommendations) {
+                    this.showRealRecommendations(data.recommendations);
+                }
+            }
+
+            showRealRecommendations(recommendations) {
+                const panel = document.getElementById('recommendations-panel');
+                const list = document.getElementById('recommendations-list');
+                
+                // Clear existing recommendations
+                list.innerHTML = '';
+                panel.style.display = 'block';
+                
+                recommendations.forEach((rec, index) => {
+                    setTimeout(() => {
+                        const item = document.createElement('div');
+                        item.className = 'recommendation-item';
+                        item.style.setProperty('--delay', `${index * 0.2}s`);
+                        item.textContent = rec.message || rec;
+                        list.appendChild(item);
+                    }, index * 300);
+                });
+            }
+
+            enableButtons() {
+                document.getElementById('start-real-analysis').disabled = false;
+                document.getElementById('start-demo-analysis').disabled = false;
+            }
+
+            startDemoAnalysis() {
+                document.getElementById('start-real-analysis').disabled = true;
+                document.getElementById('start-demo-analysis').disabled = true;
+                this.isRealAnalysis = false;
+                this.currentStep = 0;
+                this.runStep();
+            }
+
+            runStep() {
+                if (this.currentStep >= this.steps.length) {
+                    this.showRecommendations();
+                    this.enableButtons();
+                    return;
+                }
+
+                const step = this.steps[this.currentStep];
+                document.getElementById('ai-status').textContent = `🧠 ${step.name}...`;
+                
+                // Update main progress
+                const progress = ((this.currentStep + 1) / this.steps.length) * 100;
+                document.getElementById('main-progress').style.width = `${progress}%`;
+
+                // Simulate step-specific processing
+                this.simulateStepProcessing(this.currentStep);
+
+                setTimeout(() => {
+                    this.currentStep++;
+                    this.runStep();
+                }, step.duration);
+            }
+
+            simulateStepProcessing(stepIndex) {
+                switch(stepIndex) {
+                    case 4: // Pattern Recognition
+                        this.simulatePatternRecognition();
+                        break;
+                    case 5: // Anomaly Detection
+                        this.simulateAnomalyDetection();
+                        break;
+                    case 6: // Health Scoring
+                        this.simulateHealthScoring();
+                        break;
+                    case 7: // Temporal Analysis
+                        this.simulateTemporalAnalysis();
+                        break;
+                }
+            }
+
+            simulatePatternRecognition() {
+                const logs = document.getElementById('pattern-logs');
+                const patterns = [
+                    'Analyzing attestation success patterns...',
+                    'Found 2672 successful attestations',
+                    'Detected 2998 failed attestations - investigating',
+                    'Block proposal patterns: 2098 successful',
+                    'Network connectivity patterns identified',
+                    'Sync patterns analyzed across timeframe'
+                ];
+
+                this.animateProgress('pattern-progress', 100, 3000);
+                this.streamLogs(logs, patterns, 'log-info', 500);
+                
+                // Update metrics
+                setTimeout(() => {
+                    this.metrics.patterns += 15;
+                    document.getElementById('patterns-found').textContent = this.metrics.patterns;
+                }, 2000);
+            }
+
+            simulateAnomalyDetection() {
+                const logs = document.getElementById('anomaly-logs');
+                const anomalies = [
+                    'Scanning for statistical anomalies...',
+                    '⚠️ High error rate detected: attestation_failed (15.2%)',
+                    '🚨 Anomaly: Repeated connection timeouts',
+                    'Peer connectivity issues identified',
+                    'Logging gaps detected in multiple containers',
+                    'Anomaly analysis complete'
+                ];
+
+                this.animateProgress('anomaly-progress', 100, 3000);
+                this.streamLogs(logs, anomalies, ['log-info', 'log-warning', 'log-error', 'log-warning', 'log-warning', 'log-success'], 600);
+                
+                // Update metrics
+                setTimeout(() => {
+                    this.metrics.anomalies += 7;
+                    document.getElementById('anomalies-detected').textContent = this.metrics.anomalies;
+                }, 2500);
+            }
+
+            simulateHealthScoring() {
+                const logs = document.getElementById('health-logs');
+                const health = [
+                    'Calculating health scores using weighted metrics...',
+                    'minipcamd: Health Score 15.3% (Critical)',
+                    'minipcamd2: Health Score 22.1% (Critical)', 
+                    'minipcamd3: Health Score 98.7% (Excellent)',
+                    'minitx: Health Score 8.9% (Critical)',
+                    'orangepi5-plus: Health Score 95.2% (Excellent)'
+                ];
+
+                this.animateProgress('health-progress', 100, 2500);
+                this.streamLogs(logs, health, ['log-info', 'log-error', 'log-error', 'log-success', 'log-error', 'log-success'], 400);
+                
+                // Update metrics
+                setTimeout(() => {
+                    this.metrics.nodes = 5;
+                    this.metrics.healthScores = [15.3, 22.1, 98.7, 8.9, 95.2];
+                    document.getElementById('nodes-analyzed').textContent = this.metrics.nodes;
+                    const avgHealth = this.metrics.healthScores.reduce((a, b) => a + b, 0) / this.metrics.healthScores.length;
+                    document.getElementById('avg-health').textContent = `${avgHealth.toFixed(1)}%`;
+                }, 2000);
+            }
+
+            simulateTemporalAnalysis() {
+                const logs = document.getElementById('temporal-logs');
+                const temporal = [
+                    'Analyzing temporal patterns across 24h window...',
+                    'Event frequency: 247.3 events/hour average',
+                    'Peak activity detected: 14:30-16:45 UTC',
+                    'Recurring pattern: Sync issues every 4.7 hours',
+                    'Performance degradation trend identified',
+                    'Temporal analysis complete'
+                ];
+
+                this.animateProgress('temporal-progress', 100, 2800);
+                this.streamLogs(logs, temporal, 'log-info', 450);
+            }
+
+            streamLogs(container, logs, classes, delay) {
+                logs.forEach((log, index) => {
+                    setTimeout(() => {
+                        const logEntry = document.createElement('div');
+                        logEntry.className = 'log-entry';
+                        
+                        if (Array.isArray(classes)) {
+                            logEntry.classList.add(classes[index] || 'log-info');
+                        } else {
+                            logEntry.classList.add(classes);
+                        }
+                        
+                        logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${log}`;
+                        container.appendChild(logEntry);
+                        container.scrollTop = container.scrollHeight;
+                        
+                        // Limit log entries
+                        while (container.children.length > 8) {
+                            container.removeChild(container.firstChild);
+                        }
+                    }, index * delay);
+                });
+            }
+
+            animateProgress(elementId, targetWidth, duration) {
+                const element = document.getElementById(elementId);
+                let width = 0;
+                const increment = targetWidth / (duration / 50);
+                
+                const interval = setInterval(() => {
+                    width += increment;
+                    element.style.width = `${Math.min(width, targetWidth)}%`;
+                    
+                    if (width >= targetWidth) {
+                        clearInterval(interval);
+                    }
+                }, 50);
+            }
+
+            showRecommendations() {
+                const panel = document.getElementById('recommendations-panel');
+                const list = document.getElementById('recommendations-list');
+                
+                const recommendations = [
+                    '🔧 Critical: Investigate attestation failure patterns on minipcamd and minitx',
+                    '🌐 Network: Review firewall settings and peer connectivity configuration',
+                    '📊 Performance: Consider increasing resource allocation for critical nodes',
+                    '🕐 Maintenance: Schedule maintenance window during low-activity period (02:00-06:00 UTC)',
+                    '🔍 Monitoring: Set up automated alerts for health scores below 50%'
+                ];
+
+                panel.style.display = 'block';
+                
+                recommendations.forEach((rec, index) => {
+                    setTimeout(() => {
+                        const item = document.createElement('div');
+                        item.className = 'recommendation-item';
+                        item.style.setProperty('--delay', `${index * 0.2}s`);
+                        item.textContent = rec;
+                        list.appendChild(item);
+                    }, index * 300);
+                });
+
+                // Update final status
+                setTimeout(() => {
+                    document.getElementById('ai-status').textContent = '✅ Demo Analysis Complete!';
+                }, 1000);
+            }
+        }
+
+        // Global functions for buttons
+        let dashboard;
+
+        function startRealAnalysis() {
+            dashboard.startRealAnalysis();
+        }
+
+        function startDemoAnalysis() {
+            dashboard.startDemoAnalysis();
+        }
+
+        // Initialize the dashboard when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            dashboard = new AIAnalysisDashboard();
+        });
+    </script>
+</body>
+</html>

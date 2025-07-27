@@ -29,7 +29,14 @@ Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamen
 
 4. **Instale as dependências do projeto:**
     ```bash
+    # Core dependencies (required)
     pip install -r requirements.txt
+    
+    # Optional: ML dependencies for hybrid AI
+    pip install -r requirements-ml.txt
+    
+    # Optional: LLM support (local)
+    pip install ollama-python
     ```
 
 
