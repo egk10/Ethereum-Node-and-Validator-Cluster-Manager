@@ -1,6 +1,9 @@
 import click
 import yaml
 import subprocess
+import time
+import csv
+import json
 from pathlib import Path
 from tabulate import tabulate
 import re
@@ -9,6 +12,8 @@ from .config import get_node_config, get_all_node_configs
 from .performance import get_performance_summary
 from .node_manager import get_node_status, upgrade_node_docker_clients, get_system_update_status, perform_system_upgrade, get_docker_client_versions
 from .ai_analyzer import ValidatorLogAnalyzer
+from .validator_sync import ValidatorSyncManager, get_active_validators_only
+from .validator_editor import InteractiveValidatorEditor
 
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
 
@@ -39,6 +44,12 @@ def node_group():
 @cli.group(name='system')
 def system_group():
     """⚙️ System updates and maintenance"""
+    pass
+
+# Validator Management Group
+@cli.group(name='validator')
+def validator_group():
+    """👥 Validator lifecycle and status management"""
     pass
 
 @node_group.command(name='list')
@@ -2057,6 +2068,575 @@ def list_alias():
     click.echo(f"  🔧 Node analysis: python -m eth_validators node analyze <node_name>")
     click.echo(f"  🧠 AI analysis: python -m eth_validators ai analyze <node_name>")
     click.echo("=" * 80)
+
+# ============================================================================
+# VALIDATOR MANAGEMENT COMMANDS
+# ============================================================================
+
+@validator_group.command(name='sync')
+@click.option('--nodes', help='Comma-separated list of node names to check (default: all active nodes)')
+@click.option('--dry-run', is_flag=True, help='Show what would be updated without making changes')
+def sync_validators(nodes, dry_run):
+    """🔄 Sync validator CSV with current beacon node statuses"""
+    
+    node_list = nodes.split(',') if nodes else None
+    
+    if dry_run:
+        click.echo("🔍 DRY RUN MODE - No changes will be made")
+    
+    try:
+        manager = ValidatorSyncManager()
+        
+        if dry_run:
+            # Just show what we would do
+            validators = manager.load_current_csv()
+            
+            # Get nodes to check (same logic as actual sync)
+            if node_list:
+                target_nodes = [n for n in manager.config['nodes'] if n['name'] in node_list]
+            else:
+                target_nodes = [n for n in manager.config['nodes'] if n.get('stack') != 'disabled']
+            
+            click.echo(f"Would check {len(validators)} validators across {len(target_nodes)} nodes:")
+            
+            for node_config in target_nodes:
+                node_validators = manager.get_validators_for_node(node_config['name'], validators)
+                click.echo(f"  {node_config['name']}: {len(node_validators)} validators")
+        else:
+            result = manager.sync_validators(node_list)
+            
+            if not result.get('success'):
+                click.echo(f"❌ Sync failed: {result.get('error')}")
+                return
+                
+    except Exception as e:
+        click.echo(f"❌ Error during sync: {e}")
+
+@validator_group.command(name='status')
+@click.option('--show-exited', is_flag=True, help='Include exited validators in the output')
+@click.option('--node', help='Show validators for specific node only')
+def validator_status(show_exited, node):
+    """📊 Show current validator status summary"""
+    
+    try:
+        # Try to get active validators first
+        if show_exited:
+            # Load all validators
+            manager = ValidatorSyncManager()
+            validators = manager.load_current_csv()
+        else:
+            # Get only active validators
+            validators = get_active_validators_only()
+            if not validators:
+                # Fallback to all validators if filter fails
+                manager = ValidatorSyncManager()
+                validators = manager.load_current_csv()
+        
+        if not validators:
+            click.echo("❌ No validators found in CSV")
+            return
+        
+        # Filter by node if specified
+        if node:
+            validators = [v for v in validators if node in v.get('tailscale dns', '')]
+            click.echo(f"📋 Validators on {node}:")
+        else:
+            click.echo("📋 VALIDATOR STATUS SUMMARY")
+            click.echo("=" * 60)
+        
+        # Group by status
+        status_counts = {}
+        protocol_counts = {}
+        node_counts = {}
+        
+        for validator in validators:
+            # Count by status
+            status = validator.get('current_status', 'unknown')
+            status_counts[status] = status_counts.get(status, 0) + 1
+            
+            # Count by protocol
+            protocol = validator.get('Protocol', 'unknown')
+            protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
+            
+            # Count by node
+            node_domain = validator.get('tailscale dns', 'unknown')
+            node_counts[node_domain] = node_counts.get(node_domain, 0) + 1
+        
+        # Display summary
+        click.echo(f"\n📊 TOTAL VALIDATORS: {len(validators)}")
+        
+        if status_counts:
+            click.echo(f"\n🔄 Status Distribution:")
+            for status, count in sorted(status_counts.items()):
+                click.echo(f"  • {status}: {count}")
+        
+        if protocol_counts:
+            click.echo(f"\n🏢 Protocol Distribution:")
+            for protocol, count in sorted(protocol_counts.items()):
+                click.echo(f"  • {protocol}: {count}")
+        
+        if node_counts and not node:
+            click.echo(f"\n🖥️ Node Distribution:")
+            for node_domain, count in sorted(node_counts.items()):
+                click.echo(f"  • {node_domain}: {count}")
+        
+        # Show filtering info
+        if not show_exited:
+            click.echo(f"\n💡 Showing active validators only. Use --show-exited to include all.")
+            
+    except Exception as e:
+        click.echo(f"❌ Error getting validator status: {e}")
+
+@validator_group.command(name='list-active')
+@click.option('--format', type=click.Choice(['table', 'csv', 'json']), default='table', help='Output format')
+@click.option('--protocol', help='Filter by protocol (e.g., CSM LIDO, Rocketpool)')
+@click.option('--node', help='Filter by node name')
+def list_active_validators(format, protocol, node):
+    """📋 List all active validators with details"""
+    
+    try:
+        validators = get_active_validators_only()
+        
+        if not validators:
+            click.echo("❌ No active validators found")
+            return
+        
+        # Apply filters
+        if protocol:
+            validators = [v for v in validators if protocol.lower() in v.get('Protocol', '').lower()]
+        
+        if node:
+            validators = [v for v in validators if node in v.get('tailscale dns', '')]
+        
+        if not validators:
+            click.echo("❌ No validators match the specified filters")
+            return
+        
+        if format == 'table':
+            # Create table data
+            table_data = []
+            for validator in validators:
+                row = [
+                    validator.get('validator index', ''),
+                    validator.get('Protocol', ''),
+                    validator.get('current_status', 'unknown'),
+                    validator.get('tailscale dns', '').split('.')[0] if '.' in validator.get('tailscale dns', '') else validator.get('tailscale dns', ''),
+                    validator.get('stack', '')
+                ]
+                table_data.append(row)
+            
+            headers = ['Index', 'Protocol', 'Status', 'Node', 'Stack']
+            click.echo(tabulate(table_data, headers=headers, tablefmt='grid'))
+            
+        elif format == 'csv':
+            # Print CSV format
+            if validators:
+                headers = list(validators[0].keys())
+                click.echo(','.join(headers))
+                for validator in validators:
+                    row = [str(validator.get(h, '')) for h in headers]
+                    click.echo(','.join(row))
+                    
+        elif format == 'json':
+            import json
+            click.echo(json.dumps(validators, indent=2))
+        
+        click.echo(f"\n📊 Total: {len(validators)} active validators")
+        
+    except Exception as e:
+        click.echo(f"❌ Error listing validators: {e}")
+
+@validator_group.command(name='edit')
+def interactive_edit():
+    """🎛️ Interactive validator editor for adding/editing validators"""
+    
+    try:
+        from .validator_editor import main_menu
+        main_menu()
+        
+    except KeyboardInterrupt:
+        click.echo("\n👋 Editor closed")
+    except Exception as e:
+        click.echo(f"❌ Error in interactive editor: {e}")
+
+@validator_group.command(name='add')
+def add_validator():
+    """🆕 Add a new validator interactively"""
+    
+    try:
+        editor = InteractiveValidatorEditor()
+        
+        click.echo("🚀 QUICK ADD VALIDATOR")
+        click.echo("=" * 40)
+        
+        new_validator = editor.interactive_add_validator()
+        
+        # Show preview
+        click.echo(f"\n👀 PREVIEW NEW VALIDATOR:")
+        for key, value in new_validator.items():
+            if value:
+                click.echo(f"  {key}: {value}")
+        
+        if click.confirm("\n💾 Save this validator?"):
+            validators = editor.load_validators()
+            validators.append(new_validator)
+            
+            editor.backup_csv()
+            if editor.save_validators(validators):
+                click.echo("🎉 New validator added successfully!")
+                click.echo("💡 Use 'python -m eth_validators validator sync' to update status")
+        else:
+            click.echo("❌ Validator not saved")
+            
+    except KeyboardInterrupt:
+        click.echo("\n❌ Add validator cancelled")
+    except Exception as e:
+        click.echo(f"❌ Error adding validator: {e}")
+
+@validator_group.command(name='quick-add')
+@click.option('--index', prompt='Validator Index', help='Validator index number')
+@click.option('--pubkey', prompt='Public Key (0x...)', help='Validator public key')
+@click.option('--protocol', prompt='Protocol', help='Staking protocol (e.g., CSM LIDO, Etherfi)')
+@click.option('--stack', prompt='Stack', help='Technology stack (e.g., VERO, HYPERDRIVE, Obol)')
+@click.option('--node', prompt='Node name', help='Target node name')
+def quick_add_validator(index, pubkey, protocol, stack, node):
+    """⚡ Quick add validator with command line options"""
+    
+    try:
+        editor = InteractiveValidatorEditor()
+        
+        # Validate inputs
+        if not editor.validate_validator_index(index):
+            return
+        
+        if not editor.validate_pubkey(pubkey):
+            return
+        
+        # Check if validator already exists
+        validators = editor.load_validators()
+        if any(str(v.get('validator index', '')) == str(index) for v in validators):
+            if not click.confirm(f"⚠️ Validator {index} already exists. Overwrite?"):
+                click.echo("❌ Operation cancelled")
+                return
+        
+        # Create validator record
+        new_validator = {
+            'validator index': str(index),
+            'validator public address': pubkey,
+            'Protocol': protocol,
+            'stack': stack,
+            'tailscale dns': editor.get_node_domain(node),
+            'current_status': 'unknown',
+            'is_active': 'unknown', 
+            'is_exited': 'false',
+            'last_updated': str(int(time.time()))
+        }
+        
+        # Show preview
+        click.echo(f"\n👀 VALIDATOR PREVIEW:")
+        click.echo(f"  Index: {index}")
+        click.echo(f"  Protocol: {protocol}")
+        click.echo(f"  Stack: {stack}")
+        click.echo(f"  Node: {node} ({editor.get_node_domain(node)})")
+        click.echo(f"  PubKey: {pubkey[:20]}...{pubkey[-10:]}")
+        
+        if click.confirm("\n💾 Add this validator?"):
+            validators.append(new_validator)
+            
+            editor.backup_csv()
+            if editor.save_validators(validators):
+                click.echo("🎉 Validator added successfully!")
+                click.echo("💡 Run 'python -m eth_validators validator sync' to update status")
+        else:
+            click.echo("❌ Validator not added")
+            
+    except Exception as e:
+        click.echo(f"❌ Error adding validator: {e}")
+
+@validator_group.command(name='import-csv')
+@click.argument('file_path', type=click.Path(exists=True))
+@click.option('--dry-run', is_flag=True, help='Preview import without making changes')
+def import_validators_csv(file_path, dry_run):
+    """📥 Import validators from CSV file"""
+    
+    try:
+        # Basic CSV reading
+        import csv
+        validators_to_import = []
+        with open(file_path, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                validators_to_import.append(dict(row))
+        
+        if not validators_to_import:
+            click.echo("❌ No validators found in CSV file")
+            return
+        
+        click.echo(f"📋 Found {len(validators_to_import)} validators to import")
+        
+        # Preview first few
+        click.echo(f"\n👀 PREVIEW (first 5 validators):")
+        for i, validator in enumerate(validators_to_import[:5]):
+            click.echo(f"\n  Validator {i+1}:")
+            for key, value in validator.items():
+                if value:
+                    click.echo(f"    {key}: {value}")
+        
+        if len(validators_to_import) > 5:
+            click.echo(f"    ... and {len(validators_to_import) - 5} more")
+        
+        if dry_run:
+            click.echo(f"\n🔍 DRY RUN: Would import {len(validators_to_import)} validators")
+            return
+        
+        if not click.confirm(f"\n💾 Import {len(validators_to_import)} validators?"):
+            click.echo("❌ Import cancelled")
+            return
+        
+        # Load existing validators
+        editor = InteractiveValidatorEditor()
+        existing_validators = editor.load_validators()
+        
+        # Process imports
+        imported_count = 0
+        skipped_count = 0
+        
+        for validator_data in validators_to_import:
+            # Ensure required fields
+            index = validator_data.get('validator index', '').strip()
+            if not index:
+                click.echo(f"  ⚠️ Skipping validator without index")
+                skipped_count += 1
+                continue
+            
+            # Check if already exists
+            if any(str(v.get('validator index', '')) == str(index) for v in existing_validators):
+                click.echo(f"  ⚠️ Skipping existing validator {index}")
+                skipped_count += 1
+                continue
+            
+            # Add timestamp and status fields
+            validator_data['last_updated'] = str(int(time.time()))
+            if 'current_status' not in validator_data:
+                validator_data['current_status'] = 'unknown'
+            if 'is_active' not in validator_data:
+                validator_data['is_active'] = 'unknown'
+            if 'is_exited' not in validator_data:
+                validator_data['is_exited'] = 'false'
+            
+            existing_validators.append(validator_data)
+            imported_count += 1
+            click.echo(f"  ✅ Imported validator {index}")
+        
+        # Save if any were imported
+        if imported_count > 0:
+            editor.backup_csv()
+            if editor.save_validators(existing_validators):
+                click.echo(f"\n🎉 Successfully imported {imported_count} validators!")
+                click.echo(f"⚠️ Skipped {skipped_count} validators (duplicates or missing data)")
+                click.echo("💡 Run 'python -m eth_validators validator sync' to update statuses")
+        else:
+            click.echo("❌ No validators were imported")
+            
+    except Exception as e:
+        click.echo(f"❌ Error importing validators: {e}")
+
+@validator_group.command(name='export')
+@click.option('--format', type=click.Choice(['csv', 'json']), default='csv', help='Export format')
+@click.option('--output', help='Output file path (default: auto-generated)')
+@click.option('--active-only', is_flag=True, help='Export only active validators')
+def export_validators(format, output, active_only):
+    """📤 Export validators to file"""
+    
+    try:
+        editor = InteractiveValidatorEditor()
+        
+        if active_only:
+            from .validator_sync import get_active_validators_only
+            validators = get_active_validators_only()
+            suffix = "_active"
+        else:
+            validators = editor.load_validators()
+            suffix = "_all"
+        
+        if not validators:
+            click.echo("❌ No validators to export")
+            return
+        
+        # Generate output filename if not provided
+        if not output:
+            timestamp = int(time.time())
+            output = f"validators_export{suffix}_{timestamp}.{format}"
+        
+        if format == 'csv':
+            # Export as CSV
+            if not validators:
+                click.echo("❌ No validators to export")
+                return
+            
+            # Get all field names
+            all_fields = set()
+            for validator in validators:
+                all_fields.update(validator.keys())
+            
+            ordered_fields = [
+                'validator index', 'validator public address', 'Protocol', 'stack',
+                'tailscale dns', 'current_status', 'is_active', 'is_exited'
+            ]
+            
+            # Add remaining fields
+            for field in sorted(all_fields):
+                if field not in ordered_fields:
+                    ordered_fields.append(field)
+            
+            with open(output, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=ordered_fields)
+                writer.writeheader()
+                for validator in validators:
+                    row = {field: validator.get(field, '') for field in ordered_fields}
+                    writer.writerow(row)
+                    
+        elif format == 'json':
+            # Export as JSON
+            import json
+            with open(output, 'w') as f:
+                json.dump(validators, f, indent=2)
+        
+        click.echo(f"📄 Exported {len(validators)} validators to {output}")
+        
+    except Exception as e:
+        click.echo(f"❌ Error exporting validators: {e}")
+
+@validator_group.command(name='search')
+@click.argument('term', required=False)
+def search_validators(term):
+    """🔍 Search validators by index, protocol, node, or pubkey"""
+    
+    try:
+        editor = InteractiveValidatorEditor()
+        validators = editor.load_validators()
+        
+        if not validators:
+            click.echo("❌ No validators found")
+            return
+        
+        if not term:
+            term = click.prompt("Enter search term")
+        
+        term = term.lower().strip()
+        matches = []
+        
+        for validator in validators:
+            searchable_text = ' '.join([
+                str(validator.get('validator index', '')),
+                validator.get('Protocol', ''),
+                validator.get('tailscale dns', ''),
+                validator.get('validator public address', ''),
+                validator.get('stack', ''),
+                validator.get('current_status', '')
+            ]).lower()
+            
+            if term in searchable_text:
+                matches.append(validator)
+        
+        if matches:
+            click.echo(f"\n📊 SEARCH RESULTS ({len(matches)} found)")
+            click.echo("=" * 50)
+            
+            table_data = []
+            for validator in matches:
+                table_data.append([
+                    validator.get('validator index', ''),
+                    validator.get('Protocol', '')[:20],
+                    validator.get('tailscale dns', '').split('.')[0] if '.' in validator.get('tailscale dns', '') else validator.get('tailscale dns', ''),
+                    validator.get('current_status', 'unknown'),
+                    validator.get('validator public address', '')[:20] + '...'
+                ])
+            
+            headers = ['Index', 'Protocol', 'Node', 'Status', 'PubKey']
+            click.echo(tabulate(table_data, headers=headers, tablefmt='grid'))
+            
+            # Ask if user wants to edit any
+            if click.confirm("\n✏️ Open interactive editor for these results?"):
+                from .validator_editor import main_menu
+                main_menu()
+        else:
+            click.echo(f"❌ No validators found matching '{term}'")
+            
+    except Exception as e:
+        click.echo(f"❌ Error searching validators: {e}")
+
+@validator_group.command(name='stats')
+def validator_statistics():
+    """📊 Show detailed validator statistics"""
+    
+    try:
+        editor = InteractiveValidatorEditor()
+        validators = editor.load_validators()
+        
+        if not validators:
+            click.echo("❌ No validators found")
+            return
+        
+        click.echo(f"\n📊 VALIDATOR STATISTICS")
+        click.echo("=" * 60)
+        click.echo(f"📋 Total validators: {len(validators)}")
+        
+        # Group by protocol
+        protocols = {}
+        for v in validators:
+            protocol = v.get('Protocol', 'Unknown')
+            protocols[protocol] = protocols.get(protocol, 0) + 1
+        
+        click.echo(f"\n🏢 By Protocol:")
+        for protocol, count in sorted(protocols.items(), key=lambda x: x[1], reverse=True):
+            percentage = (count / len(validators)) * 100
+            click.echo(f"  • {protocol}: {count} ({percentage:.1f}%)")
+        
+        # Group by node
+        nodes = {}
+        for v in validators:
+            node_domain = v.get('tailscale dns', 'Unknown')
+            node = node_domain.split('.')[0] if '.' in node_domain else node_domain
+            nodes[node] = nodes.get(node, 0) + 1
+        
+        click.echo(f"\n🖥️ By Node:")
+        for node, count in sorted(nodes.items(), key=lambda x: x[1], reverse=True):
+            percentage = (count / len(validators)) * 100
+            click.echo(f"  • {node}: {count} ({percentage:.1f}%)")
+        
+        # Group by status
+        statuses = {}
+        for v in validators:
+            status = v.get('current_status', 'unknown')
+            statuses[status] = statuses.get(status, 0) + 1
+        
+        click.echo(f"\n🔄 By Status:")
+        for status, count in sorted(statuses.items(), key=lambda x: x[1], reverse=True):
+            percentage = (count / len(validators)) * 100
+            click.echo(f"  • {status}: {count} ({percentage:.1f}%)")
+        
+        # Group by stack
+        stacks = {}
+        for v in validators:
+            stack = v.get('stack', 'Unknown')
+            stacks[stack] = stacks.get(stack, 0) + 1
+        
+        click.echo(f"\n🏗️ By Stack:")
+        for stack, count in sorted(stacks.items(), key=lambda x: x[1], reverse=True):
+            percentage = (count / len(validators)) * 100
+            click.echo(f"  • {stack}: {count} ({percentage:.1f}%)")
+        
+        # Active vs Exited
+        active_count = sum(1 for v in validators if v.get('is_exited', 'false').lower() != 'true')
+        exited_count = len(validators) - active_count
+        
+        click.echo(f"\n⚡ Activity Status:")
+        click.echo(f"  • Active: {active_count} ({(active_count/len(validators))*100:.1f}%)")
+        click.echo(f"  • Exited: {exited_count} ({(exited_count/len(validators))*100:.1f}%)")
+        
+    except Exception as e:
+        click.echo(f"❌ Error generating statistics: {e}")
 
 if __name__ == "__main__":
     cli()

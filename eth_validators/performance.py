@@ -145,12 +145,26 @@ def get_performance_summary():
     query_node_configs = {n['name']: n for n in nodes_from_config if n['name'] in all_query_nodes}
     
     try:
-        with open(VALIDATORS_PATH, mode='r', encoding='utf-8') as infile:
-            reader = csv.DictReader(infile)
-            reader.fieldnames = [name.strip() for name in reader.fieldnames]
-            all_validators = list(reader)
-    except (FileNotFoundError, Exception) as e:
-        return [["Error", f"Failed to process validators vs hardware.csv: {e}", "", "", "", ""]]
+        # Use only active validators instead of all validators
+        from .validator_sync import get_active_validators_only
+        
+        all_validators = get_active_validators_only()
+        if not all_validators:
+            # Fallback to loading all validators if active filter fails
+            with open(VALIDATORS_PATH, mode='r', encoding='utf-8') as infile:
+                reader = csv.DictReader(infile)
+                reader.fieldnames = [name.strip() for name in reader.fieldnames]
+                all_validators = list(reader)
+        
+    except (FileNotFoundError, ImportError, Exception) as e:
+        # Fallback to original CSV loading
+        try:
+            with open(VALIDATORS_PATH, mode='r', encoding='utf-8') as infile:
+                reader = csv.DictReader(infile)
+                reader.fieldnames = [name.strip() for name in reader.fieldnames]
+                all_validators = list(reader)
+        except Exception as fallback_e:
+            return [["Error", f"Failed to process validators vs hardware.csv: {fallback_e}", "", "", "", ""]]
 
     validators_by_node = {v.get('tailscale dns', '').strip(): [] for v in all_validators if v.get('tailscale dns')}
     for v in all_validators:
