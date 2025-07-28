@@ -52,6 +52,23 @@ def validator_group():
     """👥 Validator lifecycle and status management"""
     pass
 
+def _check_reboot_needed(ssh_user, tailscale_domain):
+    """Check if a node needs a reboot by checking for reboot-required file"""
+    try:
+        ssh_target = f"{ssh_user}@{tailscale_domain}"
+        cmd = f"ssh -o ConnectTimeout=5 -o BatchMode=yes {ssh_target} 'test -f /var/run/reboot-required && echo REBOOT_NEEDED || echo NO_REBOOT'"
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0:
+            if "REBOOT_NEEDED" in result.stdout:
+                return "🔄 Yes"
+            else:
+                return "✅ No"
+        else:
+            return "❓ Unknown"
+    except (subprocess.TimeoutExpired, Exception):
+        return "❓ Unknown"
+
 @node_group.command(name='list')
 def list_cmd():
     """List all configured nodes"""
@@ -80,10 +97,14 @@ def list_cmd():
         ssh_user = node.get('ssh_user', 'root')
         exec_client = node.get('exec_client', '')
         consensus_client = node.get('consensus_client', '')
-        stack = node.get('stack', 'eth-docker')
+        stack = node.get('stack', ['eth-docker'])
+        
+        # Handle both old format (string) and new format (list)
+        if isinstance(stack, str):
+            stack = [stack]
         
         # Determine status
-        if (stack == 'disabled' or 
+        if ('disabled' in stack or 
             (not exec_client and not consensus_client) or
             (exec_client == '' and consensus_client == '')):
             status_emoji = "🔴"
@@ -110,27 +131,37 @@ def list_cmd():
         else:
             clients = "❌ No clients"
         
-        # Connection info
-        connection = f"{ssh_user}@{tailscale}"
+        # Stack info with emojis - handle multiple stacks
+        stack_emojis = {
+            'eth-docker': '🐳',
+            'disabled': '🚫',
+            'rocketpool': '🚀',
+            'obol': '🔗',
+            'hyperdrive': '⚡',
+            'charon': '🌐',
+            'ssv': '📡',
+            'stakewise': '🏦'
+        }
         
-        # Stack info with emoji
-        if stack == 'eth-docker':
-            stack_display = "🐳 eth-docker"
-        elif stack == 'disabled':
+        if 'disabled' in stack:
             stack_display = "🚫 disabled"
         else:
-            stack_display = f"⚡ {stack}"
+            # Create display for multiple stacks
+            stack_parts = []
+            for s in stack:
+                emoji = stack_emojis.get(s.lower(), '⚙️')
+                stack_parts.append(f"{emoji} {s}")
+            stack_display = " + ".join(stack_parts)
         
         table_data.append([
             f"{status_emoji} {name}",
             status_text,
             clients,
-            stack_display,
-            connection
+            stack_display
         ])
     
     # Display table
-    headers = ['Node Name', 'Status', 'Ethereum Clients', 'Stack', 'SSH Connection']
+    headers = ['Node Name', 'Status', 'Ethereum Clients', 'Stack']
     click.echo(tabulate(table_data, headers=headers, tablefmt='fancy_grid'))
     
     # Summary statistics
@@ -244,8 +275,11 @@ def upgrade(node):
         
     # SSH into node using ssh_user, pull new eth-docker, and restart
     ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
+    eth_docker_path = node_cfg['eth_docker_path']
     cmd = (
-        f"ssh {ssh_target} 'cd {node_cfg['eth_docker_path']} && git checkout main && git pull && "
+        f"ssh {ssh_target} '"
+        f"git config --global --add safe.directory {eth_docker_path} && "
+        f"cd {eth_docker_path} && git checkout main && git pull && "
         "docker compose pull && docker compose build --pull && docker compose up -d'"
     )
     subprocess.run(cmd, shell=True)
@@ -643,8 +677,11 @@ def upgrade_all():
             
         click.echo(f"Upgrading {name}...")
         ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
+        eth_docker_path = node_cfg['eth_docker_path']
         cmd = (
-            f"ssh {ssh_target} 'cd {node_cfg['eth_docker_path']} && git checkout main && git pull && "
+            f"ssh {ssh_target} '"
+            f"git config --global --add safe.directory {eth_docker_path} && "
+            f"cd {eth_docker_path} && git checkout main && git pull && "
             "docker compose pull && docker compose build --pull && docker compose up -d'"
         )
         subprocess.run(cmd, shell=True)
@@ -703,7 +740,11 @@ def client_versions(node_name):
     results = []
     for node in nodes:
         # Skip nodes with disabled eth-docker
-        stack = node.get('stack', 'eth-docker')
+        stack = node.get('stack', ['eth-docker'])
+        
+        # Handle both old format (string) and new format (list)
+        if isinstance(stack, str):
+            stack = [stack]
         exec_client = node.get('exec_client', '')
         consensus_client = node.get('consensus_client', '')
         
@@ -830,6 +871,7 @@ def system_updates_cmd(node):
         nodes_to_check = config.get('nodes', [])
     
     table_data = []
+    reboot_needed_nodes = []
     for node_cfg in nodes_to_check:
         name = node_cfg['name']
         click.echo(f"Checking system updates for {name}...")
@@ -838,17 +880,56 @@ def system_updates_cmd(node):
         updates_count = update_status.get('updates_available', 'Error')
         needs_update = "Yes" if update_status.get('needs_system_update', False) else "No"
         
-        table_data.append([name, updates_count, needs_update])
+        # Check reboot status
+        ssh_user = node_cfg.get('ssh_user', 'root')
+        tailscale = node_cfg['tailscale_domain']
+        stack = node_cfg.get('stack', ['eth-docker'])
+        
+        # Skip disabled nodes for reboot check
+        if isinstance(stack, str):
+            stack = [stack]
+        if 'disabled' in stack:
+            reboot_status = "N/A"
+        else:
+            reboot_status_raw = _check_reboot_needed(ssh_user, tailscale)
+            if reboot_status_raw == "🔄 Yes":
+                reboot_status = "Yes"
+                reboot_needed_nodes.append(node_cfg)
+            elif reboot_status_raw == "✅ No":
+                reboot_status = "No"
+            else:
+                reboot_status = "Unknown"
+        
+        table_data.append([name, updates_count, needs_update, reboot_status])
     
-    headers = ["Node", "Updates Available", "Needs Update"]
+    headers = ["Node", "Updates Available", "Needs Update", "Needs Reboot"]
     click.echo("\n" + tabulate(table_data, headers=headers, tablefmt="github"))
     
     if any(row[2] == "Yes" for row in table_data):
         click.echo("\n⚠️  To install system updates, use:")
-        click.echo("   python3 -m eth_validators system-upgrade <node>")
-        click.echo("   python3 -m eth_validators system-upgrade --all")
+        click.echo("   python3 -m eth_validators system upgrade <node>")
+        click.echo("   python3 -m eth_validators system upgrade --all")
     else:
         click.echo("\n✅ All nodes are up to date!")
+    
+    # Show reboot summary if any nodes need reboot
+    if reboot_needed_nodes:
+        click.echo(f"\n🔄 Nodes needing reboot: {len(reboot_needed_nodes)}")
+        for node in reboot_needed_nodes:
+            click.echo(f"  python3 -m eth_validators system reboot {node['name']}")
+        click.echo("  python3 -m eth_validators system reboot-all")
+        
+        # Interactive prompt to reboot nodes
+        if click.confirm(f"\n⚠️  Do you want to reboot all {len(reboot_needed_nodes)} node(s) that require it? This will temporarily interrupt services."):
+            click.echo(f"\n🔄 Rebooting {len(reboot_needed_nodes)} node(s)...")
+            for node in reboot_needed_nodes:
+                click.echo(f"  🔄 Rebooting {node['name']}...")
+                ssh_target = f"{node.get('ssh_user', 'root')}@{node['tailscale_domain']}"
+                cmd = f"ssh {ssh_target} 'sudo reboot'"
+                subprocess.run(cmd, shell=True)
+            click.echo(f"✅ Reboot commands sent to all {len(reboot_needed_nodes)} node(s)")
+        else:
+            click.echo("❌ Reboot cancelled")
 
 @system_group.command(name='upgrade')
 @click.argument('node', required=False)
@@ -968,6 +1049,74 @@ def system_upgrade_cmd(node, upgrade_all_nodes, force):
                     click.echo(f"  {line}")
     
     click.echo(f"\n🎉 Completed system upgrades for {len(nodes_to_upgrade)} node(s)!")
+
+@system_group.command(name='reboot')
+@click.argument('node')
+def reboot_node(node):
+    """Reboot a single node"""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    node_cfg = next(
+        (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
+        None
+    )
+    if not node_cfg:
+        click.echo(f"❌ Node {node} not found")
+        return
+    
+    # Confirm reboot
+    if not click.confirm(f"⚠️  Are you sure you want to reboot {node_cfg['name']}? This will temporarily interrupt services."):
+        click.echo("❌ Reboot cancelled")
+        return
+    
+    click.echo(f"🔄 Rebooting {node_cfg['name']}...")
+    ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
+    cmd = f"ssh {ssh_target} 'sudo reboot'"
+    subprocess.run(cmd, shell=True)
+    click.echo(f"✅ Reboot command sent to {node_cfg['name']}")
+
+@system_group.command(name='reboot-all')
+def reboot_all_needed():
+    """Reboot all nodes that need a restart"""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    nodes = config.get('nodes', [])
+    
+    # Find nodes that need reboot
+    reboot_needed = []
+    for node in nodes:
+        ssh_user = node.get('ssh_user', 'root')
+        tailscale = node['tailscale_domain']
+        stack = node.get('stack', ['eth-docker'])
+        
+        # Skip disabled nodes
+        if isinstance(stack, str):
+            stack = [stack]
+        if 'disabled' in stack:
+            continue
+            
+        reboot_status = _check_reboot_needed(ssh_user, tailscale)
+        if reboot_status == "🔄 Yes":
+            reboot_needed.append(node)
+    
+    if not reboot_needed:
+        click.echo("✅ No nodes need a reboot!")
+        return
+    
+    click.echo(f"🔄 Found {len(reboot_needed)} node(s) that need a reboot:")
+    for node in reboot_needed:
+        click.echo(f"  • {node['name']}")
+    
+    if not click.confirm(f"\n⚠️  Are you sure you want to reboot all {len(reboot_needed)} node(s)? This will temporarily interrupt services."):
+        click.echo("❌ Reboot cancelled")
+        return
+    
+    click.echo("\n🔄 Rebooting nodes...")
+    for node in reboot_needed:
+        click.echo(f"  🔄 Rebooting {node['name']}...")
+        ssh_target = f"{node.get('ssh_user', 'root')}@{node['tailscale_domain']}"
+        cmd = f"ssh {ssh_target} 'sudo reboot'"
+        subprocess.run(cmd, shell=True)
+    
+    click.echo(f"✅ Reboot commands sent to all {len(reboot_needed)} node(s)")
 
 @ai_group.command(name='analyze')
 @click.argument('node_name')
@@ -1980,10 +2129,14 @@ def list_alias():
         ssh_user = node.get('ssh_user', 'root')
         exec_client = node.get('exec_client', '')
         consensus_client = node.get('consensus_client', '')
-        stack = node.get('stack', 'eth-docker')
+        stack = node.get('stack', ['eth-docker'])
+        
+        # Handle both old format (string) and new format (list)
+        if isinstance(stack, str):
+            stack = [stack]
         
         # Determine status
-        if (stack == 'disabled' or 
+        if ('disabled' in stack or 
             (not exec_client and not consensus_client) or
             (exec_client == '' and consensus_client == '')):
             status_emoji = "🔴"
@@ -2010,27 +2163,37 @@ def list_alias():
         else:
             clients = "❌ No clients"
         
-        # Connection info
-        connection = f"{ssh_user}@{tailscale}"
+        # Stack info with emojis - handle multiple stacks
+        stack_emojis = {
+            'eth-docker': '🐳',
+            'disabled': '🚫',
+            'rocketpool': '🚀',
+            'obol': '🔗',
+            'hyperdrive': '⚡',
+            'charon': '🌐',
+            'ssv': '📡',
+            'stakewise': '🏦'
+        }
         
-        # Stack info with emoji
-        if stack == 'eth-docker':
-            stack_display = "🐳 eth-docker"
-        elif stack == 'disabled':
+        if 'disabled' in stack:
             stack_display = "🚫 disabled"
         else:
-            stack_display = f"⚡ {stack}"
+            # Create display for multiple stacks
+            stack_parts = []
+            for s in stack:
+                emoji = stack_emojis.get(s.lower(), '⚙️')
+                stack_parts.append(f"{emoji} {s}")
+            stack_display = " + ".join(stack_parts)
         
         table_data.append([
             f"{status_emoji} {name}",
             status_text,
             clients,
-            stack_display,
-            connection
+            stack_display
         ])
     
     # Display table
-    headers = ['Node Name', 'Status', 'Ethereum Clients', 'Stack', 'SSH Connection']
+    headers = ['Node Name', 'Status', 'Ethereum Clients', 'Stack']
     click.echo(tabulate(table_data, headers=headers, tablefmt='fancy_grid'))
     
     # Summary statistics

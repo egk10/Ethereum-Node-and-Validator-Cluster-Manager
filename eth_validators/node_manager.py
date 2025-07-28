@@ -101,6 +101,7 @@ def upgrade_node_docker_clients(node_config):
     
     upgrade_cmd = [
         'ssh', ssh_target,
+        f'git config --global --add safe.directory {eth_docker_path} && '
         f'cd {eth_docker_path} && git checkout main && git pull && '
         'docker compose pull && docker compose build --pull && docker compose up -d'
     ]
