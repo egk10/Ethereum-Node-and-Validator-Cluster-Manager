@@ -6,3 +6,8 @@ eth_validators/config.yaml
 eth_validators/validators_vs_hardware.csv
 __pycache__/
 *.pyc
+
+# Backup and export files
+eth_validators/validators_vs_hardware_backup_*.csv
+validators_export_*.json
+validators_export_*.csv
