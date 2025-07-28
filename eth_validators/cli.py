@@ -14,9 +14,34 @@ CONFIG_PATH = Path(__file__).parent / 'config.yaml'
 
 @click.group()
 def cli():
+    """🚀 Ethereum Node and Validator Cluster Manager"""
     pass
 
-@cli.command(name='list')
+# AI Smart Performance Group
+@cli.group(name='ai')
+def ai_group():
+    """🧠 AI-powered analysis and monitoring tools"""
+    pass
+
+# Performance Monitoring Group  
+@cli.group(name='performance')
+def performance_group():
+    """📊 Validator performance monitoring and analysis"""
+    pass
+
+# Node Management Group
+@cli.group(name='node')
+def node_group():
+    """🖥️ Node management and operations"""
+    pass
+
+# System Administration Group
+@cli.group(name='system')
+def system_group():
+    """⚙️ System updates and maintenance"""
+    pass
+
+@node_group.command(name='list')
 def list_cmd():
     """List all configured nodes"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
@@ -25,7 +50,7 @@ def list_cmd():
                    f"exec={node['exec_client']}, consensus={node['consensus_client']}")
     
 
-@cli.command("status")
+@node_group.command(name='status')
 @click.argument('name')
 @click.option('--images', is_flag=True, help="Show full image names.")
 def status_cmd(name, images):
@@ -48,11 +73,11 @@ def status_cmd(name, images):
     ]
     print(tabulate(table_data, headers=["Client", "Status"], tablefmt="plain"))
 
-@cli.command()
+@node_group.command(name='status-single')
 @click.argument('node')
 @click.option('--images', is_flag=True, help='Also show container image versions')
 def status(node, images):
-    """Show status of a single node (by name or Tailscale domain)"""
+    """Show status of a single node"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     node_cfg = next(
         (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
@@ -73,10 +98,10 @@ def status(node, images):
         )
         subprocess.run(img_cmd, shell=True)
 
-@cli.command()
+@node_group.command(name='upgrade')
 @click.argument('node')
 def upgrade(node):
-    """Run upgrade on a single node (by name or Tailscale domain)"""
+    """Run upgrade on a single node"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     node_cfg = next(
         (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
@@ -105,9 +130,9 @@ def upgrade(node):
     )
     subprocess.run(cmd, shell=True)
 
-@cli.command(name='versions-all')
+@node_group.command(name='versions-all')
 def versions_all():
-    """Show client versions for all configured nodes in a fun table format with latest versions from GitHub"""
+    """Show client versions for all configured nodes"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     table = []
     
@@ -326,12 +351,10 @@ def versions_all():
     else:
         click.echo("❌ No version information collected.")
 
-@cli.command(name='analyze-node')
+@node_group.command(name='analyze')
 @click.argument('node_name')
 def analyze_node_cmd(node_name):
-    """
-    Analyzes all validators for a specific node in detail, especially useful for multi-stack nodes.
-    """
+    """Analyze all validators for a specific node in detail"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     node_cfg = next(
         (n for n in config['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
@@ -430,12 +453,9 @@ def analyze_node_cmd(node_name):
     
     click.echo("="*80)
 
-@cli.command(name='performance')
+@performance_group.command(name='summary')
 def performance_cmd():
-    """
-    Fetches and displays performance metrics for all validators, with color-coded
-    alerts for potential issues.
-    """
+    """Fetch performance metrics for all validators"""
     click.echo("Fetching performance data for all validators...")
     table_data = performance.get_performance_summary()
     headers = ["Node", "Validator Index", "Attester Eff.", "Misses", "Inclusion Dist.", "Status"]
@@ -483,7 +503,7 @@ def performance_cmd():
     click.echo(tabulate(processed_table, headers=headers, tablefmt="plain"))
 
 
-@cli.command(name='upgrade-all')
+@node_group.command(name='upgrade-all')
 def upgrade_all():
     """Upgrade all configured nodes with active Ethereum clients"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
@@ -509,10 +529,10 @@ def upgrade_all():
         )
         subprocess.run(cmd, shell=True)
 
-@cli.command()
+@node_group.command(name='versions')
 @click.argument('node')
 def versions(node):
-    """Show client versions for a node (filtered via eth-docker .ethd version)"""
+    """Show client versions for a node"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     node_cfg = next(
         (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
@@ -539,10 +559,10 @@ def versions(node):
     cmd = f"ssh {ssh_target} \"cd {path} && ./ethd version\""
     subprocess.run(cmd, shell=True)
 
-@cli.command('client-versions')
+@node_group.command(name='client-versions')
 @click.argument('node_name', required=False)
 def client_versions(node_name):
-    """Check Ethereum client versions (current vs latest) for Docker containers."""
+    """Check Ethereum client versions for Docker containers"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     nodes = config.get('nodes', [])
     
@@ -669,10 +689,10 @@ def client_versions(node_name):
     else:
         click.echo("❌ No version information collected.")
 
-@cli.command(name='system-updates')
+@system_group.command(name='updates')
 @click.argument('node', required=False)
 def system_updates_cmd(node):
-    """Check if Ubuntu system updates are available on nodes (does not install)"""
+    """Check if Ubuntu system updates are available on nodes"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     
     if node:
@@ -710,12 +730,12 @@ def system_updates_cmd(node):
     else:
         click.echo("\n✅ All nodes are up to date!")
 
-@cli.command(name='system-upgrade')
+@system_group.command(name='upgrade')
 @click.argument('node', required=False)
 @click.option('--all', 'upgrade_all_nodes', is_flag=True, help='Upgrade all nodes (will check which need updates first)')
 @click.option('--force', is_flag=True, help='Skip update check and force upgrade')
 def system_upgrade_cmd(node, upgrade_all_nodes, force):
-    """Perform Ubuntu system upgrade on nodes (sudo apt update && sudo apt upgrade -y)"""
+    """Perform Ubuntu system upgrade on nodes"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     
     if upgrade_all_nodes:
@@ -829,15 +849,13 @@ def system_upgrade_cmd(node, upgrade_all_nodes, force):
     
     click.echo(f"\n🎉 Completed system upgrades for {len(nodes_to_upgrade)} node(s)!")
 
-@cli.command(name='ai-analyze')
+@ai_group.command(name='analyze')
 @click.argument('node_name')
 @click.option('--container', help='Specific container to analyze (e.g., lighthouse-validator-client)')
 @click.option('--hours', default=24, type=int, help='Hours of logs to analyze (default: 24)')
 @click.option('--severity', default='INFO', help='Minimum log severity level (DEBUG, INFO, WARN, ERROR)')
 def ai_analyze_cmd(node_name, container, hours, severity):
-    """
-    AI-powered analysis of validator logs for performance insights and anomaly detection.
-    """
+    """AI analysis of validator logs for performance insights"""
     config_data = yaml.safe_load(CONFIG_PATH.read_text())
     node_cfg = next(
         (n for n in config_data['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
@@ -869,13 +887,11 @@ def ai_analyze_cmd(node_name, container, hours, severity):
     except Exception as e:
         click.echo(f"❌ AI analysis failed: {e}")
 
-@cli.command(name='ai-health')
+@ai_group.command(name='health')
 @click.argument('node_name', required=False)
 @click.option('--threshold', default=70, type=int, help='Health score threshold for alerts (default: 70)')
 def ai_health_cmd(node_name, threshold):
-    """
-    Check AI-calculated health scores for validators across nodes.
-    """
+    """Check AI health scores for validators"""
     config_data = yaml.safe_load(CONFIG_PATH.read_text())
     
     if node_name:
@@ -972,14 +988,12 @@ def ai_health_cmd(node_name, threshold):
     else:
         click.echo("❌ No health data collected.")
 
-@cli.command(name='ai-patterns')
+@ai_group.command(name='patterns')
 @click.argument('node_name')
 @click.option('--days', default=7, type=int, help='Days of log history to analyze (default: 7)')
 @click.option('--pattern-type', default='all', help='Pattern type: errors, warnings, performance, or all')
 def ai_patterns_cmd(node_name, days, pattern_type):
-    """
-    Discover and analyze patterns in validator logs using AI pattern recognition.
-    """
+    """Discover patterns in validator logs using AI"""
     config_data = yaml.safe_load(CONFIG_PATH.read_text())
     node_cfg = next(
         (n for n in config_data['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
@@ -1043,13 +1057,11 @@ def ai_patterns_cmd(node_name, days, pattern_type):
     except Exception as e:
         click.echo(f"❌ Pattern analysis failed: {e}")
 
-@cli.command(name='ai-recommend')
+@ai_group.command(name='recommend')
 @click.argument('node_name')
 @click.option('--focus', default='performance', help='Recommendation focus: performance, reliability, security, or all')
 def ai_recommend_cmd(node_name, focus):
-    """
-    Get AI-powered recommendations for validator optimization and issue resolution.
-    """
+    """Get AI recommendations for validator optimization"""
     config_data = yaml.safe_load(CONFIG_PATH.read_text())
     node_cfg = next(
         (n for n in config_data['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
@@ -1204,12 +1216,12 @@ def _display_pattern_analysis(patterns, node_name, days, pattern_type):
     
     click.echo("="*80)
 
-@cli.command(name='ai-dashboard')
+@ai_group.command(name='dashboard')
 @click.option('--port', default=8080, help='Port for the web dashboard (default: 8080)')
 @click.option('--host', default='localhost', help='Host for the web dashboard (default: localhost)')
 @click.option('--demo', is_flag=True, help='Start in demo mode without real analysis')
 def ai_dashboard(port, host, demo):
-    """🌐 Launch AI analysis web dashboard for visual monitoring"""
+    """Launch AI analysis web dashboard for monitoring"""
     import webbrowser
     import threading
     import time
@@ -1265,14 +1277,14 @@ def ai_dashboard(port, host, demo):
         click.echo(f"❌ Failed to start dashboard server: {e}")
         click.echo("💡 Try running manually: python ai_dashboard_server.py")
 
-@cli.command(name='performance-deep')
+@performance_group.command(name='deep')
 @click.argument('node_name')
 @click.option('--hours', default=6, help='Hours of data to analyze (default: 6)')
 @click.option('--export', help='Export results to JSON file')
 @click.option('--beacon-only', is_flag=True, help='Only extract beacon node performance data')
 @click.option('--logs-only', is_flag=True, help='Only extract log performance data')
 def performance_deep(node_name, hours, export, beacon_only, logs_only):
-    """🔍 Deep performance analysis with beacon node API integration"""
+    """Deep performance analysis with beacon API integration"""
     import json
     from datetime import datetime
     
@@ -1553,11 +1565,11 @@ def _display_log_performance(log_data):
         if total_errors > 0:
             click.echo(f"  Total errors: {total_errors}")
 
-@cli.command(name='performance-live')
+@performance_group.command(name='live')
 @click.argument('node_name')
 @click.option('--interval', default=30, help='Update interval in seconds (default: 30)')
 def performance_live(node_name, interval):
-    """📊 Live validator performance monitoring"""
+    """Live validator performance monitoring"""
     import time
     import os
     from datetime import datetime
@@ -1645,14 +1657,14 @@ def performance_live(node_name, interval):
     except Exception as e:
         click.echo(f"\n❌ Live monitoring failed: {e}")
 
-@cli.command(name='ai-hybrid')
+@ai_group.command(name='hybrid')
 @click.argument('node_name')
 @click.option('--disable-ml', is_flag=True, help='Disable machine learning components')
 @click.option('--disable-llm', is_flag=True, help='Disable LLM components')
 @click.option('--hours', default=24, help='Hours of logs to analyze (default: 24)')
 @click.option('--export', help='Export results to JSON file')
 def ai_hybrid(node_name, disable_ml, disable_llm, hours, export):
-    """🧠 Advanced hybrid AI analysis combining Classical AI + ML + LLM"""
+    """Advanced hybrid AI analysis (Classical + ML + LLM)"""
     import json
     from datetime import datetime
     
@@ -1818,6 +1830,15 @@ def _display_recommendations(recommendations, node_name, focus):
             click.echo(f"  • {suggestion}")
     
     click.echo("="*80)
+
+# Backward Compatibility Aliases for commonly used commands
+@cli.command(name='list')
+def list_alias():
+    """List all configured nodes (Legacy: use 'node list')"""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    for node in config.get('nodes', []):
+        click.echo(f"{node['name']}: ssh={node.get('ssh_user','root')}@{node['tailscale_domain']}, "
+                   f"exec={node['exec_client']}, consensus={node['consensus_client']}")
 
 if __name__ == "__main__":
     cli()

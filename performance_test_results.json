@@ -1,13 +1,13 @@
 {
   "node_name": "minipcamd",
-  "extraction_timestamp": "2025-07-27T19:41:18.860285",
+  "extraction_timestamp": "2025-07-27T19:50:47.082090",
   "validator_indices": [],
   "beacon_node_performance": {},
   "log_performance": {
     "eth-docker-validator-1": {
-      "total_log_lines": 6223,
+      "total_log_lines": 6192,
       "attestation_performance": {
-        "successful_attestations": 955,
+        "successful_attestations": 961,
         "failed_attestations": 0,
         "late_attestations": 0,
         "inclusion_distances": [],
@@ -28,7 +28,7 @@
       },
       "network_performance": {
         "connection_errors": 0,
-        "timeout_errors": 1054,
+        "timeout_errors": 1014,
         "dns_errors": 0,
         "peer_connection_events": 0,
         "bandwidth_indicators": []
@@ -41,31 +41,31 @@
         "disk_usage_indicators": []
       },
       "error_analysis": {
-        "total_errors": 1073,
+        "total_errors": 1033,
         "total_warnings": 9,
         "critical_errors": 0,
         "error_categories": {
-          "attestation": 1062,
+          "attestation": 1022,
           "other": 10,
           "block": 1
         },
         "recent_errors": [
-          "2025-07-27 13:41:36,995 - BeaconNode           - ERROR: Failed to get response from minitx.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
-          "2025-07-27 13:41:36,995 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
-          "2025-07-27 13:42:51,414 - BeaconNode           - ERROR: Failed to get response from minipcamd2.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
-          "2025-07-27 13:42:51,414 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
-          "2025-07-27 13:42:51,445 - BeaconNode           - ERROR: Failed to get response from minitx.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
-          "2025-07-27 13:42:51,445 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
-          "2025-07-27 13:42:51,715 - BeaconNode           - ERROR: Failed to get response from minipcamd2.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
-          "2025-07-27 13:42:51,715 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
-          "2025-07-27 13:42:51,747 - BeaconNode           - ERROR: Failed to get response from minitx.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
-          "2025-07-27 13:42:51,747 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()"
+          "2025-07-27 13:51:49,400 - BeaconNode           - ERROR: Failed to get response from minipcamd2.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "2025-07-27 13:51:49,401 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "2025-07-27 13:54:14,034 - BeaconNode           - ERROR: Failed to get response from minipcamd2.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "2025-07-27 13:54:14,034 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "2025-07-27 13:59:37,367 - BeaconNode           - ERROR: Failed to get response from minipcamd2.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "2025-07-27 13:59:37,367 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "2025-07-27 14:02:49,588 - BeaconNode           - ERROR: Failed to get response from minipcamd2.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "2025-07-27 14:02:49,588 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()",
+          "2025-07-27 14:05:03,011 - BeaconNode           - ERROR: Failed to get response from minitx.velociraptor-scylla.ts.net for GET /eth/v1/validator/attestation_data: TimeoutError()",
+          "2025-07-27 14:05:03,011 - BeaconNode           - ERROR: Failed to produce attestation data: TimeoutError()"
         ]
       },
       "timestamp_range": {
-        "earliest_log": "2025-07-27T13:41:23",
-        "latest_log": "2025-07-27T23:41:11",
-        "log_span_hours": 9.996666666666666
+        "earliest_log": "2025-07-27T13:50:47",
+        "latest_log": "2025-07-27T23:50:47",
+        "log_span_hours": 10.0
       }
     },
     "eth-docker-execution-1": {
@@ -88,11 +88,6 @@
         "sync_behind_count": 0,
         "sync_progress_indicators": [],
         "peer_count_changes": [
-          50,
-          20,
-          74,
-          50,
-          20,
           74,
           50,
           20,
@@ -447,7 +442,12 @@
           78,
           50,
           20,
-          78
+          78,
+          50,
+          20,
+          78,
+          50,
+          20
         ]
       },
       "network_performance": {
@@ -489,7 +489,7 @@
       }
     },
     "charon-distributed-validator-node-charon-1": {
-      "total_log_lines": 1750,
+      "total_log_lines": 1753,
       "attestation_performance": {
         "successful_attestations": 0,
         "failed_attestations": 0,
@@ -508,6 +508,7 @@
         "sync_behind_count": 0,
         "sync_progress_indicators": [],
         "peer_count_changes": [
+          2,
           2,
           2,
           2,
@@ -715,22 +716,22 @@
       },
       "error_analysis": {
         "total_errors": 345,
-        "total_warnings": 49,
+        "total_warnings": 51,
         "critical_errors": 0,
         "error_categories": {
           "other": 345
         },
         "recent_errors": [
-          "13:42:46.750 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
-          "13:44:30.750 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
-          "13:46:21.751 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
-          "13:48:02.754 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
-          "13:49:44.751 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
           "13:51:26.752 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
           "13:53:07.749 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
           "13:55:00.749 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
           "13:56:46.749 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
-          "13:58:29.752 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving"
+          "13:58:29.752 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
+          "14:00:19.750 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
+          "14:02:02.751 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
+          "14:03:41.751 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
+          "14:05:30.751 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving",
+          "14:07:13.751 WARN loki       Loki batch send failed (will retry): http do: Post \"http://loki:3100/loki/api/v1/push\": dial tcp: lookup loki on 127.0.0.11:53: server misbehaving"
         ]
       },
       "timestamp_range": {
@@ -738,9 +739,9 @@
       }
     },
     "charon-distributed-validator-node-lodestar-1": {
-      "total_log_lines": 284,
+      "total_log_lines": 285,
       "attestation_performance": {
-        "successful_attestations": 183,
+        "successful_attestations": 184,
         "failed_attestations": 0,
         "late_attestations": 0,
         "inclusion_distances": [],
@@ -785,9 +786,9 @@
       }
     },
     "eth-docker-consensus-1": {
-      "total_log_lines": 9490,
+      "total_log_lines": 9501,
       "attestation_performance": {
-        "successful_attestations": 2518,
+        "successful_attestations": 2528,
         "failed_attestations": 0,
         "late_attestations": 0,
         "inclusion_distances": [],
@@ -805,57 +806,6 @@
         "sync_behind_count": 0,
         "sync_progress_indicators": [],
         "peer_count_changes": [
-          158,
-          161,
-          157,
-          161,
-          160,
-          160,
-          160,
-          160,
-          160,
-          160,
-          160,
-          159,
-          159,
-          159,
-          159,
-          159,
-          159,
-          160,
-          160,
-          161,
-          161,
-          160,
-          2,
-          158,
-          161,
-          159,
-          159,
-          160,
-          160,
-          160,
-          159,
-          160,
-          159,
-          160,
-          160,
-          2,
-          2,
-          160,
-          160,
-          160,
-          159,
-          160,
-          160,
-          160,
-          159,
-          160,
-          160,
-          160,
-          167,
-          160,
-          158,
           161,
           160,
           162,
@@ -4108,7 +4058,59 @@
           159,
           161,
           160,
-          162
+          162,
+          160,
+          160,
+          160,
+          161,
+          161,
+          160,
+          161,
+          160,
+          2,
+          160,
+          160,
+          160,
+          160,
+          160,
+          161,
+          160,
+          160,
+          160,
+          165,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          2,
+          160,
+          159,
+          159,
+          159,
+          159,
+          159,
+          164,
+          160,
+          160,
+          159,
+          160,
+          160,
+          160,
+          160,
+          2,
+          2,
+          160,
+          160,
+          160,
+          160,
+          159,
+          159
         ]
       },
       "network_performance": {
@@ -4126,33 +4128,33 @@
         "disk_usage_indicators": []
       },
       "error_analysis": {
-        "total_errors": 365,
+        "total_errors": 366,
         "total_warnings": 0,
         "critical_errors": 0,
         "error_categories": {
-          "attestation": 365
+          "attestation": 366
         },
         "recent_errors": [
-          "NTC 2025-07-27 13:42:46.601+00:00 Attestation failed to match target and head topics=\"chaindag\" epoch=382289 validator=8b1fa0d9",
-          "NTC 2025-07-27 13:45:39.045+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 49, attester_index: 1958892, data: (slot: 12233326, index: 0, beacon_block_",
-          "NTC 2025-07-27 13:48:03.036+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 41, attester_index: 1958893, data: (slot: 12233338, index: 0, beacon_block_",
-          "NTC 2025-07-27 13:48:03.036+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 41, attester_index: 1958893, data: (slot: 12233338, index: 0, beacon_block_",
           "NTC 2025-07-27 13:55:03.069+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 35, attester_index: 1958892, data: (slot: 12233373, index: 0, beacon_block_",
           "NTC 2025-07-27 13:55:03.069+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 46, attester_index: 1958893, data: (slot: 12233373, index: 0, beacon_block_",
           "NTC 2025-07-27 13:55:03.070+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 35, attester_index: 1958892, data: (slot: 12233373, index: 0, beacon_block_",
           "NTC 2025-07-27 13:55:03.070+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 46, attester_index: 1958893, data: (slot: 12233373, index: 0, beacon_block_",
           "NTC 2025-07-27 13:55:51.043+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 25, attester_index: 1958892, data: (slot: 12233377, index: 0, beacon_block_",
-          "NTC 2025-07-27 13:58:27.046+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 3, attester_index: 1958893, data: (slot: 12233390, index: 0, beacon_block_r"
+          "NTC 2025-07-27 13:58:27.046+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 3, attester_index: 1958893, data: (slot: 12233390, index: 0, beacon_block_r",
+          "NTC 2025-07-27 13:58:27.046+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 3, attester_index: 1958893, data: (slot: 12233390, index: 0, beacon_block_r",
+          "NTC 2025-07-27 14:04:03.052+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 61, attester_index: 1958893, data: (slot: 12233418, index: 0, beacon_block_",
+          "NTC 2025-07-27 14:04:03.052+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 61, attester_index: 1958893, data: (slot: 12233418, index: 0, beacon_block_",
+          "NTC 2025-07-27 14:07:39.050+00:00 Attestation not sent                       topics=\"beacval\" attestation=\"(committee_index: 20, attester_index: 1958892, data: (slot: 12233436, index: 0, beacon_block_"
         ]
       },
       "timestamp_range": {
-        "earliest_log": "2025-07-27T13:41:21",
-        "latest_log": "2025-07-27T23:41:11",
-        "log_span_hours": 9.997222222222222
+        "earliest_log": "2025-07-27T13:50:50",
+        "latest_log": "2025-07-27T23:50:47",
+        "log_span_hours": 9.999166666666667
       }
     },
     "eth-docker-mev-boost-1": {
-      "total_log_lines": 189,
+      "total_log_lines": 187,
       "attestation_performance": {
         "successful_attestations": 0,
         "failed_attestations": 0,
@@ -4174,7 +4176,7 @@
       },
       "network_performance": {
         "connection_errors": 0,
-        "timeout_errors": 94,
+        "timeout_errors": 93,
         "dns_errors": 0,
         "peer_connection_events": 0,
         "bandwidth_indicators": []
@@ -4194,13 +4196,13 @@
         "recent_errors": []
       },
       "timestamp_range": {
-        "earliest_log": "2025-07-27T13:42:58",
-        "latest_log": "2025-07-27T23:38:10",
-        "log_span_hours": 9.92
+        "earliest_log": "2025-07-27T13:55:46",
+        "latest_log": "2025-07-27T23:44:34",
+        "log_span_hours": 9.813333333333333
       }
     },
     "charon-distributed-validator-node-grafana-1": {
-      "total_log_lines": 171,
+      "total_log_lines": 172,
       "attestation_performance": {
         "successful_attestations": 0,
         "failed_attestations": 0,
@@ -4255,9 +4257,9 @@
         ]
       },
       "timestamp_range": {
-        "earliest_log": "2025-07-27T13:44:07",
-        "latest_log": "2025-07-27T23:34:07",
-        "log_span_hours": 9.833333333333334
+        "earliest_log": "2025-07-27T13:54:07",
+        "latest_log": "2025-07-27T23:45:38",
+        "log_span_hours": 9.858611111111111
       }
     },
     "charon-distributed-validator-node-prometheus-1": {
@@ -4315,9 +4317,9 @@
     }
   },
   "summary": {
-    "overall_health_score": 48.89343339231685,
+    "overall_health_score": 48.88584309817777,
     "key_metrics": {
-      "log_health": 48.89343339231685
+      "log_health": 48.88584309817777
     },
     "alerts": [],
     "recommendations": [
