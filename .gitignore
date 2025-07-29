@@ -11,3 +11,9 @@ __pycache__/
 eth_validators/validators_vs_hardware_backup_*.csv
 validators_export_*.json
 validators_export_*.csv
+
+# Debug and test files
+debug_*.py
+test_*.py
+update_*.py
+AI_MODEL_EXPLANATION.py
