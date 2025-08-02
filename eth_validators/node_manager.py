@@ -88,9 +88,19 @@ def get_node_status(node_config):
     return results
 
 def upgrade_node_docker_clients(node_config):
+    """Upgrade docker clients for a node - supports single and multi-network nodes"""
+    
+    # Check if this is a multi-network node
+    networks = node_config.get('networks')
+    if networks:
+        return _upgrade_multi_network_node(node_config)
+    else:
+        return _upgrade_single_network_node(node_config)
+
+def _upgrade_single_network_node(node_config):
     """
     Upgrades Docker-based Ethereum clients (execution, consensus, mev-boost) 
-    on a node using eth-docker. This does NOT upgrade the Ubuntu system.
+    on a single network node using eth-docker. This does NOT upgrade the Ubuntu system.
     
     For Ubuntu system updates, use: sudo apt update && sudo apt upgrade -y
     """
@@ -98,13 +108,14 @@ def upgrade_node_docker_clients(node_config):
     ssh_user = node_config.get('ssh_user', 'root')
     ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
     eth_docker_path = node_config.get('eth_docker_path', '/opt/eth-docker')
+    is_local = node_config.get('is_local', False)
     
-    upgrade_cmd = [
-        'ssh', ssh_target,
-        f'git config --global --add safe.directory {eth_docker_path} && '
-        f'cd {eth_docker_path} && git checkout main && git pull && '
-        'docker compose pull && docker compose build --pull && docker compose up -d'
-    ]
+    if is_local:
+        # Execute locally without SSH
+        upgrade_cmd = f'cd {eth_docker_path} && git config --global --add safe.directory {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d'
+    else:
+        # Execute via SSH  
+        upgrade_cmd = f'ssh {ssh_target} "git config --global --add safe.directory {eth_docker_path} && cd {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d"'
     
     try:
         process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=300)
@@ -115,6 +126,51 @@ def upgrade_node_docker_clients(node_config):
         results['upgrade_error'] = "Upgrade timeout after 5 minutes"
         results['upgrade_success'] = False
     
+    return results
+
+def _upgrade_multi_network_node(node_config):
+    """
+    Upgrades Docker-based Ethereum clients on a multi-network node.
+    Each network (mainnet, testnet) has its own eth-docker directory.
+    """
+    networks = node_config['networks']
+    results = {}
+    overall_success = True
+    is_local = node_config.get('is_local', False)
+    ssh_user = node_config.get('ssh_user', 'root')
+    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    
+    for network_key, network_config in networks.items():
+        eth_docker_path = network_config['eth_docker_path']
+        network_name = network_config.get('network_name', network_key)
+        
+        if is_local:
+            # Execute locally without SSH
+            upgrade_cmd = f'cd {eth_docker_path} && git config --global --add safe.directory {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d'
+        else:
+            # Execute via SSH
+            upgrade_cmd = f'ssh {ssh_target} "git config --global --add safe.directory {eth_docker_path} && cd {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d"'
+        
+        try:
+            process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=300)
+            network_result = {
+                'upgrade_output': process.stdout,
+                'upgrade_error': process.stderr,
+                'upgrade_success': process.returncode == 0
+            }
+            results[network_name] = network_result
+            
+            if not network_result['upgrade_success']:
+                overall_success = False
+                
+        except subprocess.TimeoutExpired:
+            results[network_name] = {
+                'upgrade_error': "Upgrade timeout after 5 minutes",
+                'upgrade_success': False
+            }
+            overall_success = False
+    
+    results['overall_success'] = overall_success
     return results
 
 def get_system_update_status(node_config):
@@ -246,16 +302,133 @@ def get_docker_client_versions(node_config):
     Checks current and latest versions of Ethereum clients running in Docker containers.
     Gets actual running container versions from Docker logs and compares with latest GitHub releases.
     Returns information about execution client, consensus client, validator client, and whether updates are needed.
+    Supports multi-network nodes (mainnet + testnet).
     """
     results = {}
     
-    # Skip nodes with disabled eth-docker
-    stack = node_config.get('stack', 'eth-docker')
+    # Check if this node has multiple networks configured
+    networks = node_config.get('networks', {})
+    if networks:
+        # Multi-network node (like eliedesk with mainnet + testnet)
+        return _get_multi_network_client_versions(node_config)
+    
+    # Standard single-network node processing
+    return _get_single_network_client_versions(node_config)
+
+def _get_multi_network_client_versions(node_config):
+    """Handle nodes with multiple networks (mainnet + testnet)"""
+    networks = node_config.get('networks', {})
+    is_local = node_config.get('is_local', False)
+    
+    if is_local:
+        ssh_target = None
+    else:
+        ssh_user = node_config.get('ssh_user', 'root')
+        ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    
+    all_results = {}
+    
+    for network_name, network_config in networks.items():
+        # Get containers for this network
+        container_prefix = network_config.get('container_prefix', 'eth-docker')
+        
+        if ssh_target is None:
+            containers_cmd = f"docker ps --format '{{{{.Names}}}}:{{{{.Image}}}}' | grep '{container_prefix}' 2>/dev/null || echo 'No containers'"
+        else:
+            containers_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker ps --format \"{{{{.Names}}}}:{{{{.Image}}}}\" | grep \"{container_prefix}\" 2>/dev/null || echo \"No containers\"'"
+        
+        containers_process = subprocess.run(containers_cmd, shell=True, capture_output=True, text=True, timeout=20)
+        
+        network_results = {
+            'network': network_config.get('network_name', network_name),  # Use network_name if available
+            'execution_current': 'Unknown',
+            'execution_latest': 'Unknown',
+            'execution_client': network_config.get('exec_client', 'Unknown'),
+            'consensus_current': 'Unknown', 
+            'consensus_latest': 'Unknown',
+            'consensus_client': network_config.get('consensus_client', 'Unknown'),
+            'validator_current': 'N/A',
+            'validator_latest': 'N/A',
+            'validator_client': 'N/A',
+            'execution_needs_update': False,
+            'consensus_needs_update': False,
+            'validator_needs_update': False,
+            'needs_client_update': False
+        }
+        
+        if containers_process.returncode == 0 and "No containers" not in containers_process.stdout:
+            container_lines = containers_process.stdout.strip().split('\n')
+            
+            for line in container_lines:
+                if ':' in line:
+                    container_name, image = line.split(':', 1)
+                    
+                    # Identify execution client
+                    if 'execution' in container_name.lower():
+                        client_name = _identify_client_from_image(image, 'execution')
+                        if client_name != "Unknown":
+                            # Try docker exec first for better reliability
+                            exec_version = _get_version_via_docker_exec(ssh_target, container_name, client_name)
+                            if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
+                                network_results['execution_current'] = exec_version
+                            else:
+                                network_results['execution_current'] = _get_client_version_from_logs(ssh_target, container_name, client_name)
+                            network_results['execution_client'] = client_name
+                    
+                    # Identify consensus client
+                    elif 'consensus' in container_name.lower():
+                        client_name = _identify_client_from_image(image, 'consensus')
+                        if client_name != "Unknown":
+                            # Try docker exec first for better reliability  
+                            exec_version = _get_version_via_docker_exec(ssh_target, container_name, client_name)
+                            if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
+                                network_results['consensus_current'] = exec_version
+                            else:
+                                network_results['consensus_current'] = _get_client_version_from_logs(ssh_target, container_name, client_name)
+                            network_results['consensus_client'] = client_name
+        
+        # Get latest versions from GitHub releases for this network
+        exec_client_name = network_results['execution_client']
+        cons_client_name = network_results['consensus_client']
+        
+        if exec_client_name != "Unknown":
+            network_results['execution_latest'] = _get_latest_github_release(exec_client_name)
+            network_results['execution_needs_update'] = _version_needs_update(
+                network_results['execution_current'], 
+                network_results['execution_latest']
+            )
+        
+        if cons_client_name != "Unknown":
+            network_results['consensus_latest'] = _get_latest_github_release(cons_client_name)
+            network_results['consensus_needs_update'] = _version_needs_update(
+                network_results['consensus_current'], 
+                network_results['consensus_latest']
+            )
+        
+        # Set overall needs_client_update flag
+        network_results['needs_client_update'] = (
+            network_results['execution_needs_update'] or 
+            network_results['consensus_needs_update'] or 
+            network_results['validator_needs_update']
+        )
+        
+        all_results[network_name] = network_results
+    
+    return all_results
+
+def _get_single_network_client_versions(node_config):
+    """Handle standard single-network nodes"""
+    results = {}
+    
+    # Skip nodes with disabled eth-docker or explicitly disabled Ethereum clients
+    stack = node_config.get('stack', ['eth-docker'])
     exec_client = node_config.get('exec_client', '')
     consensus_client = node_config.get('consensus_client', '')
     validator_client = node_config.get('validator_client', '')
+    ethereum_clients_enabled = node_config.get('ethereum_clients_enabled', True)
     
-    if (stack == 'disabled' or 
+    if (stack == ['disabled'] or 
+        ethereum_clients_enabled is False or
         (not exec_client and not consensus_client) or
         (exec_client == '' and consensus_client == '')):
         results = {
@@ -275,12 +448,25 @@ def get_docker_client_versions(node_config):
         }
         return results
     
+    # Check if this is a local node (no SSH required)
+    is_local = node_config.get('is_local', False)
     ssh_user = node_config.get('ssh_user', 'root')
-    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    
+    if is_local:
+        # For local execution, use direct commands
+        ssh_target = None
+    else:
+        ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
     
     try:
         # Get running containers with their images
-        containers_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker ps --format \"{{{{.Names}}}}:{{{{.Image}}}}\" 2>/dev/null || echo \"Error\"'"
+        if ssh_target is None:
+            # Local execution
+            containers_cmd = "docker ps --format '{{.Names}}:{{.Image}}' 2>/dev/null || echo 'Error'"
+        else:
+            # Remote execution via SSH
+            containers_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker ps --format \"{{{{.Names}}}}:{{{{.Image}}}}\" 2>/dev/null || echo \"Error\"'"
+            
         containers_process = subprocess.run(containers_cmd, shell=True, capture_output=True, text=True, timeout=20)
         
         # Initialize results
@@ -455,6 +641,7 @@ def _get_version_via_docker_exec(ssh_target, container_name, client_name):
     """
     Tries to get version by executing version commands directly in the container.
     Some clients respond to --version flags.
+    ssh_target can be None for local execution.
     """
     import re
     
@@ -477,21 +664,30 @@ def _get_version_via_docker_exec(ssh_target, container_name, client_name):
         return "Unknown"
     
     try:
-        # Try to execute version command in container
+        # Prepare the docker exec command
         cmd_parts = version_commands[client_name]
-        exec_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker exec {container_name} {' '.join(cmd_parts)} 2>&1'"
+        docker_exec_cmd = f"docker exec {container_name} {' '.join(cmd_parts)} 2>&1"
         
-        exec_process = subprocess.run(exec_cmd, shell=True, capture_output=True, text=True, timeout=10)
+        # Execute locally or via SSH
+        if ssh_target is None:
+            # Local execution
+            exec_process = subprocess.run(docker_exec_cmd, shell=True, capture_output=True, text=True, timeout=10)
+        else:
+            # Remote execution via SSH
+            exec_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{docker_exec_cmd}'"
+            exec_process = subprocess.run(exec_cmd, shell=True, capture_output=True, text=True, timeout=10)
         
         if exec_process.returncode == 0:
             output = exec_process.stdout.strip()
             
             # Try to extract version from output
             version_patterns = [
-                r'Version:\s*(\d+\.\d+\.\d+)\+',  # Nethermind: "Version: 1.32.3+hash"
-                r'Version:\s*v?(\d+\.\d+\.\d+)',  # General: "Version: v1.32.3" or "Version: 1.32.3"
-                r'v?(\d+\.\d+\.\d+)',             # Simple: "v1.32.3" or "1.32.3"
-                r'version\s*v?(\d+\.\d+\.\d+)'    # General: "version v1.32.3"
+                r'erigon version (\d+\.\d+\.\d+)',  # Erigon: "erigon version 3.0.13-hash"
+                r'Grandine (\d+\.\d+\.\d+)',        # Grandine: "Grandine 1.1.2"  
+                r'Version:\s*(\d+\.\d+\.\d+)\+',    # Nethermind: "Version: 1.32.3+hash"
+                r'Version:\s*v?(\d+\.\d+\.\d+)',    # General: "Version: v1.32.3" or "Version: 1.32.3"
+                r'v?(\d+\.\d+\.\d+)',               # Simple: "v1.32.3" or "1.32.3"
+                r'version\s*v?(\d+\.\d+\.\d+)'      # General: "version v1.32.3"
             ]
             
             for pattern in version_patterns:
@@ -556,12 +752,19 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
     """
     Extracts the actual client version from Docker container logs.
     Each Ethereum client prints its version during startup.
+    ssh_target can be None for local execution.
     """
     import re
     
     try:
-        # Get recent logs from container (last 100 lines to catch version info)
-        logs_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker logs --tail 100 {container_name} 2>&1'"
+        # Determine if we're running locally or via SSH
+        if ssh_target is None:
+            # Local execution
+            logs_cmd = f"docker logs --tail 100 {container_name} 2>&1"
+        else:
+            # Remote execution via SSH
+            logs_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker logs --tail 100 {container_name} 2>&1'"
+            
         logs_process = subprocess.run(logs_cmd, shell=True, capture_output=True, text=True, timeout=15)
         
         logs = ""
@@ -570,7 +773,13 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
         
         # If no version found in recent logs, try the beginning of logs (for busy clients like Lodestar)
         if not logs or not re.search(r'version|Version|v\d+\.\d+\.\d+', logs, re.IGNORECASE):
-            head_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker logs {container_name} 2>&1 | head -50'"
+            if ssh_target is None:
+                # Local execution
+                head_cmd = f"docker logs {container_name} 2>&1 | head -50"
+            else:
+                # Remote execution via SSH
+                head_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker logs {container_name} 2>&1 | head -50'"
+                
             head_process = subprocess.run(head_cmd, shell=True, capture_output=True, text=True, timeout=15)
             if head_process.returncode == 0:
                 head_logs = head_process.stdout.strip()
@@ -623,7 +832,10 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
                 r'erigon/(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
                 r'Starting Erigon (\d+\.\d+\.\d+)',
-                r'ledgerwatch/erigon:v(\d+\.\d+\.\d+)'
+                r'ledgerwatch/erigon:v(\d+\.\d+\.\d+)',
+                r'Erigon/v(\d+\.\d+\.\d+)',
+                r'erigon.*?(\d+\.\d+\.\d+)',
+                r'Building Erigon.*?(\d+\.\d+\.\d+)'
             ],
             'lighthouse': [
                 r'Lighthouse v(\d+\.\d+\.\d+)',
@@ -662,11 +874,13 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
                 r'chainsafe/lodestar:v(\d+\.\d+\.\d+)'
             ],
             'grandine': [
-                r'Grandine (\d+\.\d+\.\d+)',
+                r'client version: Grandine/(\d+\.\d+\.\d+)',  # Specific for Grandine log format
+                r'Grandine/(\d+\.\d+\.\d+)',
                 r'grandine v(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
                 r'Starting Grandine.*?v(\d+\.\d+\.\d+)',
-                r'grandinetech/grandine:v(\d+\.\d+\.\d+)'
+                r'grandinetech/grandine:v(\d+\.\d+\.\d+)',
+                r'Grandine (\d+\.\d+\.\d+)'
             ]
         }
         

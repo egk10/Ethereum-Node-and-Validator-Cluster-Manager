@@ -264,25 +264,63 @@ def upgrade(node):
     
     # Check if Ethereum clients are disabled
     stack = node_cfg.get('stack', 'eth-docker')
+    
+    # Check for clients in single network format
     exec_client = node_cfg.get('exec_client', '')
     consensus_client = node_cfg.get('consensus_client', '')
     
-    if (stack == 'disabled' or 
-        (not exec_client and not consensus_client) or
-        (exec_client == '' and consensus_client == '')):
+    # Check for clients in multi-network format
+    networks = node_cfg.get('networks', {})
+    has_clients = bool(exec_client and consensus_client)
+    
+    # If no clients at root level, check networks
+    if not has_clients and networks:
+        for network_key, network_config in networks.items():
+            net_exec = network_config.get('exec_client', '')
+            net_consensus = network_config.get('consensus_client', '')
+            if net_exec and net_consensus:
+                has_clients = True
+                break
+    
+    if (stack == 'disabled' or not has_clients):
         click.echo(f"⚪ Skipping {node} (Ethereum clients disabled)")
         return
+    
+    click.echo(f"🔄 Upgrading {node}...")
+    
+    # Use the enhanced upgrade function that supports multi-network
+    result = upgrade_node_docker_clients(node_cfg)
+    
+    # Check if this is a multi-network result
+    if 'overall_success' in result:
+        # Multi-network node
+        if result['overall_success']:
+            click.echo(f"✅ {node} upgrade completed successfully for all networks")
+        else:
+            click.echo(f"❌ {node} upgrade had some failures")
         
-    # SSH into node using ssh_user, pull new eth-docker, and restart
-    ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
-    eth_docker_path = node_cfg['eth_docker_path']
-    cmd = (
-        f"ssh {ssh_target} '"
-        f"git config --global --add safe.directory {eth_docker_path} && "
-        f"cd {eth_docker_path} && git checkout main && git pull && "
-        "docker compose pull && docker compose build --pull && docker compose up -d'"
-    )
-    subprocess.run(cmd, shell=True)
+        # Show details for each network
+        for network_name, network_result in result.items():
+            if network_name == 'overall_success':
+                continue
+            
+            if network_result['upgrade_success']:
+                click.echo(f"  ✅ {network_name}: Success")
+            else:
+                click.echo(f"  ❌ {network_name}: Failed")
+                if network_result.get('upgrade_error'):
+                    click.echo(f"     Error: {network_result['upgrade_error']}")
+    else:
+        # Single network node
+        if result['upgrade_success']:
+            click.echo(f"✅ {node} upgrade completed successfully")
+        else:
+            click.echo(f"❌ {node} upgrade failed")
+            if result.get('upgrade_error'):
+                click.echo(f"   Error: {result['upgrade_error']}")
+    
+    if result.get('upgrade_output'):
+        click.echo(f"   Output: {result['upgrade_output']}")
 
 @node_group.command(name='versions-all')
 def versions_all():
@@ -747,10 +785,18 @@ def client_versions(node_name):
             stack = [stack]
         exec_client = node.get('exec_client', '')
         consensus_client = node.get('consensus_client', '')
+        networks = node.get('networks', {})
+        ethereum_clients_enabled = node.get('ethereum_clients_enabled', True)
         
-        if (stack == 'disabled' or 
-            (not exec_client and not consensus_client) or
-            (exec_client == '' and consensus_client == '')):
+        # Check if clients are disabled
+        is_disabled = (
+            stack == ['disabled'] or 
+            ethereum_clients_enabled is False or
+            (not networks and not exec_client and not consensus_client) or
+            (not networks and exec_client == '' and consensus_client == '')
+        )
+        
+        if is_disabled:
             click.echo(f"⚪ Skipping {node['name']} (Ethereum clients disabled)")
             continue
             
@@ -758,6 +804,50 @@ def client_versions(node_name):
         try:
             version_info = get_docker_client_versions(node)
             
+            # Check if this is a multi-network result
+            if 'mainnet' in version_info or 'testnet' in version_info:
+                # Multi-network node (like eliedesk)
+                for network_key, network_info in version_info.items():
+                    exec_client = network_info.get('execution_client', 'Unknown')
+                    exec_current = network_info.get('execution_current', 'Unknown')
+                    exec_latest = network_info.get('execution_latest', 'Unknown')
+                    exec_needs_update = network_info.get('execution_needs_update', False)
+                    
+                    cons_client = network_info.get('consensus_client', 'Unknown')
+                    cons_current = network_info.get('consensus_current', 'Unknown')
+                    cons_latest = network_info.get('consensus_latest', 'Unknown')
+                    cons_needs_update = network_info.get('consensus_needs_update', False)
+                    
+                    # Get the actual network name (e.g., "hoodi", "sepolia") or fall back to key
+                    network_display_name = network_info.get('network', network_key)
+                    
+                    # Format execution display
+                    exec_display = f"{exec_client}/{exec_current}" if exec_current != "Unknown" else exec_client
+                    exec_latest_display = exec_latest if exec_latest not in ["Unknown", "API Error", "Network Error"] else "-"
+                    
+                    # Format consensus display
+                    cons_display = f"{cons_client}/{cons_current}" if cons_current != "Unknown" else cons_client
+                    cons_latest_display = cons_latest if cons_latest not in ["Unknown", "API Error", "Network Error"] else "-"
+                    
+                    # For multi-network, show network name in node name
+                    display_name = f"{node['name']}-{network_display_name}"
+                    
+                    # Add to results as list (same format as single-network nodes)
+                    results.append([
+                        display_name,                                    # Node
+                        exec_display,                                    # Execution
+                        exec_latest_display,                             # Latest
+                        '🔄' if exec_needs_update else '✅',            # Status
+                        cons_display,                                    # Consensus
+                        cons_latest_display,                             # Latest
+                        '🔄' if cons_needs_update else '✅',            # Status
+                        "-",                                             # Validator
+                        "-",                                             # Latest
+                        "-"                                              # Status
+                    ])
+                continue
+            
+            # Standard single-network processing
             # Get client names and versions
             exec_client = version_info.get('execution_client', 'Unknown')
             exec_current = version_info.get('execution_current', 'Unknown')
