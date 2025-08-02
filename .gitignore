@@ -17,3 +17,22 @@ debug_*.py
 test_*.py
 update_*.py
 AI_MODEL_EXPLANATION.py
+
+# Node-specific configuration files (PRIVATE - contain real node info)
+cluster-management.sh
+custom-prom-*.yml
+prometheus_cluster_config_*.yml
+grafana-cloud-*.yml
+*-monitoring-stack.yml
+setup-*-monitoring.sh
+get-grafana-credentials.sh
+fix-grafana-cloud.sh
+
+# Dashboard files with real metrics/node names
+metrics_snapshot_*.json
+Home\ Staking\ Dashboard-*.json
+
+# Scripts with node-specific configurations
+enable-external-monitoring.sh
+test-connectivity.sh
+AI_MODEL_EXPLANATION.py
