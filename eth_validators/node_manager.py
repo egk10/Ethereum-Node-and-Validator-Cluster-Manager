@@ -358,7 +358,7 @@ def get_docker_client_versions(node_config):
             if consensus_current in ["No Version Found", "Empty Logs", "Log Error"] or consensus_current.startswith("Error:") or consensus_current.startswith("Debug:"):
                 # Try to get version via docker exec command
                 exec_version = _get_version_via_docker_exec(ssh_target, consensus_container, consensus_client_name)
-                if exec_version and exec_version not in ["Error", "Unknown"]:
+                if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
                     consensus_current = exec_version
                 else:
                     consensus_current = _extract_image_version(f"image: {consensus_image}")
@@ -564,10 +564,19 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
         logs_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker logs --tail 100 {container_name} 2>&1'"
         logs_process = subprocess.run(logs_cmd, shell=True, capture_output=True, text=True, timeout=15)
         
-        if logs_process.returncode != 0:
-            return "Log Error"
+        logs = ""
+        if logs_process.returncode == 0:
+            logs = logs_process.stdout.strip()
         
-        logs = logs_process.stdout.strip()
+        # If no version found in recent logs, try the beginning of logs (for busy clients like Lodestar)
+        if not logs or not re.search(r'version|Version|v\d+\.\d+\.\d+', logs, re.IGNORECASE):
+            head_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker logs {container_name} 2>&1 | head -50'"
+            head_process = subprocess.run(head_cmd, shell=True, capture_output=True, text=True, timeout=15)
+            if head_process.returncode == 0:
+                head_logs = head_process.stdout.strip()
+                if head_logs and re.search(r'version|Version|v\d+\.\d+\.\d+', head_logs, re.IGNORECASE):
+                    logs = head_logs
+        
         if not logs:
             return "Empty Logs"
         
@@ -645,6 +654,7 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
                 r'statusim/nimbus-eth2:.*?(\d+\.\d+\.\d+)'
             ],
             'lodestar': [
+                r'version=v(\d+\.\d+\.\d+)',       # New pattern for "version=v1.32.0/8f56b55"
                 r'Lodestar/(\d+\.\d+\.\d+)',
                 r'lodestar v(\d+\.\d+\.\d+)',
                 r'Version: (\d+\.\d+\.\d+)',
