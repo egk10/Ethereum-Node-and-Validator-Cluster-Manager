@@ -144,30 +144,80 @@ def _upgrade_multi_network_node(node_config):
         eth_docker_path = network_config['eth_docker_path']
         network_name = network_config.get('network_name', network_key)
         
-        if is_local:
-            # Execute locally without SSH
-            upgrade_cmd = f'cd {eth_docker_path} && git config --global --add safe.directory {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d'
-        else:
-            # Execute via SSH
-            upgrade_cmd = f'ssh {ssh_target} "git config --global --add safe.directory {eth_docker_path} && cd {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d"'
+        network_result = {
+            'upgrade_output': '',
+            'upgrade_error': '',
+            'upgrade_success': True
+        }
         
-        try:
-            process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=300)
-            network_result = {
-                'upgrade_output': process.stdout,
-                'upgrade_error': process.stderr,
-                'upgrade_success': process.returncode == 0
-            }
-            results[network_name] = network_result
-            
-            if not network_result['upgrade_success']:
-                overall_success = False
-                
-        except subprocess.TimeoutExpired:
-            results[network_name] = {
-                'upgrade_error': "Upgrade timeout after 5 minutes",
-                'upgrade_success': False
-            }
+        # Execute commands step by step for better error handling
+        commands = [
+            f"git config --global --add safe.directory {eth_docker_path}",
+            "git checkout main",
+            "git pull",  # This may fail due to network issues, but we continue
+            "docker compose pull",
+            "docker compose build --pull",
+            "docker compose up -d"
+        ]
+        
+        network_errors = []
+        
+        for i, cmd in enumerate(commands, 1):
+            if is_local:
+                if cmd.startswith('cd '):
+                    # Skip cd command for local execution, we'll use cwd parameter
+                    continue
+                    
+                # Execute locally without SSH
+                try:
+                    process = subprocess.run(cmd, shell=True, capture_output=True, text=True, 
+                                           timeout=120, cwd=eth_docker_path)
+                    
+                    if process.returncode != 0:
+                        error_msg = f"Command '{cmd}' failed: {process.stderr.strip()}"
+                        network_errors.append(error_msg)
+                        
+                        # For git pull failures due to network issues, continue with other commands
+                        if "git pull" in cmd and ("Could not resolve host" in process.stderr or "Falha temporário" in process.stderr):
+                            network_result['upgrade_output'] += f"⚠️ {cmd}: Network issue, skipping git pull\n"
+                            continue
+                        else:
+                            # For other failures, stop execution
+                            network_result['upgrade_error'] += error_msg + "\n"
+                            network_result['upgrade_success'] = False
+                            break
+                    else:
+                        network_result['upgrade_output'] += f"✓ {cmd}: Success\n"
+                        
+                except subprocess.TimeoutExpired:
+                    network_result['upgrade_error'] += f"Command '{cmd}' timeout after 2 minutes\n"
+                    network_result['upgrade_success'] = False
+                    break
+                except Exception as e:
+                    network_result['upgrade_error'] += f"Command '{cmd}' exception: {str(e)}\n"
+                    network_result['upgrade_success'] = False
+                    break
+            else:
+                # Execute via SSH - combine all commands
+                full_cmd = f'ssh {ssh_target} "cd {eth_docker_path} && {" && ".join(commands[2:])}"'
+                try:
+                    process = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=300)
+                    network_result['upgrade_output'] = process.stdout
+                    network_result['upgrade_error'] = process.stderr
+                    network_result['upgrade_success'] = process.returncode == 0
+                except subprocess.TimeoutExpired:
+                    network_result['upgrade_error'] = "Upgrade timeout after 5 minutes"
+                    network_result['upgrade_success'] = False
+                break  # Exit the command loop for SSH mode
+        
+        # If there were only network errors in git pull, consider it a partial success
+        if network_errors and network_result['upgrade_success']:
+            network_result['upgrade_output'] += f"\n⚠️ Warnings: {len(network_errors)} network issues encountered\n"
+            for error in network_errors:
+                network_result['upgrade_output'] += f"  - {error}\n"
+        
+        results[network_name] = network_result
+        if not network_result['upgrade_success']:
             overall_success = False
     
     results['overall_success'] = overall_success
