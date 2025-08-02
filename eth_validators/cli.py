@@ -353,21 +353,68 @@ def versions_all():
             
         click.echo(f"  📡 Checking {name}...", nl=False)
         
+        # Get versions using our Docker detection method
+        try:
+            version_info = get_docker_client_versions(node_cfg)
+        except:
+            version_info = {}
+        
+        # Check if this is a multi-network node
+        networks = node_cfg.get('networks', {})
+        if networks and isinstance(version_info, dict) and 'mainnet' in version_info:
+            # Multi-network node - add each network as separate entry
+            for network_key, network_data in version_info.items():
+                if isinstance(network_data, dict) and 'network' in network_data:
+                    network_name = network_data.get('network', network_key)
+                    display_name = f"{name}-{network_name}"
+                    
+                    # Extract version information
+                    exec_current = network_data.get('execution_current', 'N/A')
+                    exec_latest = network_data.get('execution_latest', 'Unknown')
+                    exec_client = network_data.get('execution_client', 'Unknown')
+                    exec_needs_update = network_data.get('execution_needs_update', False)
+                    
+                    cons_current = network_data.get('consensus_current', 'N/A')
+                    cons_latest = network_data.get('consensus_latest', 'Unknown')
+                    cons_client = network_data.get('consensus_client', 'Unknown')
+                    cons_needs_update = network_data.get('consensus_needs_update', False)
+                    
+                    validator_client = network_data.get('validator_client', 'N/A')
+                    if validator_client == 'N/A':
+                        validator_client = '-'
+                    
+                    # Format execution info
+                    exec_display = f"{exec_client}/{exec_current}" if exec_current != 'N/A' else 'N/A'
+                    cons_display = f"{cons_client}/{cons_current}" if cons_current != 'N/A' else 'N/A'
+                    
+                    # Status indicators
+                    exec_status = "🔄" if exec_needs_update else "✅"
+                    cons_status = "🔄" if cons_needs_update else "✅"
+                    
+                    # MEV Boost detection - simplified for multi-network
+                    mev_version = "N/A"
+                    mev_status = "-"
+                    
+                    table.append([
+                        display_name, exec_display, exec_latest, exec_status,
+                        cons_display, cons_latest, cons_status,
+                        validator_client, "-", "-",
+                        mev_version, mev_status
+                    ])
+            
+            click.echo(" ✅")
+            continue
+        
+        # Single network node - existing logic
         ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
         path = node_cfg['eth_docker_path']
         
-        # Fetch version output using ethd
+        # Fetch version output using ethd for single network nodes
         result = subprocess.run(
             f"ssh {ssh_target} \"cd {path} && ./ethd version\"",
             shell=True, capture_output=True, text=True
         )
         output = result.stdout + result.stderr
-        
-        # Also get versions using our Docker detection method for latest versions
-        try:
-            version_info = get_docker_client_versions(node_cfg)
-        except:
-            version_info = {}
         
         # Identify components
         exec_comp = node_cfg.get('exec_client', '')
