@@ -17,6 +17,32 @@ from .validator_editor import InteractiveValidatorEditor
 
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
 
+def _is_stack_disabled(stack):
+    """Check if stack is disabled - supports both string and list format"""
+    if isinstance(stack, list):
+        return 'disabled' in stack
+    else:
+        return stack == 'disabled'
+
+def _has_ethereum_clients(node_cfg):
+    """Check if node has Ethereum clients configured"""
+    # Check for clients in single network format
+    exec_client = node_cfg.get('exec_client', '')
+    consensus_client = node_cfg.get('consensus_client', '')
+    has_clients = bool(exec_client and consensus_client)
+    
+    # If no clients at root level, check networks
+    if not has_clients:
+        networks = node_cfg.get('networks', {})
+        for network_key, network_config in networks.items():
+            net_exec = network_config.get('exec_client', '')
+            net_consensus = network_config.get('consensus_client', '')
+            if net_exec and net_consensus:
+                has_clients = True
+                break
+    
+    return has_clients
+
 @click.group()
 def cli():
     """🚀 Ethereum Node and Validator Cluster Manager"""
@@ -265,24 +291,9 @@ def upgrade(node):
     # Check if Ethereum clients are disabled
     stack = node_cfg.get('stack', 'eth-docker')
     
-    # Check for clients in single network format
-    exec_client = node_cfg.get('exec_client', '')
-    consensus_client = node_cfg.get('consensus_client', '')
-    
-    # Check for clients in multi-network format
-    networks = node_cfg.get('networks', {})
-    has_clients = bool(exec_client and consensus_client)
-    
-    # If no clients at root level, check networks
-    if not has_clients and networks:
-        for network_key, network_config in networks.items():
-            net_exec = network_config.get('exec_client', '')
-            net_consensus = network_config.get('consensus_client', '')
-            if net_exec and net_consensus:
-                has_clients = True
-                break
-    
-    if (stack == 'disabled' or not has_clients):
+    if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
+        click.echo(f"⚪ Skipping {node} (Ethereum clients disabled)")
+        return
         click.echo(f"⚪ Skipping {node} (Ethereum clients disabled)")
         return
     
@@ -335,12 +346,8 @@ def versions_all():
         
         # Skip nodes with disabled eth-docker
         stack = node_cfg.get('stack', 'eth-docker')
-        exec_client = node_cfg.get('exec_client', '')
-        consensus_client = node_cfg.get('consensus_client', '')
         
-        if (stack == 'disabled' or 
-            (not exec_client and not consensus_client) or
-            (exec_client == '' and consensus_client == '')):
+        if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
             click.echo(f"  ⚪ Skipping {name} (Ethereum clients disabled)")
             continue
             
@@ -704,12 +711,8 @@ def upgrade_all():
         
         # Skip nodes with disabled eth-docker
         stack = node_cfg.get('stack', 'eth-docker')
-        exec_client = node_cfg.get('exec_client', '')
-        consensus_client = node_cfg.get('consensus_client', '')
         
-        if (stack == 'disabled' or 
-            (not exec_client and not consensus_client) or
-            (exec_client == '' and consensus_client == '')):
+        if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
             click.echo(f"⚪ Skipping {name} (Ethereum clients disabled)")
             continue
             
@@ -740,50 +743,15 @@ def versions(node):
     # Check if Ethereum clients are disabled
     stack = node_cfg.get('stack', 'eth-docker')
     
-    # Check for clients in single network format
-    exec_client = node_cfg.get('exec_client', '')
-    consensus_client = node_cfg.get('consensus_client', '')
-    
-    # Check for clients in multi-network format
-    networks = node_cfg.get('networks', {})
-    has_clients = bool(exec_client and consensus_client)
-    
-    # If no clients at root level, check networks
-    if not has_clients and networks:
-        for network_key, network_config in networks.items():
-            net_exec = network_config.get('exec_client', '')
-            net_consensus = network_config.get('consensus_client', '')
-            if net_exec and net_consensus:
-                has_clients = True
-                break
-    
-    if (stack == 'disabled' or not has_clients):
+    if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
         click.echo(f"⚪ Node {node} has Ethereum clients disabled")
         return
-    
-    # Handle multi-network nodes
-    if networks:
-        for network_key, network_config in networks.items():
-            network_name = network_config.get('network_name', network_key)
-            eth_docker_path = network_config.get('eth_docker_path', node_cfg.get('eth_docker_path'))
-            
-            click.echo(f"\n📡 {network_name.upper()} Network:")
-            if node_cfg.get('is_local'):
-                # Execute locally
-                cmd = f"cd {eth_docker_path} && ./ethd version"
-                subprocess.run(cmd, shell=True)
-            else:
-                # Execute via SSH
-                ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
-                cmd = f"ssh {ssh_target} \"cd {eth_docker_path} && ./ethd version\""
-                subprocess.run(cmd, shell=True)
-    else:
-        # Single network node
-        ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
-        path = node_cfg['eth_docker_path']
-        # Run full .ethd version remotely
-        cmd = f"ssh {ssh_target} \"cd {path} && ./ethd version\""
-        subprocess.run(cmd, shell=True)
+        
+    ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
+    path = node_cfg['eth_docker_path']
+    # Run full .ethd version remotely
+    cmd = f"ssh {ssh_target} \"cd {path} && ./ethd version\""
+    subprocess.run(cmd, shell=True)
 
 @node_group.command(name='client-versions')
 @click.argument('node_name', required=False)
