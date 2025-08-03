@@ -118,6 +118,15 @@ echo "💡 See README.md for detailed setup instructions"
             f.write(setup_content)
         os.chmod(setup_file, 0o755)
         
+        # Copy easy install scripts if they exist
+        for script in ['install.sh', 'install.bat']:
+            script_path = self.project_root / script
+            if script_path.exists():
+                dst_path = target_dir / f"easy-{script}"
+                shutil.copy2(script_path, dst_path)
+                if script.endswith('.sh'):
+                    os.chmod(dst_path, 0o755)
+        
     def create_readme(self, target_dir, release_type, description):
         """Create release-specific README"""
         release_info = RELEASE_TYPES[release_type]
@@ -146,19 +155,30 @@ echo "💡 See README.md for detailed setup instructions"
         readme_content += f"""
 
 ### 🚀 Quick Start:
+
+#### Option 1: Easy Install (Recommended)
+```bash
+# Extract the release
+unzip ethereum-validator-manager-{release_type}-v{self.version}.zip
+cd ethereum-validator-manager-{release_type}-v{self.version}
+
+# Easy install (creates simple 'eth-validators' command)
+./easy-install.sh
+
+# Use simple commands
+eth-validators --help
+eth-validators node list
+eth-validators performance summary
+```
+
+#### Option 2: Manual Install
 ```bash
 # Extract and install
 ./install.sh
-
-# Activate environment
 source venv/bin/activate
 
-# Configure your nodes
-cp eth_validators/config.example.yaml eth_validators/config.yaml
-# Edit config.yaml with your node details
-
-# Check cluster status
-python3 -m eth_validators node versions-all
+# Use with python module
+python3 -m eth_validators --help
 ```
 
 ### 📋 Requirements:
