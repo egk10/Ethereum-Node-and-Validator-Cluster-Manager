@@ -228,191 +228,281 @@ def list_cmd():
     
 
 @node_group.command(name='status')
-@click.argument('name')
-@click.option('--images', is_flag=True, help="Show full image names.")
-def status_cmd(name, images):
-    """Show status of one node."""
-    print(f"Fetching status for {name}...")
-    node_config = get_node_config(name)
-    if not node_config:
-        print(f"Node '{name}' not found in config.yaml.")
-        return
+@click.argument('node', required=False)
+@click.option('--all', 'show_all', is_flag=True, help="Show status for all nodes")
+@click.option('--images', is_flag=True, help="Show full image names")
+def status_cmd(node, show_all, images):
+    """Show status of one or all nodes"""
+    if show_all:
+        # Show status for all nodes
+        config = yaml.safe_load(CONFIG_PATH.read_text())
+        nodes = config.get('nodes', [])
+        
+        if not nodes:
+            click.echo("❌ No nodes found in configuration")
+            return
+            
+        click.echo("🖥️  CLUSTER STATUS OVERVIEW")
+        click.echo("=" * 80)
+        
+        for node_cfg in nodes:
+            node_name = node_cfg['name']
+            click.echo(f"\n📡 Node: {node_name}")
+            click.echo("-" * 40)
+            
+            status_data = get_node_status(node_cfg)
+            
+            # Show brief status
+            exec_status = status_data.get('execution_sync', 'Error')
+            consensus_status = status_data.get('consensus_sync', 'Error')
+            
+            click.echo(f"Execution Client: {exec_status}")
+            click.echo(f"Consensus Client: {consensus_status}")
+            
+    elif node:
+        # Show detailed status for specific node
+        print(f"Fetching status for {node}...")
+        node_config = get_node_config(node)
+        if not node_config:
+            print(f"Node '{node}' not found in config.yaml.")
+            return
 
-    status_data = get_node_status(node_config)
+        status_data = get_node_status(node_config)
 
-    print("\n--- Docker Containers ---")
-    print(status_data.get('docker_ps', 'Could not fetch docker status.'))
+        print("\n--- Docker Containers ---")
+        print(status_data.get('docker_ps', 'Could not fetch docker status.'))
 
-    print("\n--- Sync Status ---")
-    table_data = [
-        ["Execution Client", status_data.get('execution_sync', 'Error')],
-        ["Consensus Client", status_data.get('consensus_sync', 'Error')]
-    ]
-    print(tabulate(table_data, headers=["Client", "Status"], tablefmt="plain"))
-
-@node_group.command(name='status-single')
-@click.argument('node')
-@click.option('--images', is_flag=True, help='Also show container image versions')
-def status(node, images):
-    """Show status of a single node"""
-    config = yaml.safe_load(CONFIG_PATH.read_text())
-    node_cfg = next(
-        (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
-        None
-    )
-    if not node_cfg:
-        click.echo(f"Node {node} not found")
-        return
-    # SSH into node using ssh_user and run docker ps
-    ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
-    # Show running containers
-    subprocess.run(['ssh', ssh_target, 'docker', 'ps'])
-    if images:
-        # Show all service images defined in compose
-        compose_dir = node_cfg['eth_docker_path']
-        img_cmd = (
-            f"ssh {ssh_target} \"cd {compose_dir} && docker compose images\""
-        )
-        subprocess.run(img_cmd, shell=True)
+        print("\n--- Sync Status ---")
+        table_data = [
+            ["Execution Client", status_data.get('execution_sync', 'Error')],
+            ["Consensus Client", status_data.get('consensus_sync', 'Error')]
+        ]
+        print(tabulate(table_data, headers=["Client", "Status"], tablefmt="plain"))
+        
+        if images:
+            # Show container images
+            node_cfg = get_node_config(node)
+            if node_cfg:
+                ssh_target = f"root@{node_cfg['tailscale_domain']}"
+                compose_dir = node_cfg['eth_docker_path']
+                img_cmd = f"ssh {ssh_target} \"cd {compose_dir} && docker compose images\""
+                subprocess.run(img_cmd, shell=True)
+    else:
+        click.echo("❌ Please specify a node name or use --all flag")
+        click.echo("Usage: eth-validators node status <node_name>")
+        click.echo("       eth-validators node status --all")
 
 @node_group.command(name='upgrade')
-@click.argument('node')
-def upgrade(node):
-    """Run upgrade on a single node"""
+@click.argument('node', required=False)
+@click.option('--all', 'upgrade_all', is_flag=True, help="Upgrade all nodes")
+def upgrade_cmd(node, upgrade_all):
+    """Run upgrade on one or all nodes"""
     config = yaml.safe_load(CONFIG_PATH.read_text())
-    node_cfg = next(
-        (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
-        None
-    )
-    if not node_cfg:
-        click.echo(f"Node {node} not found")
-        return
     
-    # Check if Ethereum clients are disabled
-    stack = node_cfg.get('stack', 'eth-docker')
-    
-    if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
-        click.echo(f"⚪ Skipping {node} (Ethereum clients disabled)")
-        return
-        click.echo(f"⚪ Skipping {node} (Ethereum clients disabled)")
-        return
-    
-    click.echo(f"🔄 Upgrading {node}...")
-    
-    # Use the enhanced upgrade function that supports multi-network
-    result = upgrade_node_docker_clients(node_cfg)
-    
-    # Check if this is a multi-network result
-    if 'overall_success' in result:
-        # Multi-network node
-        if result['overall_success']:
-            click.echo(f"✅ {node} upgrade completed successfully for all networks")
-        else:
-            click.echo(f"❌ {node} upgrade had some failures")
+    if upgrade_all:
+        # Upgrade all nodes
+        click.echo("🔄 Starting upgrade for all nodes...")
         
-        # Show details for each network
-        for network_name, network_result in result.items():
-            if network_name == 'overall_success':
+        for node_cfg in config.get('nodes', []):
+            node_name = node_cfg['name']
+            
+            # Check if Ethereum clients are disabled
+            stack = node_cfg.get('stack', 'eth-docker')
+            if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
+                click.echo(f"⚪ Skipping {node_name} (Ethereum clients disabled)")
                 continue
             
-            if network_result['upgrade_success']:
-                click.echo(f"  ✅ {network_name}: Success")
-            else:
-                click.echo(f"  ❌ {network_name}: Failed")
-                if network_result.get('upgrade_error'):
-                    click.echo(f"     Error: {network_result['upgrade_error']}")
-    else:
-        # Single network node
-        if result['upgrade_success']:
-            click.echo(f"✅ {node} upgrade completed successfully")
-        else:
-            click.echo(f"❌ {node} upgrade failed")
-            if result.get('upgrade_error'):
-                click.echo(f"   Error: {result['upgrade_error']}")
-    
-    if result.get('upgrade_output'):
-        click.echo(f"   Output: {result['upgrade_output']}")
-
-@node_group.command(name='versions-all')
-def versions_all():
-    """Show client versions for all configured nodes"""
-    config = yaml.safe_load(CONFIG_PATH.read_text())
-    table = []
-    
-    click.echo("🔍 Fetching client versions and checking GitHub for latest releases...")
-    
-    for node_cfg in config.get('nodes', []):
-        name = node_cfg['name']
-        
-        # Skip nodes with disabled eth-docker
-        stack = node_cfg.get('stack', 'eth-docker')
-        
-        if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
-            click.echo(f"  ⚪ Skipping {name} (Ethereum clients disabled)")
-            continue
+            click.echo(f"🔄 Upgrading {node_name}...")
+            result = upgrade_node_docker_clients(node_cfg)
             
-        click.echo(f"  📡 Checking {name}...", nl=False)
+            if 'overall_success' in result:
+                # Multi-network node
+                if result['overall_success']:
+                    click.echo(f"✅ {node_name} upgrade completed successfully for all networks")
+                else:
+                    click.echo(f"❌ {node_name} upgrade had some failures")
+            else:
+                # Single network node
+                if result.get('upgrade_success'):
+                    click.echo(f"✅ {node_name} upgrade completed successfully")
+                else:
+                    click.echo(f"❌ {node_name} upgrade failed")
+                    if result.get('upgrade_error'):
+                        click.echo(f"   Error: {result['upgrade_error']}")
+                        
+    elif node:
+        # Upgrade single node
+        node_cfg = next(
+            (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
+            None
+        )
+        if not node_cfg:
+            click.echo(f"Node {node} not found")
+            return
         
-        # Get versions using our Docker detection method
-        try:
-            version_info = get_docker_client_versions(node_cfg)
-        except:
-            version_info = {}
+        # Check if Ethereum clients are disabled
+        stack = node_cfg.get('stack', 'eth-docker')
+        if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
+            click.echo(f"⚪ Skipping {node} (Ethereum clients disabled)")
+            return
         
-        # Check if this is a multi-network node
-        networks = node_cfg.get('networks', {})
-        if networks and isinstance(version_info, dict) and 'mainnet' in version_info:
-            # Multi-network node - add each network as separate entry
-            for network_key, network_data in version_info.items():
-                if isinstance(network_data, dict) and 'network' in network_data:
-                    network_name = network_data.get('network', network_key)
-                    display_name = f"{name}-{network_name}"
-                    
-                    # Extract version information
-                    exec_current = network_data.get('execution_current', 'N/A')
-                    exec_latest = network_data.get('execution_latest', 'Unknown')
-                    exec_client = network_data.get('execution_client', 'Unknown')
-                    exec_needs_update = network_data.get('execution_needs_update', False)
-                    
-                    cons_current = network_data.get('consensus_current', 'N/A')
-                    cons_latest = network_data.get('consensus_latest', 'Unknown')
-                    cons_client = network_data.get('consensus_client', 'Unknown')
-                    cons_needs_update = network_data.get('consensus_needs_update', False)
-                    
-                    validator_client = network_data.get('validator_client', 'N/A')
-                    if validator_client == 'N/A':
-                        validator_client = '-'
-                    
-                    # Format execution info
-                    exec_display = f"{exec_client}/{exec_current}" if exec_current != 'N/A' else 'N/A'
-                    cons_display = f"{cons_client}/{cons_current}" if cons_current != 'N/A' else 'N/A'
-                    
-                    # Status indicators
-                    exec_status = "🔄" if exec_needs_update else "✅"
-                    cons_status = "🔄" if cons_needs_update else "✅"
-                    
-                    # MEV Boost detection - simplified for multi-network
-                    mev_version = "N/A"
-                    mev_status = "-"
-                    
-                    table.append([
-                        display_name, exec_display, exec_latest, exec_status,
-                        cons_display, cons_latest, cons_status,
-                        validator_client, "-", "-",
-                        mev_version, mev_status
-                    ])
+        click.echo(f"🔄 Upgrading {node}...")
+        result = upgrade_node_docker_clients(node_cfg)
+        
+        # Check if this is a multi-network result
+        if 'overall_success' in result:
+            # Multi-network node
+            if result['overall_success']:
+                click.echo(f"✅ {node} upgrade completed successfully for all networks")
+            else:
+                click.echo(f"❌ {node} upgrade had some failures")
+            
+            # Show details for each network
+            for network_name, network_result in result.items():
+                if network_name == 'overall_success':
+                    continue
+                
+                if network_result['upgrade_success']:
+                    click.echo(f"  ✅ {network_name}: Success")
+                else:
+                    click.echo(f"  ❌ {network_name}: Failed")
+                    if network_result.get('upgrade_error'):
+                        click.echo(f"    Error: {network_result['upgrade_error']}")
+        else:
+            # Single network node
+            if result.get('upgrade_success'):
+                click.echo(f"✅ {node} upgrade completed successfully")
+            else:
+                click.echo(f"❌ {node} upgrade failed")
+                if result.get('upgrade_error'):
+                    click.echo(f"   Error: {result['upgrade_error']}")
+    else:
+        click.echo("❌ Please specify a node name or use --all flag")
+        click.echo("Usage: eth-validators node upgrade <node_name>")
+        click.echo("       eth-validators node upgrade --all")
+
+@node_group.command(name='versions')
+@click.argument('node', required=False)
+@click.option('--all', 'show_all', is_flag=True, help="Show versions for all nodes")
+def versions_cmd(node, show_all):
+    """Show client versions for one or all nodes"""
+    config = yaml.safe_load(CONFIG_PATH.read_text())
+    
+    if show_all:
+        # Show versions for all nodes (replacing versions-all)
+        table = []
+        
+        click.echo("🔍 Fetching client versions and checking GitHub for latest releases...")
+        
+        for node_cfg in config.get('nodes', []):
+            name = node_cfg['name']
+            
+            # Skip nodes with disabled eth-docker
+            stack = node_cfg.get('stack', 'eth-docker')
+            
+            if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
+                click.echo(f"  ⚪ Skipping {name} (Ethereum clients disabled)")
+                continue
+                
+            click.echo(f"  📡 Checking {name}...", nl=False)
+            
+            # Get versions using our Docker detection method
+            try:
+                version_info = get_docker_client_versions(node_cfg)
+            except:
+                version_info = {}
             
             click.echo(" ✅")
-            continue
+            
+            # Extract version information
+            exec_current = version_info.get('execution_current', 'N/A')
+            exec_latest = version_info.get('execution_latest', 'Unknown')
+            exec_client = version_info.get('execution_client', 'Unknown')
+            exec_needs_update = version_info.get('execution_needs_update', False)
+            
+            cons_current = version_info.get('consensus_current', 'N/A')
+            cons_latest = version_info.get('consensus_latest', 'Unknown')
+            cons_client = version_info.get('consensus_client', 'Unknown')
+            cons_needs_update = version_info.get('consensus_needs_update', False)
+            
+            # Format display
+            exec_display = f"{exec_client}/{exec_current}" if exec_current != 'N/A' else 'N/A'
+            cons_display = f"{cons_client}/{cons_current}" if cons_current != 'N/A' else 'N/A'
+            
+            # Status indicators
+            exec_status = "🔄" if exec_needs_update else "✅"
+            cons_status = "🔄" if cons_needs_update else "✅"
+            
+            table.append([
+                name,
+                f"{exec_status} {exec_display}",
+                f"{cons_status} {cons_display}"
+            ])
         
-        # Single network node - existing logic
-        ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
-        path = node_cfg['eth_docker_path']
+        if table:
+            click.echo("\n📊 CLIENT VERSIONS OVERVIEW")
+            click.echo("=" * 60)
+            headers = ["Node", "Execution Client", "Consensus Client"]
+            click.echo(tabulate(table, headers=headers, tablefmt="grid"))
+        else:
+            click.echo("❌ No active Ethereum nodes found")
+            
+    elif node:
+        # Show versions for specific node
+        node_cfg = next(
+            (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
+            None
+        )
+        if not node_cfg:
+            click.echo(f"Node {node} not found")
+            return
         
-        # Fetch version output using ethd for single network nodes
-        result = subprocess.run(
-            f"ssh {ssh_target} \"cd {path} && ./ethd version\"",
-            shell=True, capture_output=True, text=True
+        # Check if Ethereum clients are disabled
+        stack = node_cfg.get('stack', 'eth-docker')
+        if (_is_stack_disabled(stack) or not _has_ethereum_clients(node_cfg)):
+            click.echo(f"⚪ {node} has Ethereum clients disabled")
+            return
+        
+        click.echo(f"🔍 Fetching versions for {node}...")
+        
+        try:
+            version_info = get_docker_client_versions(node_cfg)
+            
+            click.echo(f"\n📊 CLIENT VERSIONS FOR {node.upper()}")
+            click.echo("=" * 50)
+            
+            # Display execution client info
+            exec_client = version_info.get('execution_client', 'Unknown')
+            exec_current = version_info.get('execution_current', 'N/A')
+            exec_latest = version_info.get('execution_latest', 'Unknown')
+            exec_needs_update = version_info.get('execution_needs_update', False)
+            
+            click.echo(f"⚙️  Execution Client: {exec_client}")
+            click.echo(f"   Current Version: {exec_current}")
+            click.echo(f"   Latest Version: {exec_latest}")
+            click.echo(f"   Status: {'🔄 Update Available' if exec_needs_update else '✅ Up to Date'}")
+            
+            # Display consensus client info
+            cons_client = version_info.get('consensus_client', 'Unknown')
+            cons_current = version_info.get('consensus_current', 'N/A')
+            cons_latest = version_info.get('consensus_latest', 'Unknown')
+            cons_needs_update = version_info.get('consensus_needs_update', False)
+            
+            click.echo(f"\n🔗 Consensus Client: {cons_client}")
+            click.echo(f"   Current Version: {cons_current}")
+            click.echo(f"   Latest Version: {cons_latest}")
+            click.echo(f"   Status: {'🔄 Update Available' if cons_needs_update else '✅ Up to Date'}")
+            
+        except Exception as e:
+            click.echo(f"❌ Error fetching versions: {e}")
+    else:
+        click.echo("❌ Please specify a node name or use --all flag")
+        click.echo("Usage: eth-validators node versions <node_name>")
+        click.echo("       eth-validators node versions --all")
+
+# Now remove the old redundant commands that have been replaced
+# Remove upgrade-all command (now handled by upgrade --all)
+# We need to find and remove the old @node_group.command(name='upgrade-all')
         )
         output = result.stdout + result.stderr
         
@@ -2237,9 +2327,7 @@ def _display_recommendations(recommendations, node_name, focus):
     click.echo("="*80)
 
 # Backward Compatibility Aliases for commonly used commands
-@cli.command(name='list')
-def list_alias():
-    """List all configured nodes (Legacy: use 'node list')"""
+# Legacy list command removed - use 'node list' instead
     config = yaml.safe_load(CONFIG_PATH.read_text())
     nodes = config.get('nodes', [])
     
