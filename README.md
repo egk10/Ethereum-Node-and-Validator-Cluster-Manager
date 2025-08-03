@@ -1,8 +1,59 @@
 # 🚀 Ethereum Node and Validator Cluster Manager
 
-**Contributing to Ethereum decentralization**
+[![GitHub release](https://img.shields.io/github/release/egk10/Ethereum-Node-and-Validator-Cluster-Manager.svg)](https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest)
+[![Docker Pulls](https://img.shields.io/docker/pulls/egk10/ethereum-node-and-validator-cluster-manager.svg)](https://hub.docker.com/r/egk10/ethereum-node-and-validator-cluster-manager)
 
-Bem-vindo ao toolkit open source para manutenção, upgrade e monitoramento de validadores Ethereum Mainnet!  
+## Contributing to Ethereum decentralization
+
+Sistema avançado para manutenção, upgrade e monitoramento de validadores Ethereum Mainnet com suporte multi-network!
+
+## 🚀 Instalação Rápida
+
+### Via Docker (Recomendado)
+
+```bash
+# Core (essencial)
+docker run --rm egk10/ethereum-node-and-validator-cluster-manager:latest-core --help
+
+# Com configuração
+docker run -v $PWD/config:/config egk10/ethereum-node-and-validator-cluster-manager:latest-standard node status
+```
+
+### Via Download
+
+```bash
+# Baixar release mais recente
+wget https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest/download/ethereum-validator-manager-core-v1.0.4.zip
+unzip ethereum-validator-manager-core-v1.0.4.zip
+cd ethereum-validator-manager-core-v1.0.4
+./install.sh
+```
+
+## 📦 Tipos de Release
+
+### 🎯 Core (~52KB) - Produção
+
+```bash
+docker pull egk10/ethereum-node-and-validator-cluster-manager:latest-core
+```
+
+### 🛠️ Standard (~59KB) - Core + Backup
+
+```bash
+docker pull egk10/ethereum-node-and-validator-cluster-manager:latest-standard
+```
+
+### 📊 Monitoring (~72KB) - Standard + Grafana
+
+```bash  
+docker pull egk10/ethereum-node-and-validator-cluster-manager:latest-monitoring
+```
+
+### 🧪 Full (~82KB) - Todos os recursos
+
+```bash
+docker pull egk10/ethereum-node-and-validator-cluster-manager:latest-full
+```  
 Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamento remoto via **Tailscale** e automação usando **ETH-DOCKER**.
 
 
