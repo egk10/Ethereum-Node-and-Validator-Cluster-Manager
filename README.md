@@ -7,16 +7,29 @@
 
 Sistema avançado para manutenção, upgrade e monitoramento de validadores Ethereum Mainnet com suporte multi-network!
 
+## 🎉 **Latest Release: v1.0.6** 
+🎯 **Consolidated CLI + Enhanced Charon Automation** - [📋 Full Installation Guide](INSTALL_v1.0.6.md)
+
 ## 🚀 Instalação Rápida
+
+### ⚡ Easy Install (Latest v1.0.6)
+```bash
+# Quick install with consolidated CLI
+curl -fsSL https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/download/v1.0.6/install.sh | bash
+
+# Test the new consolidated commands
+python3 -m eth_validators node list
+python3 -m eth_validators node versions --all
+```
 
 ### Via Docker (Recomendado)
 
 ```bash
-# Core (essencial)
-docker run --rm egk10/ethereum-node-and-validator-cluster-manager:latest-core --help
+# Latest v1.0.6 with consolidated CLI
+docker run --rm egk10/ethereum-node-and-validator-cluster-manager:1.0.6 python3 -m eth_validators --help
 
 # Com configuração
-docker run -v $PWD/config:/config egk10/ethereum-node-and-validator-cluster-manager:latest-standard node status
+docker run -v $PWD/config:/config egk10/ethereum-node-and-validator-cluster-manager:1.0.6-standard python3 -m eth_validators node list
 ```
 
 ### Via Download
