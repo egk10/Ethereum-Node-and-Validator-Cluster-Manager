@@ -1,35 +1,68 @@
 # Ethereum Validators Configuration
 
 nodes:
-  # Example node configuration
-  - name: "nameofournode"
-    ssh_user: "xxx"
-    eth_docker_path: "/home//eth-docker"
-    exec_client: "nethermind"
-    consensus_client: "nimbus"
-    beacon_api_port: 5051
-    stack: "eth-docker"
-    tailscale_domain: "xxxx.xxxx-xxxxx.ts.net"
-  - name: "xxxx node"
-    ssh_user: "xxx"
-    eth_docker_path: "/home/xxx/eth-docker"
-    exec_client: "reth"
-    consensus_client: "lighthouse"
+  # Example single-network node configurations
+  - name: "validator-node-1"
+    ssh_user: "root"
+    eth_docker_path: "/home/user/eth-docker"
     beacon_api_port: 5052
-    stack: "eth-docker"
-    tailscale_domain: "xxxx.xxxx-xxxxxts.net"
-  - name: "xxx node"
-    ssh_user: "xxx"
-    eth_docker_path: "/home/xxx/eth-docker"
-    exec_client: "besu"
-    consensus_client: "teku"
+    stack: ["eth-docker", "obol", "lido-csm"]
+    tailscale_domain: "node1.your-tailnet.ts.net"
+    
+  - name: "validator-node-2"
+    ssh_user: "root"
+    eth_docker_path: "/home/user/eth-docker"
     beacon_api_port: 5052
-    tailscale_domain: "xxx.xxxx-xxxxx.ts.net"
-  - name: "xxx node"
-    ssh_user: "xxx"
-    eth_docker_path: "/home/xxx/eth-docker"
-    exec_client: "nethermind"
-    consensus_client: "grandine"
+    stack: ["eth-docker", "hyperdrive"]
+    tailscale_domain: "node2.your-tailnet.ts.net"
+    
+  - name: "rocketpool-node"
+    ssh_user: "root"
+    eth_docker_path: "/home/user/eth-docker"
     beacon_api_port: 5052
-    tailscale_domain: "xxx.xxxx-xxxxx.ts.net"
+    stack: ["eth-docker", "rocketpool"]
+    tailscale_domain: "rp-node.your-tailnet.ts.net"
+    
+  # Example disabled node
+  - name: "backup-node"
+    ssh_user: "root"
+    eth_docker_path: "/home/user/eth-docker"
+    beacon_api_port: 5052
+    stack: ["disabled"]
+    ethereum_clients_enabled: false
+    tailscale_domain: "backup.your-tailnet.ts.net"
+    
+  # Example multi-network node (mainnet + testnet)
+  - name: "dev-machine"
+    ssh_user: "user"
+    eth_docker_path: "/home/user/eth-docker"
+    networks:
+      mainnet:
+        network_name: "mainnet"
+        container_prefix: "eth-docker"
+        beacon_api_port: 5052
+        eth_docker_path: "/home/user/eth-docker"
+      testnet:
+        network_name: "holesky"
+        container_prefix: "eth-holesky"
+        beacon_api_port: 5153
+        eth_docker_path: "/home/user/eth-holesky"
+    stack: ["eth-docker", "eth-holesky"]
+    is_local: true
+    tailscale_domain: "dev-machine.your-tailnet.ts.net"
+
+# Validator directory configuration
+validators_csv: "validators_vs_hardware.csv"
+
+# Default settings
+default_ssh_timeout: 30
+default_container_timeout: 300
+
+# NOTES:
+# - Client information (execution_client, consensus_client, validator_client) 
+#   is now automatically detected from running Docker containers
+# - No need to manually specify client types in config
+# - The system will show live, real-time client information
+# - Supported stacks: eth-docker, obol, lido-csm, hyperdrive, rocketpool, ssv
+# - Use stack: ["disabled"] to exclude nodes from monitoring
 

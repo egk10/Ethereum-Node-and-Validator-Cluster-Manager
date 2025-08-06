@@ -7,12 +7,21 @@ import requests
 import json
 import socket
 import time
+import re
+
+def _is_stack_disabled(stack):
+    """Check if stack is disabled - supports both string and list format"""
+    if isinstance(stack, list):
+        return 'disabled' in stack
+    else:
+        return stack == 'disabled'
 
 def _get_free_port():
     """Finds and returns a free local port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('', 0))
         return s.getsockname()[1]
+
 
 def _get_execution_sync_status(api_url):
     """
@@ -363,90 +372,91 @@ def _get_multi_network_client_versions(node_config):
     all_results = {}
     
     for network_name, network_config in networks.items():
-        # Get containers for this network
-        container_prefix = network_config.get('container_prefix', 'eth-docker')
-        
-        if ssh_target is None:
-            containers_cmd = f"docker ps --format '{{{{.Names}}}}:{{{{.Image}}}}' | grep '{container_prefix}' 2>/dev/null || echo 'No containers'"
-        else:
-            containers_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker ps --format \"{{{{.Names}}}}:{{{{.Image}}}}\" | grep \"{container_prefix}\" 2>/dev/null || echo \"No containers\"'"
-        
-        containers_process = subprocess.run(containers_cmd, shell=True, capture_output=True, text=True, timeout=20)
-        
-        network_results = {
-            'network': network_config.get('network_name', network_name),  # Use network_name if available
-            'execution_current': 'Unknown',
-            'execution_latest': 'Unknown',
-            'execution_client': network_config.get('exec_client', 'Unknown'),
-            'consensus_current': 'Unknown', 
-            'consensus_latest': 'Unknown',
-            'consensus_client': network_config.get('consensus_client', 'Unknown'),
-            'validator_current': 'N/A',
-            'validator_latest': 'N/A',
-            'validator_client': 'N/A',
-            'execution_needs_update': False,
-            'consensus_needs_update': False,
-            'validator_needs_update': False,
-            'needs_client_update': False
-        }
-        
-        if containers_process.returncode == 0 and "No containers" not in containers_process.stdout:
-            container_lines = containers_process.stdout.strip().split('\n')
+        try:
+            # Get containers for this network
+            container_prefix = network_config.get('container_prefix', 'eth-docker')
             
-            for line in container_lines:
-                if ':' in line:
-                    container_name, image = line.split(':', 1)
-                    
-                    # Identify execution client
-                    if 'execution' in container_name.lower():
-                        client_name = _identify_client_from_image(image, 'execution')
-                        if client_name != "Unknown":
-                            # Try docker exec first for better reliability
-                            exec_version = _get_version_via_docker_exec(ssh_target, container_name, client_name)
-                            if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
-                                network_results['execution_current'] = exec_version
-                            else:
-                                network_results['execution_current'] = _get_client_version_from_logs(ssh_target, container_name, client_name)
-                            network_results['execution_client'] = client_name
-                    
-                    # Identify consensus client
-                    elif 'consensus' in container_name.lower():
-                        client_name = _identify_client_from_image(image, 'consensus')
-                        if client_name != "Unknown":
-                            # Try docker exec first for better reliability  
-                            exec_version = _get_version_via_docker_exec(ssh_target, container_name, client_name)
-                            if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
-                                network_results['consensus_current'] = exec_version
-                            else:
-                                network_results['consensus_current'] = _get_client_version_from_logs(ssh_target, container_name, client_name)
-                            network_results['consensus_client'] = client_name
-        
-        # Get latest versions from GitHub releases for this network
-        exec_client_name = network_results['execution_client']
-        cons_client_name = network_results['consensus_client']
-        
-        if exec_client_name != "Unknown":
-            network_results['execution_latest'] = _get_latest_github_release(exec_client_name)
-            network_results['execution_needs_update'] = _version_needs_update(
-                network_results['execution_current'], 
-                network_results['execution_latest']
+            if ssh_target is None:
+                containers_cmd = f"docker ps --format '{{{{.Names}}}}:{{{{.Image}}}}' | grep '{container_prefix}' 2>/dev/null || echo 'No containers'"
+            else:
+                containers_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker ps --format \"{{{{.Names}}}}:{{{{.Image}}}}\" | grep \"{container_prefix}\" 2>/dev/null || echo \"No containers\"'"
+            
+            containers_process = subprocess.run(containers_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            
+            network_results = {
+                'network': network_config.get('network_name', network_name),
+                'execution_current': 'Unknown',
+                'execution_latest': 'Unknown',
+                'execution_client': 'Unknown',
+                'consensus_current': 'Unknown', 
+                'consensus_latest': 'Unknown',
+                'consensus_client': 'Unknown',
+                'validator_current': 'N/A',
+                'validator_latest': 'N/A',
+                'validator_client': 'N/A',
+                'execution_needs_update': False,
+                'consensus_needs_update': False,
+                'validator_needs_update': False,
+                'needs_client_update': False
+            }
+            
+            if containers_process.returncode == 0 and "No containers" not in containers_process.stdout:
+                container_lines = containers_process.stdout.strip().split('\n')
+                
+                for line in container_lines:
+                    if ':' in line:
+                        container_name, image = line.split(':', 1)
+                        
+                        # Identify execution client
+                        if 'execution' in container_name.lower():
+                            client_name = _identify_client_from_image(image, 'execution')
+                            if client_name != "Unknown":
+                                exec_version = _get_version_via_docker_exec(ssh_target, container_name, client_name)
+                                if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
+                                    network_results['execution_current'] = exec_version
+                                else:
+                                    network_results['execution_current'] = _get_client_version_from_logs(ssh_target, container_name, client_name)
+                                network_results['execution_client'] = client_name
+                        
+                        # Identify consensus client
+                        elif 'consensus' in container_name.lower():
+                            client_name = _identify_client_from_image(image, 'consensus')
+                            if client_name != "Unknown":
+                                exec_version = _get_version_via_docker_exec(ssh_target, container_name, client_name)
+                                if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
+                                    network_results['consensus_current'] = exec_version
+                                else:
+                                    network_results['consensus_current'] = _get_client_version_from_logs(ssh_target, container_name, client_name)
+                                network_results['consensus_client'] = client_name
+            
+            # Get latest versions from GitHub releases for this network
+            exec_client_name = network_results['execution_client']
+            cons_client_name = network_results['consensus_client']
+            
+            if exec_client_name != "Unknown":
+                network_results['execution_latest'] = _get_latest_github_release(exec_client_name)
+                network_results['execution_needs_update'] = _version_needs_update(
+                    network_results['execution_current'], 
+                    network_results['execution_latest']
+                )
+            
+            if cons_client_name != "Unknown":
+                network_results['consensus_latest'] = _get_latest_github_release(cons_client_name)
+                network_results['consensus_needs_update'] = _version_needs_update(
+                    network_results['consensus_current'], 
+                    network_results['consensus_latest']
+                )
+            
+            # Set overall needs_client_update flag
+            network_results['needs_client_update'] = (
+                network_results['execution_needs_update'] or 
+                network_results['consensus_needs_update'] or 
+                network_results['validator_needs_update']
             )
-        
-        if cons_client_name != "Unknown":
-            network_results['consensus_latest'] = _get_latest_github_release(cons_client_name)
-            network_results['consensus_needs_update'] = _version_needs_update(
-                network_results['consensus_current'], 
-                network_results['consensus_latest']
-            )
-        
-        # Set overall needs_client_update flag
-        network_results['needs_client_update'] = (
-            network_results['execution_needs_update'] or 
-            network_results['consensus_needs_update'] or 
-            network_results['validator_needs_update']
-        )
-        
-        all_results[network_name] = network_results
+            
+            all_results[network_name] = network_results
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            all_results[network_name] = {'error': f"Failed to get versions for {network_name}: {e}"}
     
     return all_results
 
@@ -456,15 +466,10 @@ def _get_single_network_client_versions(node_config):
     
     # Skip nodes with disabled eth-docker or explicitly disabled Ethereum clients
     stack = node_config.get('stack', ['eth-docker'])
-    exec_client = node_config.get('exec_client', '')
-    consensus_client = node_config.get('consensus_client', '')
-    validator_client = node_config.get('validator_client', '')
     ethereum_clients_enabled = node_config.get('ethereum_clients_enabled', True)
-    
-    if (stack == ['disabled'] or 
-        ethereum_clients_enabled is False or
-        (not exec_client and not consensus_client) or
-        (exec_client == '' and consensus_client == '')):
+
+    if (_is_stack_disabled(stack) or 
+        ethereum_clients_enabled is False):
         results = {
             'execution_current': 'Disabled',
             'execution_latest': 'N/A',
@@ -501,7 +506,7 @@ def _get_single_network_client_versions(node_config):
             # Remote execution via SSH
             containers_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker ps --format \"{{{{.Names}}}}:{{{{.Image}}}}\" 2>/dev/null || echo \"Error\"'"
             
-        containers_process = subprocess.run(containers_cmd, shell=True, capture_output=True, text=True, timeout=20)
+        containers_process = subprocess.run(containers_cmd, shell=True, capture_output=True, text=True, timeout=10)
         
         # Initialize results
         execution_current = "Unknown"
@@ -540,21 +545,19 @@ def _get_single_network_client_versions(node_config):
                         consensus_image = image
                     
                     # Identify validator clients (separate from consensus)
-                    # Prioritize Lodestar validator containers in DVT setups if configured
+                    # Detect Lodestar validator containers in DVT setups
                     elif ('lodestar' in image.lower() and 'lodestar' in container_name.lower() and 
-                          consensus_container != container_name and 
-                          validator_client == "lodestar"):
+                          consensus_container != container_name):
                         # Specific detection for Lodestar validator containers in DVT setups
                         validator_client_name = "lodestar"
                         validator_container = container_name
                         validator_image = image
                     elif (any(val_client in container_name.lower() for val_client in 
                              ['validator', 'vc']) and 'grafana' not in container_name.lower() and 'prometheus' not in container_name.lower()):
-                        # Standard validator containers (only if no lodestar DVT already found)
-                        if not (validator_client == "lodestar" and validator_container):
-                            validator_client_name = _identify_client_from_image(image, 'validator')
-                            validator_container = container_name
-                            validator_image = image
+                        # Standard validator containers
+                        validator_client_name = _identify_client_from_image(image, 'validator')
+                        validator_container = container_name
+                        validator_image = image
         
         # Get actual versions from Docker logs, with fallback to image version and exec command
         if execution_container and execution_client_name != "Unknown":
@@ -602,22 +605,12 @@ def _get_single_network_client_versions(node_config):
                 if validator_current in ["No Version Found", "Empty Logs", "Log Error", "Unknown", "Exec Error"]:
                     validator_current = _extract_image_version(f"image: {validator_image}")
         
-        # Handle case where validator client is configured but not detected as separate container
-        # This can happen in all-in-one setups or when config specifies a separate validator client
-        if validator_client and validator_current == "Unknown":
-            # If validator_client is specified in config but not found as separate container,
-            # check if it might be the same as consensus client (all-in-one setup)
-            if validator_client.lower() == consensus_client_name.lower():
-                validator_current = consensus_current
-                validator_client_name = consensus_client_name
-            else:
-                # Try to detect from configured validator_client name
-                validator_client_name = validator_client
-                # Special case for DVT setups where lodestar runs inside charon container
-                if validator_client.lower() == "lodestar" and consensus_container and "charon" in consensus_container.lower():
-                    validator_current = _get_lodestar_version_from_container(ssh_target, consensus_container)
-                else:
-                    validator_current = "Not Running"
+        # Handle case where validator might be integrated with consensus client
+        # This can happen in all-in-one setups where validator runs with consensus
+        if validator_current == "Unknown" and consensus_client_name != "Unknown":
+            # Check if consensus client also runs validator (common in some setups)
+            # For now, assume separate validator detection is working correctly
+            pass
         
         # Get latest versions from GitHub releases
         execution_latest = "Unknown"

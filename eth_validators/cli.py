@@ -80,23 +80,16 @@ def _is_stack_disabled(stack):
         return stack == 'disabled'
 
 def _has_ethereum_clients(node_cfg):
-    """Check if node has Ethereum clients configured"""
-    # Check for clients in single network format
-    exec_client = node_cfg.get('exec_client', '')
-    consensus_client = node_cfg.get('consensus_client', '')
-    has_clients = bool(exec_client and consensus_client)
-    
-    # If no clients at root level, check networks
-    if not has_clients:
-        networks = node_cfg.get('networks', {})
-        for network_key, network_config in networks.items():
-            net_exec = network_config.get('exec_client', '')
-            net_consensus = network_config.get('consensus_client', '')
-            if net_exec and net_consensus:
-                has_clients = True
-                break
-    
-    return has_clients
+    """
+    Check if a node is configured to run Ethereum clients.
+    A node is considered to have clients if its stack is not 'disabled'
+    and the 'ethereum_clients_enabled' flag is not explicitly set to false.
+    """
+    if _is_stack_disabled(node_cfg.get('stack', [])):
+        return False
+    if node_cfg.get('ethereum_clients_enabled') is False:
+        return False
+    return True
 
 @click.group()
 def cli():
@@ -152,7 +145,7 @@ def _check_reboot_needed(ssh_user, tailscale_domain):
 
 @node_group.command(name='list')
 def list_cmd():
-    """Display static cluster overview from configuration with client diversity analysis"""
+    """Display a live cluster overview with real-time client diversity analysis."""
     config = yaml.safe_load(CONFIG_PATH.read_text())
     nodes = config.get('nodes', [])
     
@@ -160,126 +153,126 @@ def list_cmd():
         click.echo("❌ No nodes found in configuration")
         return
     
-    click.echo("🖥️  ETHEREUM NODE CLUSTER OVERVIEW")
-    click.echo("=" * 80)
+    click.echo("🖥️  ETHEREUM NODE CLUSTER OVERVIEW (LIVE DATA)")
+    click.echo("=" * 100)
+    click.echo("🔄 Fetching live data from all active nodes... (this may take a moment)")
     
-    # Prepare table data
     table_data = []
     active_nodes = 0
     disabled_nodes = 0
     
-    # Track client diversity
     exec_clients = {}
     consensus_clients = {}
     
-    for node in nodes:
+    for i, node in enumerate(nodes):
         name = node['name']
-        tailscale = node['tailscale_domain']
-        ssh_user = node.get('ssh_user', 'root')
-        exec_client = node.get('exec_client', '')
-        consensus_client = node.get('consensus_client', '')
         stack = node.get('stack', ['eth-docker'])
         
-        # Handle both old format (string) and new format (list)
-        if isinstance(stack, str):
-            stack = [stack]
-        
-        # Determine status
-        if ('disabled' in stack or 
-            (not exec_client and not consensus_client) or
-            (exec_client == '' and consensus_client == '')):
-            status_emoji = "🔴"
-            status_text = "Disabled"
-            disabled_nodes += 1
-        else:
-            status_emoji = "🟢"
-            status_text = "Active"
-            active_nodes += 1
-            
-            # Track client diversity (only for active nodes)
-            if exec_client:
-                exec_clients[exec_client] = exec_clients.get(exec_client, 0) + 1
-            if consensus_client:
-                consensus_clients[consensus_client] = consensus_clients.get(consensus_client, 0) + 1
-        
-        # Format client info with emojis
-        if exec_client and consensus_client:
-            clients = f"⚙️ {exec_client} + 🔗 {consensus_client}"
-        elif exec_client:
-            clients = f"⚙️ {exec_client} (exec only)"
-        elif consensus_client:
-            clients = f"🔗 {consensus_client} (consensus only)"
-        else:
-            clients = "❌ No clients"
+        click.echo(f"📡 Processing {name}... ({i+1}/{len(nodes)})", nl=False, err=True)
         
         # Stack info with emojis - handle multiple stacks
         stack_emojis = {
-            'eth-docker': '🐳',
-            'disabled': '🚫',
-            'rocketpool': '🚀',
-            'obol': '🔗',
-            'hyperdrive': '⚡',
-            'charon': '🌐',
-            'ssv': '📡',
-            'stakewise': '🏦'
+            'eth-docker': '🐳', 'disabled': '🚫', 'rocketpool': '🚀', 'obol': '🔗',
+            'hyperdrive': '⚡', 'charon': '🌐', 'ssv': '📡', 'stakewise': '🏦',
+            'lido-csm': '🏦', 'eth-hoodi': '🧪'
         }
         
         if 'disabled' in stack:
             stack_display = "🚫 disabled"
         else:
-            # Create display for multiple stacks
-            stack_parts = []
-            for s in stack:
-                emoji = stack_emojis.get(s.lower(), '⚙️')
-                stack_parts.append(f"{emoji} {s}")
+            stack_parts = [f"{stack_emojis.get(s.lower(), '⚙️')} {s}" for s in stack]
             stack_display = " + ".join(stack_parts)
-        
+
+        if _is_stack_disabled(stack) or not _has_ethereum_clients(node):
+            status_emoji = "🔴"
+            status_text = "Disabled"
+            clients = "❌ No clients"
+            disabled_nodes += 1
+            click.echo(" ✓", err=True)
+        else:
+            status_emoji = "🟢"
+            status_text = "Active"
+            active_nodes += 1
+            
+            # Use live client detection instead of static config
+            try:
+                version_info = get_docker_client_versions(node)
+                
+                # Handle multi-network nodes (like eliedesk)
+                if 'mainnet' in version_info or 'testnet' in version_info:
+                    # Multi-network node: aggregate unique clients from active networks only
+                    exec_names = set()
+                    cons_names = set()
+                    for net_info in version_info.values():
+                        if isinstance(net_info, dict) and 'error' not in net_info:
+                            exec_client = net_info.get('execution_client', 'Unknown')
+                            cons_client = net_info.get('consensus_client', 'Unknown')
+                            if exec_client not in ['Unknown', 'Error']:
+                                exec_names.add(exec_client)
+                            if cons_client not in ['Unknown', 'Error']:
+                                cons_names.add(cons_client)
+                    
+                    exec_client = ', '.join(sorted(exec_names)) if exec_names else "N/A"
+                    consensus_client = ', '.join(sorted(cons_names)) if cons_names else "N/A"
+                else:
+                    # Single network node
+                    exec_client = version_info.get('execution_client', 'N/A')
+                    consensus_client = version_info.get('consensus_client', 'N/A')
+
+                click.echo(" ✓", err=True)
+            except Exception as e:
+                # If live detection fails, show error status
+                exec_client = 'Error'
+                consensus_client = 'Error'
+                click.echo(f" ❌ Error: {str(e)[:30]}...", err=True)
+
+            # Track diversity
+            if exec_client and exec_client not in ['Unknown', 'Error', 'N/A']:
+                exec_clients[exec_client] = exec_clients.get(exec_client, 0) + 1
+            if consensus_client and consensus_client not in ['Unknown', 'Error', 'N/A']:
+                consensus_clients[consensus_client] = consensus_clients.get(consensus_client, 0) + 1
+            
+            clients = f"⚙️  {exec_client} + 🔗 {consensus_client}"
+
         table_data.append([
             f"{status_emoji} {name}",
             status_text,
             clients,
             stack_display
         ])
-    
-    # Display table
-    headers = ['Node Name', 'Status', 'Ethereum Clients', 'Stack']
+
+    click.echo("\nRendering table...")
+    headers = ['Node Name', 'Status', 'Live Ethereum Clients', 'Stack']
     click.echo(tabulate(table_data, headers=headers, tablefmt='fancy_grid'))
     
-    # Summary statistics
     click.echo(f"\n📊 CLUSTER SUMMARY:")
     click.echo(f"  🟢 Active nodes: {active_nodes}")
     click.echo(f"  🔴 Disabled nodes: {disabled_nodes}")
     click.echo(f"  📈 Total nodes: {len(nodes)}")
     
-    # Client diversity analysis
     if exec_clients or consensus_clients:
-        click.echo(f"\n🌐 CLIENT DIVERSITY:")
+        click.echo(f"\n🌐 LIVE CLIENT DIVERSITY (from {active_nodes} active nodes):")
         if exec_clients:
             exec_total = sum(exec_clients.values())
             click.echo(f"  ⚙️  Execution clients:")
-            for client, count in exec_clients.items():
-                percentage = (count / exec_total) * 100
+            for client, count in sorted(exec_clients.items()):
+                percentage = (count / exec_total) * 100 if exec_total > 0 else 0
                 click.echo(f"    • {client}: {count} node(s) ({percentage:.1f}%)")
         
         if consensus_clients:
             consensus_total = sum(consensus_clients.values())
             click.echo(f"  🔗 Consensus clients:")
-            for client, count in consensus_clients.items():
-                percentage = (count / consensus_total) * 100
+            for client, count in sorted(consensus_clients.items()):
+                percentage = (count / consensus_total) * 100 if consensus_total > 0 else 0
                 click.echo(f"    • {client}: {count} node(s) ({percentage:.1f}%)")
         
-        # Diversity warning
-        if exec_clients and len(exec_clients) == 1:
-            click.echo(f"  ⚠️  WARNING: All execution clients are the same type!")
-        if consensus_clients and len(consensus_clients) == 1:
-            click.echo(f"  ⚠️  WARNING: All consensus clients are the same type!")
+        if exec_clients and len(exec_clients) < 2:
+            click.echo(f"  ⚠️  WARNING: Low execution client diversity!")
+        if consensus_clients and len(consensus_clients) < 2:
+            click.echo(f"  ⚠️  WARNING: Low consensus client diversity!")
     
-    # Quick access info
-    click.echo(f"\n💡 QUICK ACCESS:")
-    click.echo(f"  📋 Live versions & status: python -m eth_validators node versions <node_name>")
-    click.echo(f"  🔍 Live validator duties: python -m eth_validators node inspect <node_name>")
-    click.echo(f"  🧠 AI log analysis: python -m eth_validators ai analyze <node_name>")
-    click.echo("=" * 80)
+    click.echo(f"\n💡 Use 'node versions --all' for detailed version and update status.")
+    click.echo("=" * 100)
 
 @node_group.command(name='upgrade')
 @click.argument('node', required=False)
