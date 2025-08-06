@@ -580,210 +580,115 @@ def versions(node, all):
     config = yaml.safe_load(CONFIG_PATH.read_text())
     
     if all:
-        # Use the enhanced table format (same as client-versions)
         nodes = config.get('nodes', [])
-        
         if not nodes:
             click.echo("❌ No nodes configured. Please check your config.yaml file.")
             return
-        
-        # Collect version information for all nodes
-        results = []
-        
-        # Get latest Charon version once for all nodes
         latest_charon = _get_latest_charon_version()
-        
+        table_data = []
+        active_nodes = 0
+        disabled_nodes = 0
         for node_cfg in nodes:
-            # Skip nodes with disabled eth-docker
+            name = node_cfg['name']
             stack = node_cfg.get('stack', ['eth-docker'])
-            
-            # Handle both old format (string) and new format (list)
             if isinstance(stack, str):
                 stack = [stack]
-            exec_client = node_cfg.get('exec_client', '')
-            consensus_client = node_cfg.get('consensus_client', '')
-            networks = node_cfg.get('networks', {})
-            ethereum_clients_enabled = node_cfg.get('ethereum_clients_enabled', True)
-            
-            # Check if clients are disabled
-            is_disabled = (
-                stack == ['disabled'] or 
-                ethereum_clients_enabled is False or
-                (not networks and not exec_client and not consensus_client) or
-                (not networks and exec_client == '' and consensus_client == '')
-            )
-            
-            if is_disabled:
-                click.echo(f"⚪ Skipping {node_cfg['name']} (Ethereum clients disabled)")
-                continue
-                
-            click.echo(f"Checking client versions for {node_cfg['name']}...")
-            
-            # Check for Charon version first
-            ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
-            charon_version = _get_charon_version(ssh_target, node_cfg['tailscale_domain'])
-            
-            try:
-                version_info = get_docker_client_versions(node_cfg)
-                
-                # Check if this is a multi-network result
-                if 'mainnet' in version_info or 'testnet' in version_info:
-                    # Multi-network node (like eliedesk) - same logic as client-versions
-                    for network_key, network_info in version_info.items():
-                        exec_client = network_info.get('execution_client', 'Unknown')
-                        exec_current = network_info.get('execution_current', 'Unknown')
-                        exec_latest = network_info.get('execution_latest', 'Unknown')
-                        exec_needs_update = network_info.get('execution_needs_update', False)
-                        
-                        cons_client = network_info.get('consensus_client', 'Unknown')
-                        cons_current = network_info.get('consensus_current', 'Unknown')
-                        cons_latest = network_info.get('consensus_latest', 'Unknown')
-                        cons_needs_update = network_info.get('consensus_needs_update', False)
-                        
-                        # Get the actual network name (e.g., "hoodi", "sepolia") or fall back to key
-                        network_display_name = network_info.get('network', network_key)
-                        
-                        # Format execution display
-                        exec_display = f"{exec_client}/{exec_current}" if exec_current != "Unknown" else exec_client
-                        exec_latest_display = exec_latest if exec_latest not in ["Unknown", "API Error", "Network Error"] else "-"
-                        
-                        # Format consensus display
-                        cons_display = f"{cons_client}/{cons_current}" if cons_current != "Unknown" else cons_client
-                        cons_latest_display = cons_latest if cons_latest not in ["Unknown", "API Error", "Network Error"] else "-"
-                        
-                        # For multi-network, show network name in node name
-                        display_name = f"{node_cfg['name']}-{network_display_name}"
-                        
-                        # Add to results as list (same format as single-network nodes)
-                        charon_needs_update = (charon_version != "N/A" and 
-                                             latest_charon != "Unknown" and 
-                                             charon_version != latest_charon and 
-                                             charon_version != "latest")
-                        
-                        results.append([
-                            display_name,                                    # Node
-                            exec_display,                                    # Execution
-                            exec_latest_display,                             # Latest
-                            '🔄' if exec_needs_update else '✅',            # Status
-                            cons_display,                                    # Consensus
-                            cons_latest_display,                             # Latest
-                            '🔄' if cons_needs_update else '✅',            # Status
-                            "-",                                             # Validator
-                            "-",                                             # Latest
-                            "-",                                             # Status
-                            charon_version if charon_version != "N/A" else "-", # Charon
-                            latest_charon if charon_version != "N/A" else "-",  # Charon Latest
-                            "🔄" if charon_needs_update else "✅" if charon_version != "N/A" else "-" # Charon Status
-                        ])
-                    continue
-                
-                # Standard single-network processing - same logic as client-versions
-                # Get client names and versions
-                exec_client = version_info.get('execution_client', 'Unknown')
-                exec_current = version_info.get('execution_current', 'Unknown')
-                exec_latest = version_info.get('execution_latest', 'Unknown')
-                exec_needs_update = version_info.get('execution_needs_update', False)
-                
-                cons_client = version_info.get('consensus_client', 'Unknown')
-                cons_current = version_info.get('consensus_current', 'Unknown') 
-                cons_latest = version_info.get('consensus_latest', 'Unknown')
-                cons_needs_update = version_info.get('consensus_needs_update', False)
-                
-                val_client = version_info.get('validator_client', 'Unknown')
-                val_current = version_info.get('validator_current', 'Unknown')
-                val_latest = version_info.get('validator_latest', 'Unknown')
-                val_needs_update = version_info.get('validator_needs_update', False)
-                
-                # Format compact client/version display
-                if exec_client != "Unknown" and exec_current != "Unknown":
-                    exec_display = f"{exec_client}/{exec_current}"
-                else:
-                    exec_display = "Unknown"
-                    
-                if cons_client != "Unknown" and cons_current != "Unknown":
-                    cons_display = f"{cons_client}/{cons_current}"
-                else:
-                    cons_display = "Unknown"
-                    
-                if val_client != "Unknown" and val_current not in ["Unknown", "Not Running"] and val_client != "Disabled":
-                    val_display = f"{val_client}/{val_current}"
-                else:
-                    val_display = "-"
-                
-                # Format latest versions compactly
-                exec_latest_display = exec_latest if exec_latest != "Unknown" else "-"
-                cons_latest_display = cons_latest if cons_latest != "Unknown" else "-"
-                val_latest_display = val_latest if val_latest not in ["Unknown", "Not Running"] and val_client != "Disabled" else "-"
-                
-                # Add single row with all clients
-                charon_needs_update = (charon_version != "N/A" and 
-                                     latest_charon != "Unknown" and 
-                                     charon_version != latest_charon and 
-                                     charon_version != "latest")
-                
-                results.append([
-                    node_cfg['name'],
-                    exec_display,
-                    exec_latest_display,
-                    '🔄' if exec_needs_update else '✅',
-                    cons_display,
-                    cons_latest_display,
-                    '🔄' if cons_needs_update else '✅',
-                    val_display,
-                    val_latest_display,
-                    '🔄' if val_needs_update else '✅' if val_display != "-" else '-',
-                    charon_version if charon_version != "N/A" else "-",     # Charon
-                    latest_charon if charon_version != "N/A" else "-",      # Charon Latest
-                    "🔄" if charon_needs_update else "✅" if charon_version != "N/A" else "-" # Charon Status
-                ])
-            except Exception as e:
-                click.echo(f"❌ Error checking {node_cfg['name']}: {e}")
-                results.append([node_cfg['name'], 'Error', '-', '❌', 'Error', '-', '❌', 'Error', '-', '❌', '-', '-', '-'])
-        
-        # Display results in table format
-        if results:
-            headers = ['Node', 'Execution', 'Latest', '🔄', 'Consensus', 'Latest', '🔄', 'Validator', 'Latest', '🔄', 'Charon', 'Latest', '🔗']
-            click.echo("\n" + tabulate(results, headers=headers, tablefmt='grid'))
-            
-            # Summary
-            nodes_needing_updates = set()
-            exec_updates = 0
-            cons_updates = 0
-            val_updates = 0
-            charon_updates = 0
-            
-            for result in results:
-                if result[3] == '🔄':  # Execution Update column
-                    nodes_needing_updates.add(result[0])  # Node name
-                    exec_updates += 1
-                if result[6] == '🔄':  # Consensus Update column  
-                    nodes_needing_updates.add(result[0])  # Node name
-                    cons_updates += 1
-                if result[9] == '🔄':  # Validator Update column
-                    nodes_needing_updates.add(result[0])  # Node name
-                    val_updates += 1
-                if result[12] == '🔄':  # Charon Update column
-                    nodes_needing_updates.add(result[0])  # Node name
-                    charon_updates += 1
-            
-            click.echo(f"\n📊 Summary:")
-            if nodes_needing_updates:
-                click.echo(f"🔄 Nodes with client updates available: {', '.join(sorted(nodes_needing_updates))}")
-                if exec_updates > 0:
-                    click.echo(f"⚡ Execution clients needing updates: {exec_updates}")
-                if cons_updates > 0:
-                    click.echo(f"⛵ Consensus clients needing updates: {cons_updates}")
-                if val_updates > 0:
-                    click.echo(f"🔒 Validator clients needing updates: {val_updates}")
-                if charon_updates > 0:
-                    click.echo(f"🔗 Charon clients needing updates: {charon_updates}")
-                click.echo(f"💡 Run 'python -m eth_validators node upgrade <node>' to update specific nodes")
-                click.echo(f"💡 Run 'python -m eth_validators node upgrade --all' to update all nodes")
-                click.echo(f"💡 Run 'python -m eth_validators node update-charon' to update Charon on Obol nodes")
+            status_emoji = "🟢"
+            status_text = "Active"
+            exec_display = cons_display = val_display = charon_display = "-"
+            exec_latest_display = cons_latest_display = val_latest_display = charon_latest_display = "-"
+            exec_update = cons_update = val_update = charon_update = "-"
+            # Disabled node logic
+            if _is_stack_disabled(stack) or node_cfg.get('ethereum_clients_enabled') is False:
+                status_emoji = "🔴"
+                status_text = "Disabled"
+                disabled_nodes += 1
             else:
-                click.echo("✅ All Ethereum clients are up to date!")
-        else:
-            click.echo("❌ No version information collected.")
+                active_nodes += 1
+                ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
+                charon_version = _get_charon_version(ssh_target, node_cfg['tailscale_domain'])
+                try:
+                    version_info = get_docker_client_versions(node_cfg)
+                    # Multi-network node
+                    if 'mainnet' in version_info or 'testnet' in version_info:
+                        for network_key, network_info in version_info.items():
+                            network_display_name = network_info.get('network', network_key)
+                            exec_client = network_info.get('execution_client', 'Unknown')
+                            exec_current = network_info.get('execution_current', 'Unknown')
+                            exec_latest = network_info.get('execution_latest', 'Unknown')
+                            exec_needs_update = network_info.get('execution_needs_update', False)
+                            cons_client = network_info.get('consensus_client', 'Unknown')
+                            cons_current = network_info.get('consensus_current', 'Unknown')
+                            cons_latest = network_info.get('consensus_latest', 'Unknown')
+                            cons_needs_update = network_info.get('consensus_needs_update', False)
+                            val_client = network_info.get('validator_client', '-')
+                            val_current = network_info.get('validator_current', '-')
+                            val_latest = network_info.get('validator_latest', '-')
+                            val_needs_update = network_info.get('validator_needs_update', False)
+                            charon_needs_update = (charon_version != "N/A" and latest_charon != "Unknown" and charon_version != latest_charon and charon_version != "latest")
+                            exec_display = f"{exec_client}/{exec_current}" if exec_client != "Unknown" else "-"
+                            exec_latest_display = exec_latest if exec_latest not in ["Unknown", "API Error", "Network Error"] else "-"
+                            exec_update = '🔄' if exec_needs_update else '✅'
+                            cons_display = f"{cons_client}/{cons_current}" if cons_client != "Unknown" else "-"
+                            cons_latest_display = cons_latest if cons_latest not in ["Unknown", "API Error", "Network Error"] else "-"
+                            cons_update = '🔄' if cons_needs_update else '✅'
+                            val_display = f"{val_client}/{val_current}" if val_client not in ["Unknown", "Disabled", "-"] and val_current not in ["Unknown", "Not Running", "-"] else "-"
+                            val_latest_display = val_latest if val_latest not in ["Unknown", "Not Running", "Disabled", "-"] else "-"
+                            val_update = '🔄' if val_needs_update else '✅' if val_display != "-" else '-'
+                            charon_display = charon_version if charon_version != "N/A" else "-"
+                            charon_latest_display = latest_charon if charon_version != "N/A" else "-"
+                            charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
+                            table_data.append([
+                                f"{status_emoji} {name}-{network_display_name}", status_text, exec_display, exec_latest_display, exec_update, cons_display, cons_latest_display, cons_update, val_display, val_latest_display, val_update, charon_display, charon_latest_display, charon_update
+                            ])
+                        continue
+                    # Single-network node
+                    exec_client = version_info.get('execution_client', 'Unknown')
+                    exec_current = version_info.get('execution_current', 'Unknown')
+                    exec_latest = version_info.get('execution_latest', 'Unknown')
+                    exec_needs_update = version_info.get('execution_needs_update', False)
+                    cons_client = version_info.get('consensus_client', 'Unknown')
+                    cons_current = version_info.get('consensus_current', 'Unknown')
+                    cons_latest = version_info.get('consensus_latest', 'Unknown')
+                    cons_needs_update = version_info.get('consensus_needs_update', False)
+                    val_client = version_info.get('validator_client', '-')
+                    val_current = version_info.get('validator_current', '-')
+                    val_latest = version_info.get('validator_latest', '-')
+                    val_needs_update = version_info.get('validator_needs_update', False)
+                    charon_needs_update = (charon_version != "N/A" and latest_charon != "Unknown" and charon_version != latest_charon and charon_version != "latest")
+                    exec_display = f"{exec_client}/{exec_current}" if exec_client != "Unknown" else "-"
+                    exec_latest_display = exec_latest if exec_latest not in ["Unknown", "API Error", "Network Error"] else "-"
+                    exec_update = '🔄' if exec_needs_update else '✅'
+                    cons_display = f"{cons_client}/{cons_current}" if cons_client != "Unknown" else "-"
+                    cons_latest_display = cons_latest if cons_latest not in ["Unknown", "API Error", "Network Error"] else "-"
+                    cons_update = '🔄' if cons_needs_update else '✅'
+                    val_display = f"{val_client}/{val_current}" if val_client not in ["Unknown", "Disabled", "-"] and val_current not in ["Unknown", "Not Running", "-"] else "-"
+                    val_latest_display = val_latest if val_latest not in ["Unknown", "Not Running", "Disabled", "-"] else "-"
+                    val_update = '🔄' if val_needs_update else '✅' if val_display != "-" else '-'
+                    charon_display = charon_version if charon_version != "N/A" else "-"
+                    charon_latest_display = latest_charon if charon_version != "N/A" else "-"
+                    charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
+                    table_data.append([
+                        f"{status_emoji} {name}", status_text, exec_display, exec_latest_display, exec_update, cons_display, cons_latest_display, cons_update, val_display, val_latest_display, val_update, charon_display, charon_latest_display, charon_update
+                    ])
+                except Exception as e:
+                    table_data.append([
+                        f"{status_emoji} {name}", status_text, 'Error', '-', '❌', 'Error', '-', '❌', 'Error', '-', '❌', '-', '-', '-'
+                    ])
+            # Disabled node row
+            if status_text == "Disabled":
+                table_data.append([
+                    f"{status_emoji} {name}", status_text, '❌ No clients', '-', '-', '❌ No clients', '-', '-', '-', '-', '-', '-', '-', '-'
+                ])
+        headers = ['Node Name', 'Status', 'Execution', 'Exec Latest', 'Exec Update', 'Consensus', 'Cons Latest', 'Cons Update', 'Validator', 'Val Latest', 'Val Update', 'Charon', 'Charon Latest', 'Charon Update']
+        click.echo("\nRendering table...")
+        click.echo(tabulate(table_data, headers=headers, tablefmt='fancy_grid'))
+        click.echo(f"\n📊 CLUSTER SUMMARY:")
+        click.echo(f"  🟢 Active nodes: {active_nodes}")
+        click.echo(f"  � Disabled nodes: {disabled_nodes}")
+        click.echo(f"  � Total nodes: {len(nodes)}")
+        click.echo(f"\n💡 Use 'node upgrade --all' to update all nodes.")
+        click.echo("=" * 100)
         return
     
     if not node:
