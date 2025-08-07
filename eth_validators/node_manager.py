@@ -223,10 +223,11 @@ def get_system_update_status(node_config):
     excluding phased updates that Ubuntu intentionally holds back.
     
     Fallback strategy: If APT is locked/busy, uses apt-check as alternative.
+    Supports both local and remote nodes.
     """
     results = {}
     ssh_user = node_config.get('ssh_user', 'root')
-    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    is_local = node_config.get('is_local', False)
     
     # Primary method: Wait for APT locks to be released, then check updates
     if ssh_user == 'root':
@@ -234,12 +235,17 @@ def get_system_update_status(node_config):
         apt_wait_cmd = 'timeout=30; while [ $timeout -gt 0 ] && (fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1); do sleep 2; timeout=$((timeout-2)); done'
         apt_check_cmd = 'if [ $timeout -gt 0 ]; then apt update >/dev/null 2>&1 && apt upgrade -s 2>/dev/null | grep "^Inst " | wc -l; else echo "FALLBACK"; fi'
         full_cmd = f'{apt_wait_cmd}; {apt_check_cmd}'
-        check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{full_cmd}'"
     else:
         # Wait for locks (max 30 seconds), then check updates  
         apt_wait_cmd = 'timeout=30; while [ $timeout -gt 0 ] && (sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1); do sleep 2; timeout=$((timeout-2)); done'
         apt_check_cmd = 'if [ $timeout -gt 0 ]; then sudo apt update >/dev/null 2>&1 && sudo apt upgrade -s 2>/dev/null | grep "^Inst " | wc -l; else echo "FALLBACK"; fi'
         full_cmd = f'{apt_wait_cmd}; {apt_check_cmd}'
+    
+    # Execute command locally or via SSH
+    if is_local:
+        check_cmd = full_cmd
+    else:
+        ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
         check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{full_cmd}'"
     
     try:
@@ -250,9 +256,16 @@ def get_system_update_status(node_config):
             # Check if we need to use fallback method
             if output == "FALLBACK":
                 # Use apt-check as fallback when APT is locked/busy
-                fallback_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '/usr/lib/update-notifier/apt-check 2>&1'"
-                if ssh_user != 'root':
-                    fallback_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'sudo /usr/lib/update-notifier/apt-check 2>&1'"
+                if is_local:
+                    if ssh_user == 'root':
+                        fallback_cmd = '/usr/lib/update-notifier/apt-check 2>&1'
+                    else:
+                        fallback_cmd = 'sudo /usr/lib/update-notifier/apt-check 2>&1'
+                else:
+                    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+                    fallback_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '/usr/lib/update-notifier/apt-check 2>&1'"
+                    if ssh_user != 'root':
+                        fallback_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'sudo /usr/lib/update-notifier/apt-check 2>&1'"
                 
                 fallback_process = subprocess.run(fallback_cmd, shell=True, capture_output=True, text=True, timeout=15)
                 if fallback_process.returncode == 0:
@@ -275,14 +288,14 @@ def get_system_update_status(node_config):
                 results['needs_system_update'] = update_count > 0
         else:
             # Better error reporting
-            error_msg = process.stderr.strip() if process.stderr.strip() else f"SSH connection failed (return code: {process.returncode})"
-            results['updates_available'] = f"Connection Error"
+            error_msg = process.stderr.strip() if process.stderr.strip() else f"Command failed (return code: {process.returncode})"
+            results['updates_available'] = f"Connection Error" if not is_local else f"Command Error"
             results['needs_system_update'] = False
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
         if isinstance(e, subprocess.TimeoutExpired):
             results['updates_available'] = "Timeout"
         else:
-            results['updates_available'] = "SSH Error"
+            results['updates_available'] = "SSH Error" if not is_local else "Local Error"
         results['needs_system_update'] = False
     
     return results
@@ -291,6 +304,7 @@ def perform_system_upgrade(node_config):
     """
     Performs Ubuntu system upgrade via SSH: sudo apt update && sudo apt upgrade -y
     This will actually install system updates on the remote node.
+    Supports both local and remote nodes.
     
     Note: Requires either:
     - SSH user is 'root', OR
@@ -298,7 +312,7 @@ def perform_system_upgrade(node_config):
     """
     results = {}
     ssh_user = node_config.get('ssh_user', 'root')
-    ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+    is_local = node_config.get('is_local', False)
     
     # Determine if we need sudo or not
     if ssh_user == 'root':
@@ -312,8 +326,12 @@ def perform_system_upgrade(node_config):
     else:
         full_cmd = f'while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do echo "Waiting for other apt process to finish..."; sleep 5; done; {apt_cmd}'
     
-    # Run the system upgrade command with proper SSH options
-    upgrade_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{full_cmd}'"
+    # Execute locally or via SSH
+    if is_local:
+        upgrade_cmd = full_cmd
+    else:
+        ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+        upgrade_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{full_cmd}'"
     
     try:
         process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=900)  # 15 minute timeout
@@ -327,9 +345,9 @@ def perform_system_upgrade(node_config):
             if 'sudo: a password is required' in results['upgrade_error']:
                 results['upgrade_error'] += f"\n\nTip: User '{ssh_user}' needs passwordless sudo access. Either:\n" \
                                           f"1. Use 'root' as ssh_user in config.yaml, OR\n" \
-                                          f"2. Configure passwordless sudo for '{ssh_user}' on the remote node"
+                                          f"2. Configure passwordless sudo for '{ssh_user}' {'locally' if is_local else 'on the remote node'}"
             elif 'Permission denied' in results['upgrade_error']:
-                results['upgrade_error'] += f"\n\nTip: Check SSH key authentication or user permissions"
+                results['upgrade_error'] += f"\n\nTip: Check {'local user permissions' if is_local else 'SSH key authentication or user permissions'}"
             elif 'Could not get lock' in results['upgrade_error']:
                 results['upgrade_error'] += f"\n\nTip: Another apt process was running. The command includes automatic waiting, but it may have timed out."
                 
