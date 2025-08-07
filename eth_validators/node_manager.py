@@ -446,6 +446,12 @@ def _get_multi_network_client_versions(node_config):
                     network_results['consensus_current'], 
                     network_results['consensus_latest']
                 )
+                
+                # Set validator client info to match consensus client
+                network_results['validator_client'] = cons_client_name
+                network_results['validator_current'] = network_results['consensus_current']
+                network_results['validator_latest'] = network_results['consensus_latest']
+                network_results['validator_needs_update'] = network_results['consensus_needs_update']
             
             # Set overall needs_client_update flag
             network_results['needs_client_update'] = (
@@ -522,6 +528,9 @@ def _get_single_network_client_versions(node_config):
         consensus_image = None
         validator_image = None
         
+        # For nodes with multiple validator clients, collect all of them
+        validator_clients = []  # List of (client_name, container, image)
+        
         # Parse running containers to identify clients and versions
         if containers_process.returncode == 0 and "Error" not in containers_process.stdout:
             container_lines = containers_process.stdout.strip().split('\n')
@@ -544,20 +553,43 @@ def _get_single_network_client_versions(node_config):
                         consensus_container = container_name
                         consensus_image = image
                     
-                    # Identify validator clients (separate from consensus)
+                    # Identify validator clients (separate from consensus) - collect multiple
+                    # Detect Vero validator containers (Lido CSM)
+                    elif 'vero' in image.lower() or ('eth-docker-validator' in container_name.lower() and 'vero' in image.lower()):
+                        validator_clients.append(("vero", container_name, image))
                     # Detect Lodestar validator containers in DVT setups
                     elif ('lodestar' in image.lower() and 'lodestar' in container_name.lower() and 
                           consensus_container != container_name):
                         # Specific detection for Lodestar validator containers in DVT setups
-                        validator_client_name = "lodestar"
-                        validator_container = container_name
-                        validator_image = image
+                        validator_clients.append(("lodestar", container_name, image))
                     elif (any(val_client in container_name.lower() for val_client in 
                              ['validator', 'vc']) and 'grafana' not in container_name.lower() and 'prometheus' not in container_name.lower()):
                         # Standard validator containers
-                        validator_client_name = _identify_client_from_image(image, 'validator')
-                        validator_container = container_name
-                        validator_image = image
+                        detected_client = _identify_client_from_image(image, 'validator')
+                        validator_clients.append((detected_client, container_name, image))
+        
+        # Choose primary validator client for version display
+        # Priority: Vero > Lodestar > Others (for multi-validator setups)
+        if validator_clients:
+            # Sort by priority: Vero first, then Lodestar, then others
+            def validator_priority(client_info):
+                client_name = client_info[0].lower()
+                if 'vero' in client_name:
+                    return 0  # Highest priority
+                elif 'lodestar' in client_name:
+                    return 1
+                else:
+                    return 2
+            
+            validator_clients.sort(key=validator_priority)
+            
+            # Use the highest priority validator as primary
+            validator_client_name, validator_container, validator_image = validator_clients[0]
+            
+            # For display purposes, show multiple validators if present
+            if len(validator_clients) > 1:
+                additional_validators = [client[0] for client in validator_clients[1:]]
+                # We'll use this information later in the display logic
         
         # Get actual versions from Docker logs, with fallback to image version and exec command
         if execution_container and execution_client_name != "Unknown":
@@ -587,16 +619,22 @@ def _get_single_network_client_versions(node_config):
                     consensus_current = _extract_image_version(f"image: {consensus_image}")
         
         if validator_container and validator_client_name != "Unknown":
+            # For Vero (Lido CSM), get version from container environment
+            if 'vero' in validator_client_name.lower():
+                validator_current = _get_vero_version_from_container(ssh_target, validator_container)
             # For Lodestar in DVT setup, use special version detection first
-            if 'lodestar' in validator_client_name.lower():
+            elif 'lodestar' in validator_client_name.lower():
                 validator_current = _get_lodestar_version_from_container(ssh_target, validator_container)
             else:
                 validator_current = _get_client_version_from_logs(ssh_target, validator_container, validator_client_name)
             
             # Fallback to other methods if needed  
             if validator_current in ["No Version Found", "Empty Logs", "Log Error", "Unknown"] or validator_current.startswith("Error:") or validator_current.startswith("Debug:"):
-                # Try to get version via docker exec command (for non-Lodestar clients)
-                if 'lodestar' not in validator_client_name.lower():
+                # Skip fallback methods for Vero (local builds don't respond to exec commands)
+                if 'vero' in validator_client_name.lower():
+                    validator_current = "local"
+                # Try to get version via docker exec command (for non-Lodestar, non-Vero clients)
+                elif 'lodestar' not in validator_client_name.lower():
                     exec_version = _get_version_via_docker_exec(ssh_target, validator_container, validator_client_name)
                     if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
                         validator_current = exec_version
@@ -622,9 +660,18 @@ def _get_single_network_client_versions(node_config):
         
         if consensus_client_name != "Unknown":
             consensus_latest = _get_latest_github_release(consensus_client_name)
-            
-        if validator_client_name != "Unknown" and validator_client_name != "Not Running":
+        
+        # Handle validator client separately - don't assume it's the same as consensus client
+        if validator_client_name != "Unknown" and validator_client_name != consensus_client_name:
+            # Separate validator client detected (e.g., Vero, Charon, etc.)
             validator_latest = _get_latest_github_release(validator_client_name)
+        elif validator_client_name == "Unknown" and consensus_client_name != "Unknown":
+            # No separate validator detected, fallback to consensus client for validator duties
+            validator_client_name = consensus_client_name
+            validator_current = consensus_current
+            validator_latest = consensus_latest
+        else:
+            validator_latest = "Unknown"
         
         # Store results
         results['execution_current'] = execution_current
@@ -640,7 +687,13 @@ def _get_single_network_client_versions(node_config):
         # Determine if updates are needed
         exec_needs_update = _version_needs_update(execution_current, execution_latest)
         consensus_needs_update = _version_needs_update(consensus_current, consensus_latest)
-        validator_needs_update = _version_needs_update(validator_current, validator_latest)
+        # Validator update status should be based on validator client, not consensus client
+        if validator_client_name != "Unknown" and validator_client_name != consensus_client_name:
+            # Separate validator client - check its versions
+            validator_needs_update = _version_needs_update(validator_current, validator_latest)
+        else:
+            # Validator is integrated with consensus client
+            validator_needs_update = consensus_needs_update
         
         results['execution_needs_update'] = exec_needs_update
         results['consensus_needs_update'] = consensus_needs_update
@@ -774,6 +827,33 @@ def _get_lodestar_version_from_container(ssh_target, container_name):
         
     except Exception:
         return "Unknown"
+
+def _get_vero_version_from_container(ssh_target, container_name):
+    """
+    Special version detection for Vero containers.
+    Gets version from container environment variables.
+    """
+    try:
+        # Try to get version from container environment (GIT_TAG) - using simpler approach
+        env_cmd = f"docker inspect {container_name} -f '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' | grep GIT_TAG"
+        full_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} \"{env_cmd}\""
+        result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode == 0 and result.stdout.strip():
+            # Parse GIT_TAG=v1.1.3 format
+            output = result.stdout.strip()
+            if 'GIT_TAG=' in output:
+                version = output.split('GIT_TAG=')[1].strip()
+                # Remove 'v' prefix if present
+                if version.startswith('v'):
+                    version = version[1:]
+                return version
+        
+        # Fallback to "local" if we can't determine version
+        return "local"
+        
+    except Exception:
+        return "local"
 
 def _get_client_version_from_logs(ssh_target, container_name, client_name):
     """
@@ -991,7 +1071,20 @@ def _identify_client_from_image(image, client_type):
 def _get_latest_github_release(client_name):
     """
     Gets the latest release version from GitHub for a specific Ethereum client.
+    Implements caching and rate limiting awareness.
     """
+    # Cache to avoid repeated API calls within the same session
+    if not hasattr(_get_latest_github_release, 'cache'):
+        _get_latest_github_release.cache = {}
+        _get_latest_github_release.last_reset_check = 0
+    
+    # Check cache first
+    if client_name in _get_latest_github_release.cache:
+        cached_data = _get_latest_github_release.cache[client_name]
+        # Cache is valid for 10 minutes
+        if time.time() - cached_data['timestamp'] < 600:
+            return cached_data['version']
+    
     # GitHub repositories mapping
     github_repos = {
         'geth': 'ethereum/go-ethereum',
@@ -1004,7 +1097,8 @@ def _get_latest_github_release(client_name):
         'teku': 'Consensys/teku',
         'nimbus': 'status-im/nimbus-eth2',
         'lodestar': 'ChainSafe/lodestar',
-        'grandine': 'grandinetech/grandine'
+        'grandine': 'grandinetech/grandine',
+        'vero': 'serenita-org/vero'  # Vero validator client from Serenita
     }
     
     if client_name not in github_repos:
@@ -1015,15 +1109,32 @@ def _get_latest_github_release(client_name):
     
     try:
         response = requests.get(api_url, timeout=10)
+        
         if response.status_code == 200:
             release_data = response.json()
             tag_name = release_data.get('tag_name', '')
             # Clean version tag (remove 'v' prefix if present)
             version = tag_name.lstrip('v')
+            
+            # Cache the result
+            _get_latest_github_release.cache[client_name] = {
+                'version': version,
+                'timestamp': time.time()
+            }
+            
             return version
+        elif response.status_code == 403:
+            # Rate limited - return cached version if available, otherwise indicate rate limiting
+            if client_name in _get_latest_github_release.cache:
+                return _get_latest_github_release.cache[client_name]['version']
+            else:
+                return "Rate Limited"
         else:
             return "API Error"
     except Exception as e:
+        # If we have a cached version, return it during network errors
+        if client_name in _get_latest_github_release.cache:
+            return _get_latest_github_release.cache[client_name]['version']
         return "Network Error"
 
 def _version_needs_update(current_version, latest_version):
