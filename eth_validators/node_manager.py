@@ -557,14 +557,27 @@ def _get_single_network_client_versions(node_config):
                 if ':' in line:
                     container_name, image = line.split(':', 1)
                     
-                    # Identify execution clients
-                    if any(exec_client in container_name.lower() for exec_client in 
-                           ['execution', 'geth', 'nethermind', 'reth', 'besu', 'erigon']):
+                    # Special handling for Erigon with integrated Caplin consensus
+                    if 'erigon' in container_name.lower() or 'erigon' in image.lower():
+                        # Erigon can run with integrated Caplin consensus client
+                        execution_client_name = _identify_client_from_image(image, 'execution')
+                        execution_container = container_name
+                        execution_image = image
+                        
+                        # If no separate consensus client found yet, assume Caplin is integrated
+                        if consensus_client_name == "Unknown":
+                            consensus_client_name = 'erigon-caplin' 
+                            consensus_container = container_name  # Same container as execution
+                            consensus_image = image
+                    
+                    # Identify other execution clients
+                    elif any(exec_client in container_name.lower() for exec_client in 
+                           ['execution', 'geth', 'nethermind', 'reth', 'besu']):
                         execution_client_name = _identify_client_from_image(image, 'execution')
                         execution_container = container_name
                         execution_image = image
                     
-                    # Identify consensus clients (beacon nodes)
+                    # Identify consensus clients (beacon nodes) - these override erigon-caplin
                     elif any(cons_client in container_name.lower() for cons_client in 
                              ['consensus', 'lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine']) and 'validator' not in container_name.lower():
                         consensus_client_name = _identify_client_from_image(image, 'consensus')
@@ -611,8 +624,17 @@ def _get_single_network_client_versions(node_config):
         
         # Get actual versions from Docker logs, with fallback to image version and exec command
         if execution_container and execution_client_name != "Unknown":
-            # For certain clients, try docker exec first as it's more reliable than old logs
-            if execution_client_name.lower() in ['nethermind', 'reth', 'besu', 'geth']:
+            # Special handling for erigon when integrated with caplin
+            if execution_client_name == 'erigon' and consensus_client_name == 'erigon-caplin':
+                # Use same API version for both execution and consensus since they're integrated
+                api_version = _get_caplin_version_from_api(ssh_target, node_config)
+                if api_version and api_version not in ["Unknown", "Error", "API Error"]:
+                    execution_current = api_version
+                else:
+                    # Fallback to traditional methods
+                    execution_current = _get_client_version_from_logs(ssh_target, execution_container, execution_client_name)
+            # For certain other clients, try docker exec first as it's more reliable than old logs
+            elif execution_client_name.lower() in ['nethermind', 'reth', 'besu', 'geth']:
                 exec_version = _get_version_via_docker_exec(ssh_target, execution_container, execution_client_name)
                 if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
                     execution_current = exec_version
@@ -626,7 +648,16 @@ def _get_single_network_client_versions(node_config):
                 execution_current = _extract_image_version(f"image: {execution_image}")
         
         if consensus_container and consensus_client_name != "Unknown":
-            consensus_current = _get_client_version_from_logs(ssh_target, consensus_container, consensus_client_name)
+            # Special handling for erigon-caplin: get version from Beacon API
+            if consensus_client_name == 'erigon-caplin':
+                api_version = _get_caplin_version_from_api(ssh_target, node_config)
+                if api_version and api_version not in ["Unknown", "Error", "API Error"]:
+                    consensus_current = api_version
+                else:
+                    consensus_current = _get_client_version_from_logs(ssh_target, consensus_container, consensus_client_name)
+            else:
+                consensus_current = _get_client_version_from_logs(ssh_target, consensus_container, consensus_client_name)
+            
             # Fallback to image version if logs don't provide version  
             if consensus_current in ["No Version Found", "Empty Logs", "Log Error"] or consensus_current.startswith("Error:") or consensus_current.startswith("Debug:"):
                 # Try to get version via docker exec command
@@ -750,6 +781,7 @@ def _get_version_via_docker_exec(ssh_target, container_name, client_name):
         'reth': ['reth', '--version'], 
         'besu': ['besu', '--version'],
         'erigon': ['erigon', '--version'],
+        'erigon-caplin': ['erigon', '--version'],  # Same as erigon since Caplin is integrated
         'lighthouse': ['lighthouse', '--version'],
         'prysm': ['prysm', '--version'],
         'teku': ['teku', '--version'],
@@ -845,6 +877,54 @@ def _get_lodestar_version_from_container(ssh_target, container_name):
         
     except Exception:
         return "Unknown"
+
+def _get_caplin_version_from_api(ssh_target, node_config):
+    """
+    Get Erigon+Caplin version directly from the Beacon API.
+    Example API response: {"data":{"version":"Caplin/v3.0.15 linux/amd64"}}
+    """
+    try:
+        import json
+        beacon_api_port = node_config.get('beacon_api_port', 5052)
+        
+        if ssh_target is None:
+            # Local execution
+            api_cmd = f"curl -s --connect-timeout 5 --max-time 10 http://localhost:{beacon_api_port}/eth/v1/node/version"
+        else:
+            # Remote execution via SSH
+            api_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} \"curl -s --connect-timeout 5 --max-time 10 http://localhost:{beacon_api_port}/eth/v1/node/version\""
+        
+        result = subprocess.run(api_cmd, shell=True, capture_output=True, text=True, timeout=15)
+        
+        if result.returncode == 0 and result.stdout.strip():
+            try:
+                # Parse JSON response
+                api_data = json.loads(result.stdout.strip())
+                version_string = api_data.get('data', {}).get('version', '')
+                
+                # Parse version from "Caplin/v3.0.15 linux/amd64"
+                if 'Caplin/' in version_string:
+                    import re
+                    version_match = re.search(r'Caplin/v?(\d+\.\d+\.\d+)', version_string)
+                    if version_match:
+                        return version_match.group(1)
+                
+                # Fallback: try to extract any version pattern
+                version_match = re.search(r'v?(\d+\.\d+\.\d+)', version_string)
+                if version_match:
+                    return version_match.group(1)
+                    
+            except (json.JSONDecodeError, KeyError) as e:
+                # If JSON parsing fails, try to extract version directly from string
+                import re
+                version_match = re.search(r'v?(\d+\.\d+\.\d+)', result.stdout)
+                if version_match:
+                    return version_match.group(1)
+        
+        return "API Error"
+        
+    except Exception as e:
+        return "API Error"
 
 def _get_vero_version_from_container(ssh_target, container_name):
     """
@@ -961,6 +1041,21 @@ def _get_client_version_from_logs(ssh_target, container_name, client_name):
                 r'Erigon/v(\d+\.\d+\.\d+)',
                 r'erigon.*?(\d+\.\d+\.\d+)',
                 r'Building Erigon.*?(\d+\.\d+\.\d+)'
+            ],
+            'erigon-caplin': [
+                # Same patterns as erigon since Caplin is integrated
+                r'Erigon version: v(\d+\.\d+\.\d+)',
+                r'erigon/(\d+\.\d+\.\d+)', 
+                r'Version: (\d+\.\d+\.\d+)',
+                r'Starting Erigon (\d+\.\d+\.\d+)',
+                r'ledgerwatch/erigon:v(\d+\.\d+\.\d+)',
+                r'Erigon/v(\d+\.\d+\.\d+)',
+                r'erigon.*?(\d+\.\d+\.\d+)',
+                r'Building Erigon.*?(\d+\.\d+\.\d+)',
+                # Caplin-specific log patterns
+                r'Caplin.*?(\d+\.\d+\.\d+)',
+                r'Starting Caplin.*?(\d+\.\d+\.\d+)',
+                r'Beacon API.*?v(\d+\.\d+\.\d+)'
             ],
             'lighthouse': [
                 r'Lighthouse v(\d+\.\d+\.\d+)',
@@ -1110,6 +1205,7 @@ def _get_latest_github_release(client_name):
         'reth': 'paradigmxyz/reth',
         'besu': 'hyperledger/besu',
         'erigon': 'ledgerwatch/erigon',
+        'erigon-caplin': 'ledgerwatch/erigon',  # Caplin is integrated into Erigon
         'lighthouse': 'sigp/lighthouse',
         'prysm': 'prysmaticlabs/prysm',
         'teku': 'Consensys/teku',
