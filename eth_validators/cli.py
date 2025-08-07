@@ -247,6 +247,12 @@ def system_group():
     """⚙️ System updates, maintenance, and infrastructure management"""
     pass
 
+# Configuration Automation Group
+@cli.group(name='config')
+def config_group():
+    """🔧 Automated configuration management, discovery, and synchronization"""
+    pass
+
 @system_group.command(name='update')
 @click.argument('node', required=False)
 @click.option('--all', is_flag=True, help='Check system updates for all configured nodes')
@@ -1624,6 +1630,355 @@ def versions(node, all):
         path = node_cfg.get('eth_docker_path', '~/eth-docker')
         cmd = f"ssh {ssh_target} \"cd {path} && ./ethd version\""
         subprocess.run(cmd, shell=True)
+
+# ====================================
+# Configuration Automation Commands  
+# ====================================
+
+@config_group.command(name='discover')
+@click.option('--node', '-n', help='Discover specific node (default: all)')
+@click.option('--save', '-s', is_flag=True, help='Save discovered configuration to config file')
+@click.option('--output', '-o', help='Output file for discovered configuration')
+def config_discover(node, save, output):
+    """🔍 Discover current node configurations automatically"""
+    from .config_automation import ConfigAutomationSystem
+    
+    click.echo("🔍 Starting automated configuration discovery...")
+    
+    automation = ConfigAutomationSystem()
+    
+    try:
+        if node:
+            # Discover single node
+            results = automation.discover_single_node(node)
+            click.echo(f"\n📋 Discovery results for {node}:")
+        else:
+            # Discover all nodes
+            results = automation.discover_all_configurations()
+            click.echo(f"\n📋 Discovery results for {len(results)} nodes:")
+        
+        # Display results
+        for node_name, result in results.items():
+            click.echo(f"\n🖥️  {node_name}:")
+            click.echo(f"   Status: {'✅ Success' if result['status'] == 'success' else '❌ ' + result.get('error', 'Unknown error')}")
+            
+            if result['status'] == 'success':
+                data = result['data']
+                click.echo(f"   Stack: {', '.join(data.get('detected_stacks', ['Unknown']))}")
+                
+                if 'active_networks' in data:
+                    networks = list(data['active_networks'].keys())
+                    click.echo(f"   Networks: {', '.join(networks) if networks else 'None detected'}")
+                
+                if 'api_ports' in data:
+                    ports = data['api_ports']
+                    click.echo(f"   API Ports: {dict(ports)}")
+        
+        # Save if requested
+        if save or output:
+            output_file = output or str(CONFIG_PATH)
+            automation.save_discovered_config(results, output_file)
+            click.echo(f"\n💾 Configuration saved to: {output_file}")
+    
+    except Exception as e:
+        click.echo(f"❌ Discovery failed: {e}")
+        raise click.Abort()
+
+@config_group.command(name='validate')
+@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--fix', '-f', is_flag=True, help='Automatically fix detected issues')
+@click.option('--report', '-r', help='Save validation report to file')
+def config_validate(config, fix, report):
+    """✅ Validate configuration and detect issues"""
+    from .config_automation import ConfigAutomationSystem
+    
+    click.echo("✅ Starting configuration validation...")
+    
+    automation = ConfigAutomationSystem()
+    
+    try:
+        issues, repairs = automation.validate_and_repair(config, auto_repair=fix)
+        
+        if not issues:
+            click.echo("🎉 Configuration is valid - no issues detected!")
+            return
+        
+        click.echo(f"\n⚠️  Found {len(issues)} configuration issues:")
+        
+        # Group issues by severity
+        critical = [i for i in issues if i.severity == 'critical']
+        warning = [i for i in issues if i.severity == 'warning']
+        info = [i for i in issues if i.severity == 'info']
+        
+        for severity, issue_list, emoji in [('CRITICAL', critical, '🚨'), ('WARNING', warning, '⚠️'), ('INFO', info, 'ℹ️')]:
+            if issue_list:
+                click.echo(f"\n{emoji} {severity} ({len(issue_list)} issues):")
+                for issue in issue_list:
+                    click.echo(f"   • {issue.node}: {issue.message}")
+                    if issue.suggested_fix:
+                        click.echo(f"     💡 Suggestion: {issue.suggested_fix}")
+        
+        if repairs and fix:
+            click.echo(f"\n🔧 Applied {len(repairs)} automatic repairs:")
+            for repair in repairs:
+                click.echo(f"   ✅ {repair.node}: {repair.description}")
+        elif not fix and any(i.auto_correctable for i in issues):
+            auto_fixable = len([i for i in issues if i.auto_correctable])
+            click.echo(f"\n💡 {auto_fixable} issues can be automatically fixed with --fix flag")
+        
+        # Save report if requested
+        if report:
+            report_data = {
+                'timestamp': time.time(),
+                'total_issues': len(issues),
+                'critical_issues': len(critical),
+                'warning_issues': len(warning), 
+                'info_issues': len(info),
+                'repairs_applied': len(repairs) if repairs else 0,
+                'issues': [
+                    {
+                        'node': i.node,
+                        'type': i.issue_type,
+                        'severity': i.severity,
+                        'message': i.message,
+                        'auto_correctable': i.auto_correctable
+                    } for i in issues
+                ]
+            }
+            
+            with open(report, 'w') as f:
+                json.dump(report_data, f, indent=2)
+            
+            click.echo(f"\n📄 Validation report saved to: {report}")
+    
+    except Exception as e:
+        click.echo(f"❌ Validation failed: {e}")
+        raise click.Abort()
+
+@config_group.command(name='sync-all')
+@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--dry-run', '-d', is_flag=True, help='Show what would be changed without making changes')
+def config_sync_all(config, dry_run):
+    """🔄 Synchronize all node configurations with live state"""
+    from .config_monitor import ConfigMonitor
+    
+    action = "Checking" if dry_run else "Synchronizing"
+    click.echo(f"🔄 {action} all node configurations...")
+    
+    monitor = ConfigMonitor()
+    
+    try:
+        if dry_run:
+            # Use drift detection for dry run
+            drift = monitor.detect_drift(config)
+            
+            if not drift:
+                click.echo("✅ All configurations are in sync!")
+                return
+            
+            click.echo(f"\n📋 Would update {len(set(d.node for d in drift))} nodes:")
+            
+            for drift_item in drift:
+                click.echo(f"\n🖥️  {drift_item.node}:")
+                click.echo(f"   Type: {drift_item.drift_type}")
+                click.echo(f"   Current: {drift_item.config_state}")
+                click.echo(f"   Live: {drift_item.live_state}")
+                click.echo(f"   Auto-correctable: {'✅' if drift_item.auto_correctable else '❌'}")
+        else:
+            # Perform actual sync
+            results = monitor.sync_all_nodes(config)
+            
+            click.echo(f"\n📊 Sync Results:")
+            click.echo(f"   Total nodes: {results['total_nodes']}")
+            click.echo(f"   Updated nodes: {results['updated_nodes']}")
+            click.echo(f"   Updated node names: {', '.join(results['updated_node_names'])}")
+            
+            if results['updated_nodes'] > 0:
+                click.echo(f"\n🎉 Successfully synchronized {results['updated_nodes']} nodes!")
+            else:
+                click.echo(f"\n✅ All nodes were already in sync!")
+    
+    except Exception as e:
+        click.echo(f"❌ Sync failed: {e}")
+        raise click.Abort()
+
+@config_group.command(name='monitor')
+@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--interval', '-i', default=300, help='Check interval in seconds (default: 300)')
+@click.option('--auto-fix', is_flag=True, help='Automatically fix detected drift')
+def config_monitor(config, interval, auto_fix):
+    """📡 Start continuous configuration monitoring"""
+    from .config_monitor import ConfigMonitor
+    
+    click.echo(f"📡 Starting continuous configuration monitoring...")
+    click.echo(f"   Check interval: {interval} seconds")
+    click.echo(f"   Auto-fix enabled: {'✅' if auto_fix else '❌'}")
+    click.echo(f"   Press Ctrl+C to stop")
+    
+    monitor = ConfigMonitor()
+    
+    try:
+        monitor.monitor_continuous(config, interval, auto_fix)
+    except KeyboardInterrupt:
+        click.echo(f"\n⏹️  Monitoring stopped by user")
+    except Exception as e:
+        click.echo(f"❌ Monitoring failed: {e}")
+        raise click.Abort()
+
+@config_group.command(name='template')
+@click.argument('action', type=click.Choice(['list', 'create', 'generate', 'export', 'import']))
+@click.option('--name', '-n', help='Template name')
+@click.option('--description', '-d', help='Template description')
+@click.option('--stack', '-s', multiple=True, help='Supported stacks')
+@click.option('--network', multiple=True, help='Supported networks')
+@click.option('--file', '-f', help='File path for import/export/generation')
+@click.option('--variables', help='Variables for template generation (JSON format)')
+def config_template(action, name, description, stack, network, file, variables):
+    """📝 Manage configuration templates"""
+    from .config_templates import ConfigTemplateManager
+    
+    template_manager = ConfigTemplateManager()
+    
+    try:
+        if action == 'list':
+            templates = template_manager.list_templates()
+            
+            if not templates:
+                click.echo("📝 No templates available")
+                return
+            
+            click.echo(f"📝 Available templates ({len(templates)}):")
+            
+            for template_name, template in templates.items():
+                click.echo(f"\n🔧 {template_name}")
+                click.echo(f"   Description: {template.description}")
+                click.echo(f"   Stacks: {', '.join(template.supported_stacks)}")
+                click.echo(f"   Networks: {', '.join(template.supported_networks)}")
+                click.echo(f"   Version: {template.version}")
+        
+        elif action == 'create':
+            if not name:
+                click.echo("❌ Template name is required for creation")
+                raise click.Abort()
+            
+            # For demo, create a basic template
+            basic_config = {
+                "name": "{{node_name}}",
+                "tailscale_domain": "{{node_name}}.ts.net",
+                "ssh_user": "root",
+                "ethereum_clients_enabled": True,
+                "stack": list(stack) if stack else ["eth-docker"],
+                "beacon_api_port": 5052
+            }
+            
+            template = template_manager.create_template(
+                name=name,
+                description=description or "Custom template",
+                base_config=basic_config,
+                supported_stacks=list(stack) if stack else ["eth-docker"],
+                supported_networks=list(network) if network else ["mainnet"]
+            )
+            
+            click.echo(f"✅ Created template: {template.name}")
+        
+        elif action == 'generate':
+            if not name:
+                click.echo("❌ Template name is required for generation")
+                raise click.Abort()
+            
+            # Parse variables
+            var_dict = {}
+            if variables:
+                var_dict = json.loads(variables)
+            
+            # Generate configuration
+            config = template_manager.generate_config_from_template(name, var_dict)
+            
+            if file:
+                with open(file, 'w') as f:
+                    yaml.dump(config, f, default_flow_style=False, indent=2)
+                click.echo(f"💾 Generated configuration saved to: {file}")
+            else:
+                click.echo("🔧 Generated configuration:")
+                click.echo(yaml.dump(config, default_flow_style=False, indent=2))
+        
+        elif action == 'export':
+            if not name or not file:
+                click.echo("❌ Template name and file path are required for export")
+                raise click.Abort()
+            
+            template_manager.export_template(name, file)
+            click.echo(f"📤 Template {name} exported to {file}")
+        
+        elif action == 'import':
+            if not file:
+                click.echo("❌ File path is required for import")
+                raise click.Abort()
+            
+            template = template_manager.import_template(file)
+            click.echo(f"📥 Template {template.name} imported successfully")
+    
+    except Exception as e:
+        click.echo(f"❌ Template operation failed: {e}")
+        raise click.Abort()
+
+@config_group.command(name='summary')
+@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+def config_summary(config):
+    """📊 Show configuration automation summary and statistics"""
+    from .config_automation import ConfigAutomationSystem
+    from .config_monitor import ConfigMonitor
+    from .config_templates import ConfigTemplateManager
+    
+    click.echo("📊 Configuration Automation Summary\n")
+    
+    try:
+        # Configuration status
+        automation = ConfigAutomationSystem()
+        validation_results = automation.validate_and_repair(config, auto_repair=False)
+        
+        issues = validation_results[0]
+        total_issues = len(issues)
+        critical_issues = len([i for i in issues if i.severity == 'critical'])
+        
+        click.echo("🔧 Configuration Status:")
+        click.echo(f"   Total issues: {total_issues}")
+        click.echo(f"   Critical issues: {critical_issues}")
+        click.echo(f"   Status: {'✅ Healthy' if total_issues == 0 else '⚠️ Needs attention'}")
+        
+        # Drift monitoring summary
+        monitor = ConfigMonitor()
+        monitor_summary = monitor.get_monitoring_summary()
+        
+        click.echo(f"\n📡 Drift Monitoring (24h):")
+        click.echo(f"   Total drift events: {monitor_summary['total_drift_events_24h']}")
+        click.echo(f"   Critical drift: {monitor_summary['critical_drift_24h']}")
+        click.echo(f"   Nodes affected: {monitor_summary['nodes_with_drift_24h']}")
+        click.echo(f"   Auto-correctable: {monitor_summary['auto_correctable_24h']}")
+        
+        # Template summary
+        template_manager = ConfigTemplateManager()
+        template_summary = template_manager.get_template_summary()
+        
+        click.echo(f"\n📝 Templates:")
+        click.echo(f"   Total templates: {template_summary['total_templates']}")
+        click.echo(f"   Available stacks: {', '.join(template_summary['templates_by_stack'].keys())}")
+        
+        # Node count from config
+        with open(config, 'r') as f:
+            config_data = yaml.safe_load(f)
+        
+        total_nodes = len(config_data.get('nodes', []))
+        enabled_nodes = len([n for n in config_data.get('nodes', []) if n.get('ethereum_clients_enabled', True)])
+        
+        click.echo(f"\n🖥️  Cluster Overview:")
+        click.echo(f"   Total nodes: {total_nodes}")
+        click.echo(f"   Enabled nodes: {enabled_nodes}")
+        click.echo(f"   Disabled nodes: {total_nodes - enabled_nodes}")
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to generate summary: {e}")
+        raise click.Abort()
 
 if __name__ == "__main__":
     cli()
