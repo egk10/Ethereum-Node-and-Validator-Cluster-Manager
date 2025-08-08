@@ -98,37 +98,55 @@ class ValidatorAutoDiscovery:
         node_name = node_config.get('name')
         validators = []
         
-        # Get beacon API endpoint
-        beacon_api_url = self._get_beacon_api_url(node_config)
-        if not beacon_api_url:
-            logger.warning(f"No beacon API available for {node_name}")
-            return []
-        
         try:
-            # Get validator keys from running containers
+            # Get validator keys from running containers (PRIMARY DISCOVERY)
             validator_keys = self._extract_validator_keys_from_node(node_config)
             
             if not validator_keys:
                 logger.warning(f"No validator keys found on {node_name}")
                 return []
             
-            # Query beacon chain for validator information
-            validator_info = self._query_validators_from_beacon(beacon_api_url, validator_keys)
-            
             # Detect protocol/stack
             protocol = self._detect_protocol(node_config)
             
-            # Build validator records
-            for pubkey, info in validator_info.items():
+            # Build validator records without requiring beacon API
+            # This ensures discovery works even when beacon APIs are not accessible
+            for pubkey in validator_keys:
                 validators.append({
-                    'validator_index': info.get('index', 'unknown'),
+                    'validator_index': 'unknown',  # Will be populated later if beacon API is available
                     'public_key': pubkey,
                     'node_name': node_name,
                     'protocol': protocol,
-                    'status': info.get('status', 'unknown'),
-                    'balance': info.get('balance', 0),
+                    'status': 'discovered',  # Basic status - will be enhanced if beacon API works
+                    'balance': 0,  # Will be populated later if beacon API is available
                     'last_updated': datetime.now().isoformat()
                 })
+            
+            logger.info(f"Found {len(validator_keys)} validator keys on {node_name}")
+            
+            # OPTIONAL: Try to enhance with beacon chain data if available
+            # This is a nice-to-have but not required for basic discovery
+            try:
+                beacon_api_url = self._get_beacon_api_url(node_config)
+                if beacon_api_url:
+                    logger.debug(f"Attempting to enhance validator data with beacon API for {node_name}")
+                    validator_info = self._query_validators_from_beacon(beacon_api_url, validator_keys)
+                    
+                    # Update validator records with beacon chain data if available
+                    for validator in validators:
+                        pubkey = validator['public_key']
+                        if pubkey in validator_info:
+                            beacon_data = validator_info[pubkey]
+                            validator['validator_index'] = beacon_data.get('index', 'unknown')
+                            validator['status'] = beacon_data.get('status', 'discovered')
+                            validator['balance'] = beacon_data.get('balance', 0)
+                            
+                    logger.info(f"Enhanced {len(validator_info)} validators with beacon chain data")
+                else:
+                    logger.debug(f"No beacon API configuration for {node_name} - using basic discovery only")
+            except Exception as beacon_error:
+                logger.debug(f"Beacon API enhancement failed for {node_name}: {beacon_error}")
+                logger.debug("Continuing with basic validator discovery (validator keys found successfully)")
         
         except Exception as e:
             logger.error(f"Error discovering validators on {node_name}: {e}")
@@ -235,10 +253,11 @@ class ValidatorAutoDiscovery:
             else:
                 domain = node_config['tailscale_domain']
                 ssh_user = node_config.get('ssh_user', 'root')
-                cmd = f"ssh -o ConnectTimeout=15 {ssh_user}@{domain} \"cd {eth_docker_path} && ./ethd keys list 2>/dev/null\""
+                # Reduced timeout for better user experience - fail fast if node is unreachable
+                cmd = f"ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 {ssh_user}@{domain} \"cd {eth_docker_path} && timeout 15 ./ethd keys list 2>/dev/null\""
             
             logger.debug(f"Running ethd command: {cmd}")
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)  # Reduced from 30s
             
             if result.returncode == 0 and result.stdout.strip():
                 # Filter output for validator public keys (0x + 96 hex characters)
@@ -257,8 +276,10 @@ class ValidatorAutoDiscovery:
                 logger.debug(f"STDOUT: {result.stdout[:200]}")
                 logger.debug(f"STDERR: {result.stderr[:200]}")
                     
+        except subprocess.TimeoutExpired:
+            logger.warning(f"ethd keys list command timed out for {node_config.get('name')} - node may be unreachable")
         except Exception as e:
-            logger.error(f"ethd keys list command failed: {e}")
+            logger.debug(f"ethd keys list command failed: {e}")
         
         return keys
     
@@ -273,14 +294,21 @@ class ValidatorAutoDiscovery:
             else:
                 domain = node_config['tailscale_domain']
                 ssh_user = node_config.get('ssh_user', 'root')
-                cmd = f"ssh -o ConnectTimeout=15 {ssh_user}@{domain} \"hyperdrive --allow-root sw v s 2>/dev/null\""
+                # Improved SSH with faster timeouts and better error handling
+                cmd = f"ssh -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 {ssh_user}@{domain} \"timeout 15 hyperdrive --allow-root sw v s 2>/dev/null\""
             
             logger.debug(f"Running hyperdrive command: {cmd}")
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=20)  # Reduced timeout
             
             if result.returncode == 0 and result.stdout.strip():
+                # Check if StakeWise module is enabled
+                output = result.stdout.strip()
+                if "StakeWise module is not enabled" in output:
+                    logger.debug(f"StakeWise module not enabled on {node_config.get('name')}")
+                    return keys  # Return empty list - this is expected, not an error
+                
                 # Parse hyperdrive output for validator public keys
-                lines = result.stdout.strip().split('\n')
+                lines = output.split('\n')
                 import re
                 
                 for line in lines:
@@ -296,15 +324,16 @@ class ValidatorAutoDiscovery:
                 if keys:
                     logger.info(f"Successfully found {len(keys)} validators via hyperdrive sw v s")
                 else:
-                    logger.warning(f"hyperdrive sw v s ran but found no validator keys")
-                    logger.debug(f"Output preview: {result.stdout[:300]}")
+                    logger.debug(f"hyperdrive sw v s ran but found no validator keys - may need module configuration")
             else:
                 logger.debug(f"hyperdrive command failed: return code {result.returncode}")
-                logger.debug(f"STDOUT: {result.stdout[:200]}")
-                logger.debug(f"STDERR: {result.stderr[:200]}")
+                if result.stderr and "command not found" not in result.stderr:
+                    logger.debug(f"STDERR: {result.stderr[:200]}")
                     
+        except subprocess.TimeoutExpired:
+            logger.debug(f"hyperdrive command timed out for {node_config.get('name')} - node may be unreachable")
         except Exception as e:
-            logger.error(f"hyperdrive sw v s command failed: {e}")
+            logger.debug(f"hyperdrive sw v s command failed: {e}")
         
         return keys
     

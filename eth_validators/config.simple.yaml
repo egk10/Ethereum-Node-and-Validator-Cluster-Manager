@@ -1,0 +1,59 @@
+# Simplified Ethereum Validators Configuration
+# With auto-discovery, most settings are detected automatically!
+
+nodes:
+  # Basic node definition - auto-discovery handles the rest
+  - name: "minipcamd"
+    tailscale_domain: "minipcamd.velociraptor-scylla.ts.net"
+    # That's it! Stack, ports, paths are auto-discovered
+    
+  - name: "minipcamd2" 
+    tailscale_domain: "minipcamd2.velociraptor-scylla.ts.net"
+    
+  - name: "minipcamd3"
+    tailscale_domain: "minipcamd3.velociraptor-scylla.ts.net"
+    
+  - name: "minitx"
+    tailscale_domain: "minitx.velociraptor-scylla.ts.net"
+    
+  - name: "orangepi5-plus"
+    tailscale_domain: "orangepi5-plus.velociraptor-scylla.ts.net"
+    
+  # Disabled nodes - just mark them as disabled
+  - name: "laptop"
+    tailscale_domain: "laptop.velociraptor-scylla.ts.net"
+    stack: ["disabled"]
+    
+  - name: "opi5"
+    tailscale_domain: "opi5.velociraptor-scylla.ts.net" 
+    stack: ["disabled"]
+    
+  # Multi-network node with custom settings
+  - name: "eliedesk"
+    ssh_user: "egk"  # Only specify if different from default
+    is_local: true   # Only specify if local
+    tailscale_domain: "eliedesk.velociraptor-scylla.ts.net"
+    networks:
+      testnet:
+        network_name: "hoodi"
+        beacon_api_port: 5053
+    
+  - name: "minipcamd4"
+    tailscale_domain: "minipcamd4.velociraptor-scylla.ts.net"
+
+# Validator mapping (unchanged)
+validators_csv: "validators_vs_hardware.csv"
+
+# Global defaults (optional - good defaults provided)
+defaults:
+  ssh_user: "root"
+  ssh_timeout: 30
+  container_timeout: 300
+  beacon_api_port: 5052
+  eth_docker_path: "/home/egk/eth-docker"
+
+# Auto-discovery settings
+auto_discovery:
+  enabled: true
+  update_on_drift: false  # Set to true for automatic config updates
+  validate_on_startup: true

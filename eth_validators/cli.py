@@ -585,9 +585,16 @@ def validator_group():
 @validator_group.command(name='discover')
 @click.option('--output', '-o', default='validators_auto_discovered.csv', help='Output CSV filename')
 @click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
-def validator_discover(output, config):
+@click.option('--verbose', '-v', is_flag=True, help='Show detailed discovery progress')
+def validator_discover(output, config, verbose):
     """🔍 Auto-discover validators across all nodes and generate simplified CSV"""
+    
+    if verbose:
+        import logging
+        logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    
     click.echo("🔍 Starting validator auto-discovery across cluster...")
+    click.echo("💡 This may take a moment as we scan all your nodes...")
     
     try:
         discovery = ValidatorAutoDiscovery(config)
@@ -599,7 +606,7 @@ def validator_discover(output, config):
             validators = list(reader)
         
         if validators:
-            click.echo(f"✅ Successfully discovered {len(validators)} validators!")
+            click.echo(f"\n🎉 SUCCESS! Discovered {len(validators)} validators!")
             click.echo(f"📄 CSV saved to: {csv_path}")
             
             # Show summary by node
@@ -614,18 +621,40 @@ def validator_discover(output, config):
                 protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
             
             click.echo("\n📊 Discovery Summary:")
-            click.echo("By Node:")
+            click.echo("💻 By Node:")
             for node, count in node_counts.items():
-                click.echo(f"   {node}: {count} validators")
+                click.echo(f"   🖥️  {node}: {count} validators")
             
-            click.echo("\nBy Protocol:")
+            click.echo("\n🏗️  By Protocol:")
             for protocol, count in protocol_counts.items():
-                click.echo(f"   {protocol}: {count} validators")
+                click.echo(f"   📡 {protocol}: {count} validators")
+                
+            click.echo(f"\n🚀 Next Steps:")
+            click.echo(f"   • View validators: python3 -m eth_validators validator list")
+            click.echo(f"   • Monitor performance: python3 -m eth_validators performance summary")
+            click.echo(f"   • Check node status: python3 -m eth_validators node list")
         else:
-            click.echo("⚠️ No validators discovered")
+            click.echo("\n⚠️  No validators discovered")
+            click.echo("\n🔍 Troubleshooting tips:")
+            click.echo("   • Ensure your nodes are running and accessible via Tailscale")
+            click.echo("   • Verify SSH access: ssh root@your-node.tailnet.ts.net")
+            click.echo("   • Check if eth-docker is running: docker ps")
+            click.echo("   • For debug info: add --verbose flag")
+            click.echo("   • Need help? Check the QUICK_START_GUIDE.md")
             
     except Exception as e:
-        click.echo(f"❌ Validator discovery failed: {e}")
+        click.echo(f"\n❌ Validator discovery failed: {e}")
+        click.echo("\n🔧 Common solutions:")
+        click.echo("   • Check your config.yaml file exists and is valid")
+        click.echo("   • Verify network connectivity to your nodes")  
+        click.echo("   • Run with --verbose for detailed error information")
+        click.echo("   • See QUICK_START_GUIDE.md for setup instructions")
+        if verbose:
+            import traceback
+            click.echo(f"\n🐛 Detailed error: {traceback.format_exc()}")
+        if verbose:
+            import traceback
+            click.echo(f"\n🐛 Detailed error: {traceback.format_exc()}")
         raise click.Abort()
 
 @validator_group.command(name='list')
