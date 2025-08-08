@@ -174,10 +174,26 @@ class ValidatorAutoDiscovery:
         return list(set(validator_keys))
     
     def _get_keys_from_keystores(self, node_config: Dict) -> List[str]:
-        """Extract validator keys from keystore directories"""
+        """Extract validator keys from keystore directories using ethd keys list (BEST METHOD)"""
         keys = []
         
-        # Common keystore paths based on stack
+        # Method 1: Use ethd keys list for eth-docker stacks (MOST RELIABLE)
+        if 'eth-docker' in node_config.get('stack', []):
+            ethd_keys = self._get_keys_via_ethd_command(node_config)
+            keys.extend(ethd_keys)
+            if ethd_keys:
+                logger.info(f"Found {len(ethd_keys)} validators via ethd keys list")
+                return keys  # If ethd works, we're done - this is the most reliable method
+        
+        # Method 2: Use hyperdrive validator status for NodeSet Hyperdrive stacks
+        if 'hyperdrive' in node_config.get('stack', []):
+            hyperdrive_keys = self._get_keys_via_hyperdrive_command(node_config)
+            keys.extend(hyperdrive_keys)
+            if hyperdrive_keys:
+                logger.info(f"Found {len(hyperdrive_keys)} validators via hyperdrive validator status")
+                return keys  # If hyperdrive works, we're done
+        
+        # Method 3: Traditional keystore file scanning (fallback)
         stack = node_config.get('stack', [])
         eth_docker_path = node_config.get('eth_docker_path', '/home/user/eth-docker')
         
@@ -195,13 +211,100 @@ class ValidatorAutoDiscovery:
         if 'rocketpool' in stack:
             keystore_paths.append(f"{eth_docker_path}/.rocketpool/data/validators")
         
-        # Search for keystore files
+        # Search for keystore files (fallback method)
         for path in keystore_paths:
             try:
                 keys.extend(self._scan_keystore_directory(node_config, path))
             except Exception as e:
                 logger.debug(f"Could not scan keystore path {path}: {e}")
                 continue
+        
+        return keys
+    
+    def _get_keys_via_ethd_command(self, node_config: Dict) -> List[str]:
+        """Get validator keys using ethd keys list command - MOST RELIABLE METHOD"""
+        keys = []
+        
+        try:
+            # Get the correct eth-docker path for this node
+            eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
+            
+            # Build the command - get ALL output and filter in Python (more reliable than grep)
+            if node_config.get('is_local'):
+                cmd = f"cd {eth_docker_path} && ./ethd keys list 2>/dev/null"
+            else:
+                domain = node_config['tailscale_domain']
+                ssh_user = node_config.get('ssh_user', 'root')
+                cmd = f"ssh -o ConnectTimeout=15 {ssh_user}@{domain} \"cd {eth_docker_path} && ./ethd keys list 2>/dev/null\""
+            
+            logger.debug(f"Running ethd command: {cmd}")
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                # Filter output for validator public keys (0x + 96 hex characters)
+                lines = result.stdout.strip().split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('0x') and len(line) == 98:  # 0x + 96 hex chars = 98 total
+                        keys.append(line.lower())
+                
+                if keys:
+                    logger.info(f"Successfully found {len(keys)} validators via ethd keys list")
+                else:
+                    logger.warning(f"ethd keys list ran but found no validator keys")
+            else:
+                logger.debug(f"ethd command failed: return code {result.returncode}")
+                logger.debug(f"STDOUT: {result.stdout[:200]}")
+                logger.debug(f"STDERR: {result.stderr[:200]}")
+                    
+        except Exception as e:
+            logger.error(f"ethd keys list command failed: {e}")
+        
+        return keys
+    
+    def _get_keys_via_hyperdrive_command(self, node_config: Dict) -> List[str]:
+        """Get validator keys using hyperdrive sw v s command - FOR NODESET HYPERDRIVE"""
+        keys = []
+        
+        try:
+            # Build the correct hyperdrive stakewise validator status command
+            if node_config.get('is_local'):
+                cmd = "hyperdrive --allow-root sw v s 2>/dev/null"
+            else:
+                domain = node_config['tailscale_domain']
+                ssh_user = node_config.get('ssh_user', 'root')
+                cmd = f"ssh -o ConnectTimeout=15 {ssh_user}@{domain} \"hyperdrive --allow-root sw v s 2>/dev/null\""
+            
+            logger.debug(f"Running hyperdrive command: {cmd}")
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                # Parse hyperdrive output for validator public keys
+                lines = result.stdout.strip().split('\n')
+                import re
+                
+                for line in lines:
+                    line = line.strip()
+                    # Look for "Validator" lines followed by public key (from screenshots: "Validator a5d9b0cf9426a714d04167...")
+                    if line.startswith('Validator ') and len(line) > 10:
+                        # Extract the public key part after "Validator "
+                        pubkey_match = re.search(r'Validator\s+([a-f0-9]{96})', line, re.IGNORECASE)
+                        if pubkey_match:
+                            pubkey = f"0x{pubkey_match.group(1).lower()}"
+                            keys.append(pubkey)
+                
+                if keys:
+                    logger.info(f"Successfully found {len(keys)} validators via hyperdrive sw v s")
+                else:
+                    logger.warning(f"hyperdrive sw v s ran but found no validator keys")
+                    logger.debug(f"Output preview: {result.stdout[:300]}")
+            else:
+                logger.debug(f"hyperdrive command failed: return code {result.returncode}")
+                logger.debug(f"STDOUT: {result.stdout[:200]}")
+                logger.debug(f"STDERR: {result.stderr[:200]}")
+                    
+        except Exception as e:
+            logger.error(f"hyperdrive sw v s command failed: {e}")
         
         return keys
     
@@ -260,11 +363,204 @@ class ValidatorAutoDiscovery:
         return None
     
     def _get_keys_from_validator_api(self, node_config: Dict) -> List[str]:
-        """Get validator keys from validator client API"""
+        """Get validator keys from validator client API - FULL AUTOMATED DISCOVERY"""
+        keys = []
+        node_name = node_config.get('name')
+        
+        try:
+            # Method 1: Query keymanager API (most reliable for automated discovery)
+            keymanager_keys = self._query_keymanager_api(node_config)
+            keys.extend(keymanager_keys)
+            
+            # Method 2: Query validator containers directly
+            if not keys:
+                container_keys = self._query_validator_containers(node_config)
+                keys.extend(container_keys)
+                
+            # Method 3: Parse validator client logs for pubkeys
+            if not keys:
+                log_keys = self._extract_pubkeys_from_validator_logs(node_config)
+                keys.extend(log_keys)
+                
+        except Exception as e:
+            logger.error(f"Failed to get keys from validator API for {node_name}: {e}")
+        
+        return list(set(keys))  # Remove duplicates
+    
+    def _query_keymanager_api(self, node_config: Dict) -> List[str]:
+        """Query keymanager API for managed validators - PRIMARY METHOD"""
         keys = []
         
-        # This would require implementing API calls to validator clients
-        # For now, return empty list - can be enhanced later
+        # Common keymanager API ports
+        keymanager_ports = [7500, 5062, 8080, 9000]
+        
+        for port in keymanager_ports:
+            try:
+                if node_config.get('is_local'):
+                    url = f"http://localhost:{port}/eth/v1/keystores"
+                    response = requests.get(url, timeout=5)
+                else:
+                    # Use SSH tunnel for remote access
+                    domain = node_config['tailscale_domain']
+                    ssh_user = node_config.get('ssh_user', 'root')
+                    curl_cmd = f"curl -s --max-time 5 'http://localhost:{port}/eth/v1/keystores'"
+                    cmd = f"ssh -o ConnectTimeout=10 {ssh_user}@{domain} \"{curl_cmd}\""
+                    
+                    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+                    if result.returncode == 0 and result.stdout.strip():
+                        response_data = json.loads(result.stdout)
+                        if 'data' in response_data:
+                            for keystore in response_data['data']:
+                                if 'validating_pubkey' in keystore:
+                                    pubkey = keystore['validating_pubkey']
+                                    if not pubkey.startswith('0x'):
+                                        pubkey = f"0x{pubkey}"
+                                    keys.append(pubkey)
+                            logger.info(f"Found {len(keys)} validators via keymanager API on port {port}")
+                            break  # Success, no need to try other ports
+                        
+            except Exception as e:
+                logger.debug(f"Keymanager API port {port} failed: {e}")
+                continue
+                
+        return keys
+    
+    def _query_validator_containers(self, node_config: Dict) -> List[str]:
+        """Query running validator containers for managed keys"""
+        keys = []
+        
+        try:
+            # Get list of validator containers
+            if node_config.get('is_local'):
+                cmd = "docker ps --format '{{.Names}}' | grep -E 'validator|charon'"
+            else:
+                domain = node_config['tailscale_domain']
+                ssh_user = node_config.get('ssh_user', 'root')
+                cmd = f"ssh -o ConnectTimeout=10 {ssh_user}@{domain} \"docker ps --format '{{.Names}}' | grep -E 'validator|charon'\""
+            
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                containers = result.stdout.strip().split('\n')
+                
+                for container in containers:
+                    container_keys = self._extract_keys_from_container(node_config, container.strip())
+                    keys.extend(container_keys)
+                    
+        except Exception as e:
+            logger.debug(f"Container query failed: {e}")
+            
+        return keys
+    
+    def _extract_keys_from_container(self, node_config: Dict, container_name: str) -> List[str]:
+        """Extract validator keys from a specific container"""
+        keys = []
+        
+        try:
+            # Try to find keystore files inside the container
+            keystore_paths = [
+                '/keystores',
+                '/validator_keys', 
+                '/keys',
+                '/opt/charon/validator_keys',
+                '/root/.eth2validators/keys'
+            ]
+            
+            for path in keystore_paths:
+                if node_config.get('is_local'):
+                    cmd = f"docker exec {container_name} find {path} -name 'keystore-*.json' 2>/dev/null | head -10"
+                else:
+                    domain = node_config['tailscale_domain']
+                    ssh_user = node_config.get('ssh_user', 'root')
+                    cmd = f"ssh -o ConnectTimeout=10 {ssh_user}@{domain} \"docker exec {container_name} find {path} -name 'keystore-*.json' 2>/dev/null | head -10\""
+                
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    keystore_files = result.stdout.strip().split('\n')
+                    
+                    for keystore_file in keystore_files:
+                        pubkey = self._extract_pubkey_from_container_keystore(node_config, container_name, keystore_file)
+                        if pubkey:
+                            keys.append(pubkey)
+                            
+                    if keys:  # Found keys in this path, no need to check others
+                        break
+                        
+        except Exception as e:
+            logger.debug(f"Container key extraction failed for {container_name}: {e}")
+            
+        return keys
+    
+    def _extract_pubkey_from_container_keystore(self, node_config: Dict, container_name: str, keystore_file: str) -> str:
+        """Extract public key from keystore file inside container"""
+        try:
+            if node_config.get('is_local'):
+                cmd = f"docker exec {container_name} cat {keystore_file} 2>/dev/null"
+            else:
+                domain = node_config['tailscale_domain']
+                ssh_user = node_config.get('ssh_user', 'root')
+                cmd = f"ssh -o ConnectTimeout=10 {ssh_user}@{domain} \"docker exec {container_name} cat {keystore_file} 2>/dev/null\""
+            
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                keystore_data = json.loads(result.stdout)
+                if 'pubkey' in keystore_data:
+                    pubkey = keystore_data['pubkey']
+                    if not pubkey.startswith('0x'):
+                        pubkey = f"0x{pubkey}"
+                    return pubkey
+                    
+        except Exception as e:
+            logger.debug(f"Could not extract pubkey from {keystore_file}: {e}")
+            
+        return None
+    
+    def _extract_pubkeys_from_validator_logs(self, node_config: Dict) -> List[str]:
+        """Extract validator public keys from validator container logs"""
+        keys = []
+        
+        try:
+            # Get validator containers
+            if node_config.get('is_local'):
+                cmd = "docker ps --format '{{.Names}}' | grep -E 'validator|charon'"
+            else:
+                domain = node_config['tailscale_domain']
+                ssh_user = node_config.get('ssh_user', 'root')
+                cmd = f"ssh -o ConnectTimeout=10 {ssh_user}@{domain} \"docker ps --format '{{.Names}}' | grep -E 'validator|charon'\""
+            
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=15)
+            
+            if result.returncode == 0 and result.stdout.strip():
+                containers = result.stdout.strip().split('\n')
+                
+                for container in containers:
+                    container = container.strip()
+                    
+                    # Get recent logs and search for pubkeys
+                    if node_config.get('is_local'):
+                        log_cmd = f"docker logs --tail 1000 {container} 2>&1 | grep -i -E '0x[a-f0-9]{{96}}|pubkey.*0x[a-f0-9]{{96}}' | head -20"
+                    else:
+                        domain = node_config['tailscale_domain']
+                        ssh_user = node_config.get('ssh_user', 'root')
+                        log_cmd = f"ssh -o ConnectTimeout=10 {ssh_user}@{domain} \"docker logs --tail 1000 {container} 2>&1 | grep -i -E '0x[a-f0-9]{{96}}|pubkey.*0x[a-f0-9]{{96}}' | head -20\""
+                    
+                    log_result = subprocess.run(log_cmd, shell=True, capture_output=True, text=True, timeout=15)
+                    
+                    if log_result.returncode == 0 and log_result.stdout.strip():
+                        # Extract 96-character hex strings (validator pubkeys)
+                        import re
+                        pubkey_pattern = r'0x[a-f0-9]{96}'
+                        matches = re.findall(pubkey_pattern, log_result.stdout, re.IGNORECASE)
+                        
+                        for match in matches:
+                            if match not in keys:
+                                keys.append(match.lower())
+                                
+        except Exception as e:
+            logger.debug(f"Log extraction failed: {e}")
+            
         return keys
     
     def _get_keys_from_logs(self, node_config: Dict) -> List[str]:
