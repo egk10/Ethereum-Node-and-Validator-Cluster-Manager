@@ -18,7 +18,16 @@ from .validator_editor import InteractiveValidatorEditor
 from .validator_auto_discovery import ValidatorAutoDiscovery, auto_generate_validators_csv
 from .simple_setup import SimpleSetupWizard, quick_start_new_user, show_next_steps
 
-CONFIG_PATH = Path(__file__).parent / 'config.yaml'
+def get_config_path():
+    """Find config.yaml in current directory first, then in eth_validators directory"""
+    # First check current working directory (where user runs the command)
+    current_dir_config = Path.cwd() / 'config.yaml'
+    if current_dir_config.exists():
+        return current_dir_config
+    
+    # Fallback to the default location (for backward compatibility)
+    default_config = Path(__file__).parent / 'config.yaml'
+    return default_config
 
 def _run_command(node_cfg, command):
     """Run a command on a node, handling both local and remote execution"""
@@ -261,7 +270,7 @@ def config_group():
 @click.option('--all', is_flag=True, help='Check system updates for all configured nodes')
 def system_update(node, all):
     """Check for available Ubuntu system updates (apt update && apt list --upgradable)"""
-    config = yaml.safe_load(CONFIG_PATH.read_text())
+    config = yaml.safe_load(get_config_path().read_text())
     
     if all and node:
         click.echo("❌ Cannot specify both --all and a node name")
@@ -442,7 +451,7 @@ def system_update(node, all):
 @click.option('--reboot', is_flag=True, help='Automatically reboot nodes if required after upgrade')
 def system_upgrade(node, all, reboot):
     """Install Ubuntu system updates (apt update && apt upgrade -y)"""
-    config = yaml.safe_load(CONFIG_PATH.read_text())
+    config = yaml.safe_load(get_config_path().read_text())
     
     if all and node:
         click.echo("❌ Cannot specify both --all and a node name")
@@ -584,7 +593,7 @@ def validator_group():
 
 @validator_group.command(name='discover')
 @click.option('--output', '-o', default='validators_auto_discovered.csv', help='Output CSV filename')
-@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed discovery progress')
 def validator_discover(output, config, verbose):
     """🔍 Auto-discover validators across all nodes and generate simplified CSV"""
@@ -719,7 +728,7 @@ def validator_list(csv_file, node, protocol, status):
 @validator_group.command(name='update-csv')
 @click.option('--csv-file', default='validators_vs_hardware.csv', help='Existing CSV file to update')
 @click.option('--backup/--no-backup', default=True, help='Create backup of existing CSV')
-@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
 def validator_update_csv(csv_file, backup, config):
     """🔄 Update existing validators CSV with auto-discovered data"""
     click.echo("🔄 Updating validators CSV with auto-discovered data...")
@@ -912,7 +921,7 @@ def _check_reboot_needed(ssh_user, tailscale_domain, is_local=False):
 @node_group.command(name='list')
 def list_cmd():
     """Display a live cluster overview with real-time client diversity analysis."""
-    config = yaml.safe_load(CONFIG_PATH.read_text())
+    config = yaml.safe_load(get_config_path().read_text())
     nodes = config.get('nodes', [])
     
     if not nodes:
@@ -1072,7 +1081,7 @@ def upgrade(node, all):
         click.echo("❌ Must specify either --all or a node name")
         return
     
-    config = yaml.safe_load(CONFIG_PATH.read_text())
+    config = yaml.safe_load(get_config_path().read_text())
     
     if all:
         # Upgrade all nodes
@@ -1182,7 +1191,7 @@ def upgrade(node, all):
 @click.argument('node_name')
 def inspect_node_cmd(node_name):
     """Inspect live validator duties and container status via SSH and beacon API"""
-    config = yaml.safe_load(CONFIG_PATH.read_text())
+    config = yaml.safe_load(get_config_path().read_text())
     node_cfg = next(
         (n for n in config['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
         None
@@ -1363,7 +1372,7 @@ def update_charon(dry_run, selected_nodes):
 @click.option('--all', is_flag=True, help='Show client versions for all configured nodes')
 def versions(node, all):
     """Query live client versions, sync status, and container health via SSH/API"""
-    config = yaml.safe_load(CONFIG_PATH.read_text())
+    config = yaml.safe_load(get_config_path().read_text())
     
     if all:
         nodes = config.get('nodes', [])
@@ -1957,7 +1966,7 @@ def config_discover(node, save, output):
     
     click.echo("🔍 Starting automated configuration discovery...")
     
-    automation = ConfigAutomationSystem(str(CONFIG_PATH))
+    automation = ConfigAutomationSystem(str(get_config_path()))
     
     try:
         if node:
@@ -1993,7 +2002,7 @@ def config_discover(node, save, output):
         
         # Save if requested
         if save or output:
-            output_file = output or str(CONFIG_PATH)
+            output_file = output or str(get_config_path())
             # Save functionality needs to be implemented
             click.echo(f"\n💾 Save functionality not yet implemented")
     
@@ -2002,7 +2011,7 @@ def config_discover(node, save, output):
         raise click.Abort()
 
 @config_group.command(name='validate')
-@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
 @click.option('--fix', '-f', is_flag=True, help='Automatically fix detected issues')
 @click.option('--report', '-r', help='Save validation report to file')
 def config_validate(config, fix, report):
@@ -2073,7 +2082,7 @@ def config_validate(config, fix, report):
         raise click.Abort()
 
 @config_group.command(name='sync-all')
-@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
 @click.option('--dry-run', '-d', is_flag=True, help='Show what would be changed without making changes')
 def config_sync_all(config, dry_run):
     """🔄 Synchronize all node configurations with live state"""
@@ -2120,7 +2129,7 @@ def config_sync_all(config, dry_run):
         raise click.Abort()
 
 @config_group.command(name='monitor')
-@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
 @click.option('--interval', '-i', default=300, help='Check interval in seconds (default: 300)')
 @click.option('--auto-fix', is_flag=True, help='Automatically fix detected drift')
 def config_monitor(config, interval, auto_fix):
@@ -2240,7 +2249,7 @@ def config_template(action, name, description, stack, network, file, variables):
         raise click.Abort()
 
 @config_group.command(name='summary')
-@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
 def config_summary(config):
     """📊 Show configuration automation summary and statistics"""
     from .config_automation import ConfigAutomationSystem
