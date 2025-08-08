@@ -1,0 +1,6 @@
+validator index,validator public address,Protocol,stack,tailscale dns,AI Monitoring containers1,AI Monitoring containers2,AI Monitoring containers3,AI Monitoring containers4
+123456,0xabc123def456789abcdef123456789abcdef123456789abcdef123456789abcd,Lido CSM,eth-docker + lido-csm,node1.your-tailnet.ts.net,eth-docker-validator-1,eth-docker-consensus-1,eth-docker-execution-1,eth-docker-mev-boost-1
+789012,0xdef456abc789123def456abc789123def456abc789123def456abc789123,RocketPool,eth-docker + rocketpool,node2.your-tailnet.ts.net,rocketpool_validator,eth-docker-consensus-1,eth-docker-execution-1,eth-docker-mev-boost-1
+345678,0x123456789abcdef123456789abcdef123456789abcdef123456789abcdef12,Obol DVT,obol,node3.your-tailnet.ts.net,charon-distributed-validator-node-lodestar-1,charon-distributed-validator-node-charon-1,charon-distributed-validator-node-mev-boost-1,eth-docker-consensus-1
+901234,0x987654321fedcba987654321fedcba987654321fedcba987654321fedcba98,NodeSet Hyperdrive,eth-docker + hyperdrive,node4.your-tailnet.ts.net,hyperdrive-nodeset-hyperdrive-daemon-1,hyperdrive-nodeset-hyperdrive-api-1,eth-docker-execution-1,eth-docker-consensus-1
+567890,0xfedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210,Solo Staking,eth-docker,node5.your-tailnet.ts.net,eth-docker-validator-1,eth-docker-consensus-1,eth-docker-execution-1,eth-docker-mev-boost-1

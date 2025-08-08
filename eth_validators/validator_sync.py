@@ -14,11 +14,22 @@ from pathlib import Path
 from typing import List, Dict, Set, Tuple
 import click
 
+def get_config_path():
+    """Find config.yaml in current directory first, then in eth_validators directory"""
+    # First check current working directory (where user runs the command)
+    current_dir_config = Path.cwd() / 'config.yaml'
+    if current_dir_config.exists():
+        return current_dir_config
+    
+    # Fallback to the default location (for backward compatibility)
+    default_config = Path(__file__).parent / 'config.yaml'
+    return default_config
+
 class ValidatorSyncManager:
     def __init__(self, config_path: str = None):
         """Initialize the validator sync manager"""
         if config_path is None:
-            config_path = Path(__file__).parent / 'config.yaml'
+            config_path = get_config_path()
         
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)

@@ -1,0 +1,15 @@
+cluster_name: my-test-cluster
+monitoring:
+  auto_discovery: true
+  discovery_frequency: daily
+  enabled: true
+  performance_enabled: true
+networks:
+- mainnet
+nodes:
+- ethereum_clients_enabled: true
+  name: validator1
+  ssh_user: root
+  stack:
+  - eth-docker
+  tailscale_domain: validator1.example.com
