@@ -1,0 +1,38 @@
+# Minimal Ethereum Validators Configuration Template
+# Perfect for new setups - auto-discovery fills in the details!
+
+nodes:
+  # Just add your nodes with Tailscale domains
+  # Everything else is discovered automatically!
+  
+  - name: "node1"
+    tailscale_domain: "node1.your-tailnet.ts.net"
+    
+  - name: "node2" 
+    tailscale_domain: "node2.your-tailnet.ts.net"
+    
+  - name: "node3"
+    tailscale_domain: "node3.your-tailnet.ts.net"
+
+# Validator mapping CSV file
+validators_csv: "validators_vs_hardware.csv"
+
+# Optional: Enable auto-discovery (recommended)
+auto_discovery:
+  enabled: true
+
+# That's it! 🎉
+# 
+# Next steps:
+# 1. Replace "your-tailnet" with your actual Tailscale network
+# 2. Update node names and domains to match your setup  
+# 3. Run: python3 -m eth_validators config validate
+# 4. Run: python3 -m eth_validators config validate --fix
+#    to auto-populate all the missing configuration details!
+#
+# The system will automatically detect:
+# - Docker paths (/home/user/eth-docker, etc.)
+# - Running stacks (eth-docker, obol, rocketpool, etc.) 
+# - API ports (5052, 5053, etc.)
+# - Active networks (mainnet, testnets)
+# - Client types and versions

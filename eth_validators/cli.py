@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from tabulate import tabulate
 import re
+from datetime import datetime
 from . import performance
 from .config import get_node_config, get_all_node_configs
 from .performance import get_performance_summary
@@ -14,6 +15,8 @@ from .node_manager import get_node_status, upgrade_node_docker_clients, get_syst
 from .ai_analyzer import ValidatorLogAnalyzer
 from .validator_sync import ValidatorSyncManager, get_active_validators_only
 from .validator_editor import InteractiveValidatorEditor
+from .validator_auto_discovery import ValidatorAutoDiscovery, auto_generate_validators_csv
+from .simple_setup import SimpleSetupWizard, quick_start_new_user, show_next_steps
 
 CONFIG_PATH = Path(__file__).parent / 'config.yaml'
 
@@ -579,6 +582,281 @@ def validator_group():
     """👥 Validator lifecycle management and duty coordination"""
     pass
 
+@validator_group.command(name='discover')
+@click.option('--output', '-o', default='validators_auto_discovered.csv', help='Output CSV filename')
+@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+def validator_discover(output, config):
+    """🔍 Auto-discover validators across all nodes and generate simplified CSV"""
+    click.echo("🔍 Starting validator auto-discovery across cluster...")
+    
+    try:
+        discovery = ValidatorAutoDiscovery(config)
+        csv_path = discovery.generate_validators_csv(output)
+        
+        # Read and display summary
+        with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            validators = list(reader)
+        
+        if validators:
+            click.echo(f"✅ Successfully discovered {len(validators)} validators!")
+            click.echo(f"📄 CSV saved to: {csv_path}")
+            
+            # Show summary by node
+            node_counts = {}
+            protocol_counts = {}
+            
+            for validator in validators:
+                node = validator['node_name']
+                protocol = validator['protocol']
+                
+                node_counts[node] = node_counts.get(node, 0) + 1
+                protocol_counts[protocol] = protocol_counts.get(protocol, 0) + 1
+            
+            click.echo("\n📊 Discovery Summary:")
+            click.echo("By Node:")
+            for node, count in node_counts.items():
+                click.echo(f"   {node}: {count} validators")
+            
+            click.echo("\nBy Protocol:")
+            for protocol, count in protocol_counts.items():
+                click.echo(f"   {protocol}: {count} validators")
+        else:
+            click.echo("⚠️ No validators discovered")
+            
+    except Exception as e:
+        click.echo(f"❌ Validator discovery failed: {e}")
+        raise click.Abort()
+
+@validator_group.command(name='list')
+@click.option('--csv-file', default='validators_auto_discovered.csv', help='CSV file to read from')
+@click.option('--node', help='Filter by specific node name')
+@click.option('--protocol', help='Filter by protocol (e.g., lido-csm, obol-dvt)')
+@click.option('--status', help='Filter by validator status (e.g., active, exited)')
+def validator_list(csv_file, node, protocol, status):
+    """📋 List discovered validators with optional filtering"""
+    try:
+        csv_path = Path(csv_file)
+        
+        if not csv_path.exists():
+            click.echo(f"❌ CSV file not found: {csv_file}")
+            click.echo("💡 Run 'validator discover' first to generate the CSV file")
+            return
+        
+        # Read validators from CSV
+        with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            validators = list(reader)
+        
+        if not validators:
+            click.echo("📭 No validators found in CSV file")
+            return
+        
+        # Apply filters
+        filtered = validators
+        if node:
+            filtered = [v for v in filtered if v['node_name'].lower() == node.lower()]
+        if protocol:
+            filtered = [v for v in filtered if protocol.lower() in v['protocol'].lower()]
+        if status:
+            filtered = [v for v in filtered if v['status'].lower() == status.lower()]
+        
+        if not filtered:
+            click.echo("📭 No validators match the specified filters")
+            return
+        
+        # Display results
+        click.echo(f"📋 Validators ({len(filtered)} found)")
+        click.echo("=" * 100)
+        
+        table_data = []
+        for validator in filtered:
+            table_data.append([
+                validator['validator_index'],
+                validator['public_key'][:12] + '...' + validator['public_key'][-6:],  # Shortened pubkey
+                validator['node_name'],
+                validator['protocol'],
+                validator['status'],
+                validator.get('last_updated', 'N/A')[:10]  # Date only
+            ])
+        
+        headers = ['Index', 'Public Key', 'Node', 'Protocol', 'Status', 'Updated']
+        click.echo(tabulate(table_data, headers=headers, tablefmt='grid'))
+        
+    except Exception as e:
+        click.echo(f"❌ Failed to list validators: {e}")
+        raise click.Abort()
+
+@validator_group.command(name='update-csv')
+@click.option('--csv-file', default='validators_vs_hardware.csv', help='Existing CSV file to update')
+@click.option('--backup/--no-backup', default=True, help='Create backup of existing CSV')
+@click.option('--config', '-c', default=str(CONFIG_PATH), help='Configuration file path')
+def validator_update_csv(csv_file, backup, config):
+    """🔄 Update existing validators CSV with auto-discovered data"""
+    click.echo("🔄 Updating validators CSV with auto-discovered data...")
+    
+    try:
+        discovery = ValidatorAutoDiscovery(config)
+        
+        if backup and Path(csv_file).exists():
+            from datetime import datetime
+            backup_name = f"{csv_file}.backup_{int(datetime.now().timestamp())}"
+            Path(csv_file).rename(backup_name)
+            click.echo(f"💾 Backup created: {backup_name}")
+        
+        success = discovery.update_existing_csv(csv_file)
+        
+        if success:
+            click.echo(f"✅ Successfully updated {csv_file}")
+        else:
+            click.echo("⚠️ Update completed with warnings")
+            
+    except Exception as e:
+        click.echo(f"❌ CSV update failed: {e}")
+        raise click.Abort()
+
+@validator_group.command(name='compare')
+@click.option('--old-csv', default='validators_vs_hardware.csv', help='Original CSV file')
+@click.option('--new-csv', default='validators_auto_discovered.csv', help='Auto-discovered CSV file')
+def validator_compare(old_csv, new_csv):
+    """⚖️ Compare original CSV with auto-discovered validators"""
+    click.echo("⚖️ Comparing validator CSV files...")
+    
+    try:
+        old_path = Path(old_csv)
+        new_path = Path(new_csv)
+        
+        if not old_path.exists():
+            click.echo(f"❌ Original CSV not found: {old_csv}")
+            return
+            
+        if not new_path.exists():
+            click.echo(f"❌ Auto-discovered CSV not found: {new_csv}")
+            click.echo("💡 Run 'validator discover' first")
+            return
+        
+        # Read both files
+        with open(old_path, 'r', encoding='utf-8') as f:
+            old_reader = csv.DictReader(f)
+            old_validators = {row.get('validator index', row.get('validator_index', '')): row for row in old_reader}
+        
+        with open(new_path, 'r', encoding='utf-8') as f:
+            new_reader = csv.DictReader(f)
+            new_validators = {row['validator_index']: row for row in new_reader}
+        
+        # Compare
+        old_indices = set(old_validators.keys())
+        new_indices = set(new_validators.keys())
+        
+        common = old_indices & new_indices
+        only_old = old_indices - new_indices
+        only_new = new_indices - old_indices
+        
+        click.echo(f"\n📊 Comparison Results:")
+        click.echo(f"   Common validators: {len(common)}")
+        click.echo(f"   Only in original: {len(only_old)}")
+        click.echo(f"   Only in discovered: {len(only_new)}")
+        
+        if only_old:
+            click.echo(f"\n🔍 Validators only in original CSV:")
+            for idx in list(only_old)[:10]:  # Show first 10
+                if idx:  # Skip empty indices
+                    click.echo(f"   {idx}")
+            if len(only_old) > 10:
+                click.echo(f"   ... and {len(only_old) - 10} more")
+        
+        if only_new:
+            click.echo(f"\n🆕 Validators only in discovered CSV:")
+            for idx in list(only_new)[:10]:  # Show first 10
+                click.echo(f"   {idx}")
+            if len(only_new) > 10:
+                click.echo(f"   ... and {len(only_new) - 10} more")
+                
+        # Recommendation
+        if len(only_new) > len(only_old):
+            click.echo(f"\n💡 Recommendation: Consider using the auto-discovered CSV as it found {len(only_new) - len(only_old)} more validators")
+        elif len(only_old) > 0:
+            click.echo(f"\n💡 Recommendation: Review validators that appear only in the original CSV")
+        else:
+            click.echo(f"\n✅ Both files are consistent!")
+            
+    except Exception as e:
+        click.echo(f"❌ Comparison failed: {e}")
+        raise click.Abort()
+
+@cli.command(name='quickstart')
+def quickstart():
+    """🚀 Interactive setup for new users - get started in minutes!"""
+    try:
+        click.echo("🚀 Ethereum Validator Cluster Manager - Quick Start")
+        click.echo("=" * 55)
+        
+        # Check if already configured
+        config_path = Path('config.yaml')
+        if config_path.exists():
+            if click.confirm("config.yaml already exists. Overwrite with new setup?"):
+                config_path.rename(f"config.yaml.backup_{int(time.time())}")
+            else:
+                click.echo("Setup cancelled. Your existing configuration is preserved.")
+                return
+        
+        # Run interactive setup
+        config_file = quick_start_new_user()
+        
+        # Show next steps
+        show_next_steps()
+        
+    except Exception as e:
+        click.echo(f"❌ Quick start failed: {e}")
+        raise click.Abort()
+
+@validator_group.command(name='automate')
+@click.option('--frequency', type=click.Choice(['daily', 'weekly', 'hourly']), default='daily', help='Update frequency')
+@click.option('--setup', is_flag=True, help='Setup automated discovery')
+def validator_automate(frequency, setup):
+    """⚡ Setup automated validator discovery"""
+    click.echo("⚡ Validator Auto-Discovery Automation")
+    click.echo("=" * 40)
+    
+    if not setup:
+        click.echo("🔄 Configuration preview:")
+        click.echo(f"   Frequency: {frequency}")
+        click.echo(f"   Command: validator discover")
+        click.echo("\n💡 Use --setup to enable automation")
+        return
+    
+    try:
+        # Simple cron setup
+        cron_schedule = {
+            'daily': '0 6 * * *',
+            'weekly': '0 6 * * 1', 
+            'hourly': '0 * * * *'
+        }[frequency]
+        
+        base_dir = Path(__file__).parent.parent
+        command = f"cd {base_dir} && python3 -m eth_validators validator discover"
+        cron_entry = f"{cron_schedule} {command} >> /var/log/validator-discovery.log 2>&1"
+        
+        click.echo(f"� Automation setup:")
+        click.echo(f"   Schedule: {frequency} at 6 AM")
+        click.echo(f"   Cron entry: {cron_entry}")
+        
+        if click.confirm("Add to crontab?"):
+            import subprocess
+            # Add to crontab
+            result = subprocess.run(f'(crontab -l 2>/dev/null; echo "{cron_entry}") | crontab -', 
+                                  shell=True, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                click.echo("✅ Automation enabled!")
+                click.echo(f"🔄 Validators will be discovered {frequency}")
+            else:
+                click.echo(f"❌ Failed to setup automation: {result.stderr}")
+        
+    except Exception as e:
+        click.echo(f"❌ Automation setup failed: {e}")
+        raise click.Abort()
+
 def _check_reboot_needed(ssh_user, tailscale_domain, is_local=False):
     """Check if a node needs a reboot by checking for reboot-required file"""
     try:
@@ -646,13 +924,18 @@ def list_cmd():
             # Check if this is a validator-only node (like Charon + validator clients)
             validator_info = _get_validator_only_clients(node)
             if validator_info and validator_info['has_clients']:
-                status_emoji = "�"
+                status_emoji = "🟢"
                 status_text = "Active"
                 active_nodes += 1
                 clients = f"🔗 {validator_info['display_name']}"
+                
+                # Override stack display if Charon is detected
+                if 'charon' in validator_info.get('display_name', '').lower():
+                    stack_display = "🔗 obol"
+                    
                 click.echo(" ✓", err=True)
             else:
-                status_emoji = "�🔴"
+                status_emoji = "🔴"
                 status_text = "Disabled"
                 clients = "❌ No clients"
                 disabled_nodes += 1
@@ -1645,40 +1928,45 @@ def config_discover(node, save, output):
     
     click.echo("🔍 Starting automated configuration discovery...")
     
-    automation = ConfigAutomationSystem()
+    automation = ConfigAutomationSystem(str(CONFIG_PATH))
     
     try:
         if node:
-            # Discover single node
-            results = automation.discover_single_node(node)
-            click.echo(f"\n📋 Discovery results for {node}:")
+            # Discover single node - need to implement this method
+            click.echo(f"❌ Single node discovery not implemented yet. Use --all flag.")
+            return
         else:
             # Discover all nodes
-            results = automation.discover_all_configurations()
-            click.echo(f"\n📋 Discovery results for {len(results)} nodes:")
+            results = automation.sync_all_nodes()
+            click.echo(f"\n📋 Discovery results for {results['total_nodes']} nodes:")
         
         # Display results
-        for node_name, result in results.items():
-            click.echo(f"\n🖥️  {node_name}:")
-            click.echo(f"   Status: {'✅ Success' if result['status'] == 'success' else '❌ ' + result.get('error', 'Unknown error')}")
-            
-            if result['status'] == 'success':
-                data = result['data']
-                click.echo(f"   Stack: {', '.join(data.get('detected_stacks', ['Unknown']))}")
+        if 'results' in results:
+            for node_name, result in results['results'].items():
+                click.echo(f"\n🖥️  {node_name}:")
+                click.echo(f"   Status: {'✅ Success' if result.get('status') == 'success' else '❌ ' + result.get('reason', 'Unknown error')}")
                 
-                if 'active_networks' in data:
-                    networks = list(data['active_networks'].keys())
-                    click.echo(f"   Networks: {', '.join(networks) if networks else 'None detected'}")
-                
-                if 'api_ports' in data:
-                    ports = data['api_ports']
-                    click.echo(f"   API Ports: {dict(ports)}")
+                if result.get('discovery_data'):
+                    data = result['discovery_data']
+                    click.echo(f"   Stack: {', '.join(data.get('detected_stacks', ['Unknown']))}")
+                    
+                    if 'active_networks' in data:
+                        networks = list(data['active_networks'].keys())
+                        click.echo(f"   Networks: {', '.join(networks) if networks else 'None detected'}")
+                    
+                    if 'api_ports' in data:
+                        ports = data['api_ports']
+                        click.echo(f"   API Ports: {dict(ports)}")
+        
+        # Summary
+        if results.get('updated_nodes', 0) > 0:
+            click.echo(f"\n🔄 Updated {results['updated_nodes']} nodes: {', '.join(results.get('updated_node_names', []))}")
         
         # Save if requested
         if save or output:
             output_file = output or str(CONFIG_PATH)
-            automation.save_discovered_config(results, output_file)
-            click.echo(f"\n💾 Configuration saved to: {output_file}")
+            # Save functionality needs to be implemented
+            click.echo(f"\n💾 Save functionality not yet implemented")
     
     except Exception as e:
         click.echo(f"❌ Discovery failed: {e}")
@@ -1694,10 +1982,10 @@ def config_validate(config, fix, report):
     
     click.echo("✅ Starting configuration validation...")
     
-    automation = ConfigAutomationSystem()
+    automation = ConfigAutomationSystem(config)
     
     try:
-        issues, repairs = automation.validate_and_repair(config, auto_repair=fix)
+        issues, repairs = automation.validate_current_config(auto_repair=fix)
         
         if not issues:
             click.echo("🎉 Configuration is valid - no issues detected!")
@@ -1714,16 +2002,16 @@ def config_validate(config, fix, report):
             if issue_list:
                 click.echo(f"\n{emoji} {severity} ({len(issue_list)} issues):")
                 for issue in issue_list:
-                    click.echo(f"   • {issue.node}: {issue.message}")
-                    if issue.suggested_fix:
-                        click.echo(f"     💡 Suggestion: {issue.suggested_fix}")
+                    click.echo(f"   • {issue.node}: {issue.description}")
+                    if issue.suggested_value:
+                        click.echo(f"     💡 Suggested: {issue.suggested_value}")
         
         if repairs and fix:
             click.echo(f"\n🔧 Applied {len(repairs)} automatic repairs:")
             for repair in repairs:
                 click.echo(f"   ✅ {repair.node}: {repair.description}")
-        elif not fix and any(i.auto_correctable for i in issues):
-            auto_fixable = len([i for i in issues if i.auto_correctable])
+        elif not fix and any(i.auto_fixable for i in issues):
+            auto_fixable = len([i for i in issues if i.auto_fixable])
             click.echo(f"\n💡 {auto_fixable} issues can be automatically fixed with --fix flag")
         
         # Save report if requested
@@ -1740,8 +2028,8 @@ def config_validate(config, fix, report):
                         'node': i.node,
                         'type': i.issue_type,
                         'severity': i.severity,
-                        'message': i.message,
-                        'auto_correctable': i.auto_correctable
+                        'description': i.description,
+                        'auto_fixable': i.auto_fixable
                     } for i in issues
                 ]
             }
@@ -1934,8 +2222,8 @@ def config_summary(config):
     
     try:
         # Configuration status
-        automation = ConfigAutomationSystem()
-        validation_results = automation.validate_and_repair(config, auto_repair=False)
+        automation = ConfigAutomationSystem(config)
+        validation_results = automation.validate_current_config(auto_repair=False)
         
         issues = validation_results[0]
         total_issues = len(issues)

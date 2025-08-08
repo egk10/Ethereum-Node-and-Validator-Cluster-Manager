@@ -69,7 +69,7 @@ class ConfigAutomationSystem:
         self.generator = SmartConfigGenerator()
         self.validator = ConfigValidator()
         self.monitor = ConfigMonitor()
-        self.templates = ConfigTemplates()
+        self.templates = ConfigTemplateManager()
         
     def auto_discover_node(self, node_name: str, ssh_user: str, tailscale_domain: str) -> DiscoveryResult:
         """Discover complete configuration for a node"""
@@ -92,4 +92,4 @@ from .auto_discovery import AutoConfigDiscovery
 from .smart_generator import SmartConfigGenerator  
 from .config_validator import ConfigValidator
 from .config_monitor import ConfigMonitor
-from .config_templates import ConfigTemplates
+from .config_templates import ConfigTemplateManager
