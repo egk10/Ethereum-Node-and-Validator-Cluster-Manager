@@ -14,7 +14,16 @@ from typing import Dict, List, Tuple, Any
 import yaml
 from pathlib import Path
 
-CONFIG_PATH = Path(__file__).parent / 'config.yaml'
+def get_config_path():
+    """Find config.yaml in current directory first, then in eth_validators directory"""
+    # First check current working directory (where user runs the command)
+    current_dir_config = Path.cwd() / 'config.yaml'
+    if current_dir_config.exists():
+        return current_dir_config
+    
+    # Fallback to the default location (for backward compatibility)
+    default_config = Path(__file__).parent / 'config.yaml'
+    return default_config
 
 class ValidatorLogAnalyzer:
     """AI-powered analyzer for validator and consensus client logs with enhanced performance extraction."""
@@ -108,7 +117,7 @@ class ValidatorLogAnalyzer:
         """Analyze logs from all containers on a node for the specified time period."""
         try:
             # Load node configuration
-            with open(CONFIG_PATH, 'r') as f:
+            with open(get_config_path(), 'r') as f:
                 config = yaml.safe_load(f)
             
             node_config = None
@@ -551,7 +560,7 @@ def analyze_validator_performance_ai(node_name: str = None, hours: int = 24) -> 
     else:
         # Analyze all nodes
         try:
-            with open(CONFIG_PATH, 'r') as f:
+            with open(get_config_path(), 'r') as f:
                 config = yaml.safe_load(f)
             
             results = {}
