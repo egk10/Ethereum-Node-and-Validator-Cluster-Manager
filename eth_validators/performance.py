@@ -24,7 +24,6 @@ def get_config_path():
     default_config = Path(__file__).parent / 'config.yaml'
     return default_config
 
-get_config_path() = get_config_path()
 VALIDATORS_PATH = Path(__file__).parent / 'validators_vs_hardware.csv'
 
 # Definir os nós de consulta por tipo de cliente
