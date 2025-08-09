@@ -60,6 +60,99 @@ def _run_command(node_cfg, command):
                     self.stderr = stderr
             return MockResult()
 
+def _detect_running_stacks(node_cfg):
+    """Detect all running stacks/services on a node by checking docker containers"""
+    detected_stacks = []
+    
+    try:
+        # Get all running containers
+        command = "docker ps --format 'table {{.Names}}\t{{.Image}}' | tail -n +2"
+        result = _run_command(node_cfg, command)
+        
+        if result.returncode != 0 or not result.stdout.strip():
+            return ["unknown"]
+        
+        containers = result.stdout.strip().split('\n')
+        container_info = []
+        
+        for container_line in containers:
+            # Handle both tab and space separated output
+            if '\t' in container_line:
+                name, image = container_line.split('\t', 1)
+                container_info.append({'name': name.strip(), 'image': image.strip()})
+            else:
+                # Handle space-separated format
+                parts = container_line.split()
+                if len(parts) >= 2:
+                    name = parts[0]
+                    image = parts[1]
+                    container_info.append({'name': name, 'image': image})
+        
+        # Detect different stacks based on container patterns
+        stack_indicators = {
+            'charon': ['charon', 'obolnetwork/charon'],
+            'rocketpool': ['rocketpool', 'rocket-pool', 'rp_', 'rp-'],
+            'hyperdrive': ['hyperdrive', 'nodeset'],
+            'ssv': ['ssv', 'bloxstaking'],
+            'lido-csm': ['lido', 'csm'],
+            'stakewise': ['stakewise'],
+            'eth-docker': ['eth-docker', 'ethereum/client-go', 'sigp/lighthouse', 'consensys/teku', 'status-im/nimbus-eth2', 'chainsafe/lodestar', 'prysmaticlabs/prysm-beacon-chain'],
+            'nethermind': ['nethermind'],
+            'besu': ['hyperledger/besu'],
+            'geth': ['ethereum/client-go'],
+            'reth': ['ghcr.io/paradigmxyz/reth'],
+            'lighthouse': ['sigp/lighthouse'],
+            'teku': ['consensys/teku'],
+            'nimbus': ['nimbus'],
+            'lodestar': ['chainsafe/lodestar'],
+            'prysm': ['prysmaticlabs/prysm'],
+            'vero': ['obolnetwork/vero', 'vouch', 'vero:']
+        }
+        
+        # Check for each stack
+        for stack, indicators in stack_indicators.items():
+            for container in container_info:
+                name_lower = container['name'].lower()
+                image_lower = container['image'].lower()
+                
+                for indicator in indicators:
+                    if indicator.lower() in name_lower or indicator.lower() in image_lower:
+                        if stack not in detected_stacks:
+                            detected_stacks.append(stack)
+                        break
+        
+        # Special logic to group clients under eth-docker if present
+        client_stacks = ['nethermind', 'besu', 'geth', 'reth', 'lighthouse', 'teku', 'nimbus', 'lodestar', 'prysm']
+        if 'eth-docker' in detected_stacks:
+            # Remove individual client detections if eth-docker is present
+            detected_stacks = [s for s in detected_stacks if s not in client_stacks]
+        
+        # Add back main detected clients for display
+        main_clients = []
+        for container in container_info:
+            image_lower = container['image'].lower()
+            if any(client in image_lower for client in ['nethermind', 'besu', 'geth', 'reth']):
+                for client in ['nethermind', 'besu', 'geth', 'reth']:
+                    if client in image_lower and client not in main_clients:
+                        main_clients.append(client)
+            if any(client in image_lower for client in ['lighthouse', 'teku', 'nimbus', 'lodestar', 'prysm']):
+                for client in ['lighthouse', 'teku', 'nimbus', 'lodestar', 'prysm']:
+                    if client in image_lower and client not in main_clients:
+                        main_clients.append(client)
+        
+        # Final stack list
+        if not detected_stacks:
+            detected_stacks = ["unknown"]
+        
+        # Add main clients to the stack info for display purposes
+        if main_clients:
+            detected_stacks.extend(main_clients)
+        
+        return detected_stacks
+        
+    except Exception as e:
+        return ["error"]
+
 def _get_charon_version(ssh_target, tailscale_domain, node_cfg=None):
     """Get Charon version if it's running on the node"""
     try:
@@ -945,18 +1038,63 @@ def list_cmd():
         
         click.echo(f"📡 Processing {name}... ({i+1}/{len(nodes)})", nl=False, err=True)
         
-        # Stack info with emojis - handle multiple stacks
+        # Stack info with emojis - use live detection when possible
         stack_emojis = {
             'eth-docker': '🐳', 'disabled': '🚫', 'rocketpool': '🚀', 'obol': '🔗',
             'hyperdrive': '⚡', 'charon': '🌐', 'ssv': '📡', 'stakewise': '🏦',
-            'lido-csm': '🏦', 'eth-hoodi': '🧪'
+            'lido-csm': '🏦', 'eth-hoodi': '🧪', 'nethermind': '⚙️', 'besu': '⚙️',
+            'geth': '⚙️', 'reth': '⚙️', 'lighthouse': '🔗', 'teku': '🔗',
+            'nimbus': '🔗', 'lodestar': '🔗', 'prysm': '🔗', 'vero': '🔗'
         }
         
-        if 'disabled' in stack:
-            stack_display = "🚫 disabled"
-        else:
-            stack_parts = [f"{stack_emojis.get(s.lower(), '⚙️')} {s}" for s in stack]
-            stack_display = " + ".join(stack_parts)
+        # Try to detect running stacks live
+        try:
+            detected_stacks = _detect_running_stacks(node)
+            if detected_stacks and detected_stacks != ["unknown"] and detected_stacks != ["error"]:
+                # Use detected stacks instead of config
+                main_stacks = []
+                client_stacks = []
+                
+                for s in detected_stacks:
+                    if s in ['eth-docker', 'rocketpool', 'obol', 'charon', 'hyperdrive', 'ssv', 'lido-csm', 'stakewise']:
+                        main_stacks.append(s)
+                    elif s in ['nethermind', 'besu', 'geth', 'reth', 'lighthouse', 'teku', 'nimbus', 'lodestar', 'prysm', 'vero']:
+                        client_stacks.append(s)
+                
+                if main_stacks:
+                    stack_parts = [f"{stack_emojis.get(s.lower(), '⚙️')} {s}" for s in main_stacks]
+                    stack_display = " + ".join(stack_parts)
+                else:
+                    # Fallback to configured stack
+                    if 'disabled' in stack:
+                        stack_display = "🚫 disabled"
+                    else:
+                        stack_parts = [f"{stack_emojis.get(s.lower(), '⚙️')} {s}" for s in stack]
+                        stack_display = " + ".join(stack_parts)
+                
+                # Store detected clients for diversity calculation
+                detected_clients = {'execution': [], 'consensus': []}
+                for client in client_stacks:
+                    if client in ['nethermind', 'besu', 'geth', 'reth']:
+                        detected_clients['execution'].append(client)
+                    elif client in ['lighthouse', 'teku', 'nimbus', 'lodestar', 'prysm']:
+                        detected_clients['consensus'].append(client)
+            else:
+                # Fallback to configured stack
+                if 'disabled' in stack:
+                    stack_display = "🚫 disabled"
+                else:
+                    stack_parts = [f"{stack_emojis.get(s.lower(), '⚙️')} {s}" for s in stack]
+                    stack_display = " + ".join(stack_parts)
+                detected_clients = None
+        except:
+            # Fallback to configured stack on error
+            if 'disabled' in stack:
+                stack_display = "🚫 disabled"
+            else:
+                stack_parts = [f"{stack_emojis.get(s.lower(), '⚙️')} {s}" for s in stack]
+                stack_display = " + ".join(stack_parts)
+            detected_clients = None
 
         if _is_stack_disabled(stack) or not _has_ethereum_clients(node):
             # Check if this is a validator-only node (like Charon + validator clients)
@@ -1341,31 +1479,155 @@ def performance_cmd():
 @node_group.command(name='update-charon')
 @click.option('--dry-run', is_flag=True, help='Show what would be done without making changes')
 @click.option('--node', 'selected_nodes', multiple=True, help='Update only specified nodes (can be used multiple times)')
-def update_charon(dry_run, selected_nodes):
-    """Execute live Charon container updates via SSH on Obol distributed validator nodes"""
-    import os
-    script_path = Path(__file__).parent.parent / 'scripts' / 'update_charon.sh'
-    
-    if not script_path.exists():
-        click.echo("❌ Charon update script not found!")
-        return
-    
-    # Build command arguments  
-    cmd_args = [str(script_path)]
-    
-    if dry_run:
-        cmd_args.append('--dry-run')
-    
-    for node in selected_nodes:
-        cmd_args.extend(['--node', node])
-    
-    # Execute the script
+@click.option('--all', is_flag=True, help='Update Charon on all nodes with Charon/Obol stack')
+def update_charon(dry_run, selected_nodes, all):
+    """Update Charon containers via docker-compose pull and up -d on Obol distributed validator nodes"""
     try:
-        subprocess.run(cmd_args, check=True)
-    except subprocess.CalledProcessError as e:
-        click.echo(f"❌ Charon update failed with exit code {e.returncode}")
-    except FileNotFoundError:
-        click.echo("❌ Could not execute Charon update script")
+        config = yaml.safe_load(get_config_path().read_text())
+        nodes = config.get('nodes', [])
+        
+        if not nodes:
+            click.echo("❌ No nodes found in configuration")
+            return
+        
+        # Filter nodes that have Charon/Obol stack
+        charon_nodes = []
+        for node in nodes:
+            stack = node.get('stack', [])
+            if any(s.lower() in ['charon', 'obol'] for s in stack):
+                charon_nodes.append(node)
+        
+        if not charon_nodes:
+            click.echo("❌ No nodes with Charon/Obol stack found in configuration")
+            return
+        
+        # Select nodes to process
+        nodes_to_process = []
+        if all:
+            nodes_to_process = charon_nodes
+        elif selected_nodes:
+            for selected in selected_nodes:
+                for node in charon_nodes:
+                    if node['name'] == selected or node.get('tailscale_domain') == selected:
+                        nodes_to_process.append(node)
+                        break
+                else:
+                    click.echo(f"⚠️ Node '{selected}' not found or doesn't have Charon/Obol stack")
+        else:
+            click.echo("❌ Use --all or specify --node option(s)")
+            return
+        
+        if not nodes_to_process:
+            return
+        
+        click.echo("🔄 Updating Charon containers...")
+        click.echo(f"📡 Processing {len(nodes_to_process)} node(s)")
+        
+        if dry_run:
+            click.echo("🔍 DRY RUN MODE - No changes will be made")
+        
+        successful_updates = []
+        failed_updates = []
+        
+        for i, node in enumerate(nodes_to_process):
+            name = node['name']
+            domain = node.get('tailscale_domain')
+            ssh_user = node.get('ssh_user', 'root')
+            
+            click.echo(f"\n📡 Processing {name}... ({i+1}/{len(nodes_to_process)})")
+            
+            if dry_run:
+                click.echo(f"🔍 [DRY RUN] Would update Charon on {name}")
+                successful_updates.append(name)
+                continue
+            
+            # Find Charon directory
+            charon_paths = [
+                "/home/egk/charon-distributed-validator-node",
+                "~/charon-distributed-validator-node",
+                "~/obol-dvt", 
+                "~/obol",
+                "~/charon",
+                "/opt/charon",
+                "/opt/obol"
+            ]
+            
+            charon_dir = None
+            for path in charon_paths:
+                check_cmd = f"test -d {path} && test -f {path}/docker-compose.yml"
+                result = _run_command(node, check_cmd)
+                if result.returncode == 0:
+                    # Verify it contains Charon
+                    verify_cmd = f"grep -qi 'charon' {path}/docker-compose.yml"
+                    verify_result = _run_command(node, verify_cmd)
+                    if verify_result.returncode == 0:
+                        charon_dir = path
+                        break
+            
+            if not charon_dir:
+                click.echo(f"❌ Charon directory not found on {name}")
+                failed_updates.append(name)
+                continue
+            
+            click.echo(f"✅ Found Charon directory: {charon_dir}")
+            
+            # Get current status
+            status_cmd = f"cd {charon_dir} && docker compose ps charon"
+            status_result = _run_command(node, status_cmd)
+            
+            # Update Charon
+            click.echo(f"🔄 Pulling latest Charon image on {name}...")
+            pull_cmd = f"cd {charon_dir} && docker compose pull charon"
+            pull_result = _run_command(node, pull_cmd)
+            
+            if pull_result.returncode != 0:
+                click.echo(f"❌ Failed to pull Charon image on {name}")
+                failed_updates.append(name)
+                continue
+            
+            click.echo(f"🚀 Starting updated Charon container on {name}...")
+            up_cmd = f"cd {charon_dir} && docker compose up -d charon"
+            up_result = _run_command(node, up_cmd)
+            
+            if up_result.returncode != 0:
+                click.echo(f"❌ Failed to start Charon container on {name}")
+                failed_updates.append(name)
+                continue
+            
+            # Wait and verify
+            import time
+            time.sleep(3)
+            
+            verify_cmd = f"cd {charon_dir} && docker compose ps charon | grep -q 'Up'"
+            verify_result = _run_command(node, verify_cmd)
+            
+            if verify_result.returncode == 0:
+                click.echo(f"✅ Charon successfully updated on {name}")
+                successful_updates.append(name)
+            else:
+                click.echo(f"⚠️ Charon update completed but status unclear on {name}")
+                successful_updates.append(name)
+        
+        # Summary
+        click.echo("\n" + "=" * 60)
+        click.echo("📊 CHARON UPDATE SUMMARY")
+        click.echo("=" * 60)
+        
+        if successful_updates:
+            click.echo(f"✅ Successfully updated {len(successful_updates)} node(s):")
+            for node in successful_updates:
+                click.echo(f"   • {node}")
+        
+        if failed_updates:
+            click.echo(f"❌ Failed to update {len(failed_updates)} node(s):")
+            for node in failed_updates:
+                click.echo(f"   • {node}")
+        
+        click.echo("=" * 60)
+        
+    except Exception as e:
+        click.echo(f"❌ Charon update failed: {e}")
+        raise click.Abort()
 
 @node_group.command(name='versions')
 @click.argument('node', required=False)
@@ -1951,6 +2213,213 @@ def versions(node, all):
         path = node_cfg.get('eth_docker_path', '~/eth-docker')
         cmd = f"ssh {ssh_target} \"cd {path} && ./ethd version\""
         subprocess.run(cmd, shell=True)
+
+
+@node_group.command(name='add-node')
+def add_node_interactive():
+    """🆕 Add a new node to the cluster using interactive wizard"""
+    click.echo("🚀 Welcome to the Interactive Node Addition Wizard!")
+    click.echo("=" * 60)
+    
+    config_path = get_config_path()
+    
+    # Load existing config
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        click.echo("❌ No config.yaml found. Please run 'python3 -m eth_validators quickstart' first.")
+        return
+    except Exception as e:
+        click.echo(f"❌ Error loading config: {e}")
+        return
+    
+    # Ensure nodes list exists
+    if 'nodes' not in config:
+        config['nodes'] = []
+    
+    click.echo("\n📝 Let's gather information about your new node...")
+    
+    # Step 1: Basic node information
+    click.echo("\n🖥️  Step 1: Basic Node Information")
+    click.echo("-" * 40)
+    
+    while True:
+        node_name = click.prompt("Node name (e.g., 'laptop', 'server1')", type=str).strip()
+        if node_name:
+            # Check if node name already exists
+            existing_names = [n.get('name', '') for n in config['nodes']]
+            if node_name in existing_names:
+                click.echo(f"❌ Node '{node_name}' already exists. Please choose a different name.")
+                continue
+            break
+        click.echo("❌ Node name cannot be empty")
+    
+    while True:
+        tailscale_domain = click.prompt("Tailscale domain (e.g., 'mynode.tailnet.ts.net')", type=str).strip()
+        if tailscale_domain:
+            # Check if domain already exists
+            existing_domains = [n.get('tailscale_domain', '') for n in config['nodes']]
+            if tailscale_domain in existing_domains:
+                click.echo(f"❌ Domain '{tailscale_domain}' already exists. Please choose a different domain.")
+                continue
+            break
+        click.echo("❌ Tailscale domain cannot be empty")
+    
+    ssh_user = click.prompt("SSH user", default="root", type=str).strip()
+    
+    # Step 2: Test connection
+    click.echo("\n🔗 Step 2: Testing Connection")
+    click.echo("-" * 40)
+    
+    test_node_cfg = {
+        'name': node_name,
+        'tailscale_domain': tailscale_domain,
+        'ssh_user': ssh_user
+    }
+    
+    click.echo(f"Testing SSH connection to {ssh_user}@{tailscale_domain}...")
+    test_result = _run_command(test_node_cfg, "echo 'Connection test successful'")
+    
+    if test_result.returncode != 0:
+        click.echo(f"❌ Connection failed: {test_result.stderr}")
+        if not click.confirm("Do you want to continue anyway?"):
+            return
+    else:
+        click.echo("✅ Connection successful!")
+    
+    # Step 3: Detect running stacks
+    click.echo("\n🔍 Step 3: Detecting Running Services")
+    click.echo("-" * 40)
+    
+    detected_stacks = _detect_running_stacks(test_node_cfg)
+    
+    if detected_stacks:
+        click.echo(f"✅ Detected stacks: {', '.join(detected_stacks)}")
+        use_detected = click.confirm("Use these detected stacks?", default=True)
+        
+        if use_detected:
+            stack = detected_stacks
+        else:
+            stack = _manual_stack_selection()
+    else:
+        click.echo("❓ No known stacks detected automatically.")
+        if click.confirm("Would you like to manually select stacks?", default=True):
+            stack = _manual_stack_selection()
+        else:
+            stack = ["eth-docker"]  # Default
+    
+    # Step 4: Additional configuration
+    click.echo("\n⚙️  Step 4: Additional Configuration")
+    click.echo("-" * 40)
+    
+    ethereum_clients_enabled = True
+    if 'disabled' in stack:
+        ethereum_clients_enabled = False
+    elif any(s in stack for s in ['obol', 'charon']):
+        ethereum_clients_enabled = click.confirm(
+            "Enable Ethereum execution/consensus clients?", 
+            default=not any('charon' in str(detected_stacks))
+        )
+    
+    # Create new node configuration
+    new_node = {
+        'name': node_name,
+        'tailscale_domain': tailscale_domain,
+        'ssh_user': ssh_user,
+        'stack': stack,
+        'ethereum_clients_enabled': ethereum_clients_enabled
+    }
+    
+    # Step 5: Summary and confirmation
+    click.echo("\n📋 Step 5: Configuration Summary")
+    click.echo("-" * 40)
+    
+    click.echo(f"Node Name: {node_name}")
+    click.echo(f"Domain: {tailscale_domain}")
+    click.echo(f"SSH User: {ssh_user}")
+    click.echo(f"Detected Stacks: {', '.join(stack)}")
+    click.echo(f"Ethereum Clients: {'Enabled' if ethereum_clients_enabled else 'Disabled'}")
+    
+    if not click.confirm("\nSave this configuration?", default=True):
+        click.echo("❌ Configuration not saved.")
+        return
+    
+    # Step 6: Save configuration
+    click.echo("\n💾 Step 6: Saving Configuration")
+    click.echo("-" * 40)
+    
+    try:
+        # Add to nodes list
+        config['nodes'].append(new_node)
+        
+        # Save to file
+        with open(config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+        
+        click.echo(f"✅ Node '{node_name}' added successfully!")
+        click.echo(f"📁 Configuration saved to: {config_path}")
+        
+        # Step 7: Next steps
+        click.echo("\n🎯 Next Steps")
+        click.echo("-" * 40)
+        click.echo(f"• Test the node: python3 -m eth_validators node list")
+        click.echo(f"• Check versions: python3 -m eth_validators node versions {node_name}")
+        click.echo(f"• View performance: python3 -m eth_validators performance summary")
+        
+    except Exception as e:
+        click.echo(f"❌ Error saving configuration: {e}")
+        return
+
+
+def _manual_stack_selection():
+    """Interactive stack selection helper"""
+    click.echo("\n🛠️  Available stacks:")
+    stacks = [
+        ("eth-docker", "Standard Ethereum client stack"),
+        ("obol", "Obol Distributed Validator Technology (Charon)"),
+        ("rocketpool", "Rocket Pool Node"),
+        ("hyperdrive", "NodeSet Hyperdrive"),
+        ("ssv", "SSV Network"),
+        ("lido-csm", "Lido Community Staking Module"),
+        ("stakewise", "StakeWise Protocol"),
+        ("disabled", "No Ethereum clients (monitoring/utilities only)")
+    ]
+    
+    for i, (stack, desc) in enumerate(stacks, 1):
+        click.echo(f"{i}. {stack}: {desc}")
+    
+    selected_stacks = []
+    
+    while True:
+        try:
+            selection = click.prompt(
+                "\nSelect stack numbers (comma-separated, e.g., '1,2')", 
+                type=str
+            ).strip()
+            
+            if not selection:
+                break
+                
+            indices = [int(x.strip()) for x in selection.split(',')]
+            for idx in indices:
+                if 1 <= idx <= len(stacks):
+                    stack_name = stacks[idx-1][0]
+                    if stack_name not in selected_stacks:
+                        selected_stacks.append(stack_name)
+                else:
+                    click.echo(f"❌ Invalid selection: {idx}")
+                    continue
+            
+            if selected_stacks:
+                click.echo(f"Selected: {', '.join(selected_stacks)}")
+                break
+            
+        except ValueError:
+            click.echo("❌ Please enter valid numbers separated by commas")
+    
+    return selected_stacks if selected_stacks else ["eth-docker"]
+
 
 # ====================================
 # Configuration Automation Commands  
