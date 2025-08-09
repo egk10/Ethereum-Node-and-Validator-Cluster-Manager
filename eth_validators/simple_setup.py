@@ -14,6 +14,109 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+def _run_command(node_cfg, command):
+    """Run a command on a node, handling both local and remote execution"""
+    import subprocess
+    is_local = node_cfg.get('is_local', False)
+    
+    if is_local:
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
+            return result
+        except Exception as e:
+            # Return a mock result object for consistency
+            class MockResult:
+                def __init__(self, returncode=1, stdout="", stderr=str(e)):
+                    self.returncode = returncode
+                    self.stdout = stdout
+                    self.stderr = stderr
+            return MockResult()
+    else:
+        ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
+        ssh_command = f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{command}\""
+        try:
+            result = subprocess.run(ssh_command, shell=True, capture_output=True, text=True, timeout=15)
+            return result
+        except Exception as e:
+            # Return a mock result object for consistency
+            class MockResult:
+                def __init__(self, returncode=1, stdout="", stderr=str(e)):
+                    self.returncode = returncode
+                    self.stdout = stdout
+                    self.stderr = stderr
+            return MockResult()
+
+def _detect_running_stacks(node_cfg):
+    """Detect all running stacks/services on a node by checking docker containers"""
+    detected_stacks = []
+    
+    try:
+        # Get all running containers
+        command = "docker ps --format 'table {{.Names}}\\t{{.Image}}' | tail -n +2"
+        result = _run_command(node_cfg, command)
+        
+        if result.returncode != 0 or not result.stdout.strip():
+            return ["unknown"]
+        
+        containers = result.stdout.strip().split('\n')
+        container_info = []
+        
+        for container_line in containers:
+            # Handle both tab and multiple space separations
+            if '\t' in container_line:
+                parts = container_line.split('\t', 1)
+            else:
+                # Split on multiple spaces (common with docker ps output)
+                parts = [x for x in container_line.split() if x]
+                if len(parts) >= 2:
+                    # Take first part as name, join rest as image
+                    parts = [parts[0], ' '.join(parts[1:])]
+                else:
+                    continue
+            
+            if len(parts) >= 2:
+                name, image = parts[0].strip(), parts[1].strip()
+                container_info.append({'name': name, 'image': image})
+        
+        # Detect different stacks based on container patterns
+        stack_indicators = {
+            'charon': ['charon', 'obolnetwork/charon'],
+            'rocketpool': ['rocketpool', 'rocket-pool', 'rp_', 'rp-'],
+            'hyperdrive': ['hyperdrive', 'nodeset'],
+            'ssv': ['ssv', 'bloxstaking'],
+            'lido-csm': ['lido', 'csm'],
+            'stakewise': ['stakewise'],
+            'obol': ['charon', 'obolnetwork'],
+            'eth-docker': ['eth-docker', 'ethereum/client-go', 'sigp/lighthouse', 'consensys/teku', 'status-im/nimbus-eth2', 'chainsafe/lodestar', 'prysmaticlabs/prysm-beacon-chain']
+        }
+        
+        # Check for each stack
+        for stack, indicators in stack_indicators.items():
+            for container in container_info:
+                name_lower = container['name'].lower()
+                image_lower = container['image'].lower()
+                
+                for indicator in indicators:
+                    if indicator.lower() in name_lower or indicator.lower() in image_lower:
+                        if stack not in detected_stacks:
+                            detected_stacks.append(stack)
+                        break
+        
+        # Clean up duplicates: charon detection means obol
+        if 'charon' in detected_stacks and 'obol' not in detected_stacks:
+            detected_stacks.append('obol')
+        if 'obol' in detected_stacks and 'charon' in detected_stacks:
+            detected_stacks.remove('charon')  # Keep obol, remove charon duplicate
+        
+        # Final stack list
+        if not detected_stacks:
+            detected_stacks = ["unknown"]
+        
+        return detected_stacks
+        
+    except Exception as e:
+        return ["error"]
+
 class SimpleSetupWizard:
     """Interactive setup wizard for new users"""
     
@@ -131,8 +234,32 @@ class SimpleSetupWizard:
         
         # Auto-detect stack or ask
         if click.confirm("Auto-detect what's running on this node?", default=True):
-            node_config['stack'] = ['eth-docker']  # Default, will be auto-detected
-            click.echo("✅ Stack will be auto-detected on first run")
+            click.echo("🔍 Detecting running services...")
+            
+            # Try to detect what's actually running
+            detected_stacks = _detect_running_stacks(node_config)
+            
+            if detected_stacks and detected_stacks != ["unknown"] and detected_stacks != ["error"]:
+                # Filter to main stacks only (not individual clients)
+                main_stacks = []
+                for stack in detected_stacks:
+                    if stack in ['eth-docker', 'rocketpool', 'obol', 'hyperdrive', 'ssv', 'lido-csm', 'stakewise']:
+                        main_stacks.append(stack)
+                
+                if main_stacks:
+                    node_config['stack'] = main_stacks
+                    stack_display = ', '.join(main_stacks)
+                    click.echo(f"✅ Detected stacks: {stack_display}")
+                else:
+                    # Default fallback
+                    node_config['stack'] = ['eth-docker']
+                    click.echo("⚠️  No specific stacks detected, using default: eth-docker")
+            else:
+                # Detection failed, use default
+                node_config['stack'] = ['eth-docker']
+                click.echo("⚠️  Auto-detection failed, using default: eth-docker")
+                if detected_stacks == ["error"]:
+                    click.echo("💡 Note: Ensure SSH access is working for better detection")
         else:
             # Manual stack selection
             available_stacks = [
