@@ -36,3 +36,14 @@ Home\ Staking\ Dashboard-*.json
 enable-external-monitoring.sh
 test-connectivity.sh
 AI_MODEL_EXPLANATION.py
+
+# General cleanup patterns
+*.log
+*.tmp
+*.bak
+*_results.json
+quickstart_test_results.sh
+demo_*.sh
+demo_*.py
+*.csv
+*.bat
