@@ -1,15 +1,45 @@
-cluster_name: my-test-cluster
+cluster_name: egkcluster
 monitoring:
   auto_discovery: true
-  discovery_frequency: daily
+  discovery_frequency: weekly
   enabled: true
   performance_enabled: true
 networks:
 - mainnet
 nodes:
 - ethereum_clients_enabled: true
-  name: validator1
+  name: lido102
   ssh_user: root
   stack:
+  - obol
   - eth-docker
-  tailscale_domain: validator1.example.com
+  tailscale_domain: minipcamd.velociraptor-scylla.ts.net
+- ethereum_clients_enabled: true
+  is_local: true
+  name: lido188
+  stack:
+  - eth-docker
+  tailscale_domain: minipcamd2.velociraptor-scylla.ts.net
+- ethereum_clients_enabled: true
+  name: nodeset
+  ssh_user: root
+  stack:
+  - hyperdrive
+  - stakewise
+  - obol
+  - eth-docker
+  tailscale_domain: minipcamd3.velociraptor-scylla.ts.net
+- ethereum_clients_enabled: true
+  name: rocketpool
+  ssh_user: root
+  stack:
+  - rocketpool
+  - eth-docker
+  tailscale_domain: minitx.velociraptor-scylla.ts.net
+- ethereum_clients_enabled: true
+  name: etherfi
+  ssh_user: root
+  stack:
+  - obol
+  - eth-docker
+  tailscale_domain: orangepi5-plus.velociraptor-scylla.ts.net
