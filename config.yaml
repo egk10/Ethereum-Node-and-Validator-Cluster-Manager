@@ -14,6 +14,7 @@ nodes:
   - obol
   - eth-docker
   tailscale_domain: minipcamd.velociraptor-scylla.ts.net
+  eth_docker_path: /home/egk/eth-docker
 - ethereum_clients_enabled: true
   name: lido188
   ssh_user: root
@@ -22,6 +23,7 @@ nodes:
   - obol
   tailscale_domain: minipcamd2.velociraptor-scylla.ts.net
   beacon_api_port: 5052
+  eth_docker_path: /home/egk/eth-docker
 - ethereum_clients_enabled: true
   name: nodeset
   ssh_user: root
@@ -31,6 +33,7 @@ nodes:
   - hyperdrive
   tailscale_domain: minipcamd3.velociraptor-scylla.ts.net
   beacon_api_port: 5052
+  eth_docker_path: /home/egk/eth-docker
 - ethereum_clients_enabled: true
   name: rocketpool
   ssh_user: root
@@ -38,6 +41,7 @@ nodes:
   - rocketpool
   - eth-docker
   tailscale_domain: minitx.velociraptor-scylla.ts.net
+  eth_docker_path: /home/egk/eth-docker
 - ethereum_clients_enabled: true
   name: etherfi
   ssh_user: root
@@ -45,9 +49,11 @@ nodes:
   - obol
   - eth-docker
   tailscale_domain: orangepi5-plus.velociraptor-scylla.ts.net
+  eth_docker_path: /home/egk/eth-docker
 - name: ryzen7
   tailscale_domain: minipcamd4.velociraptor-scylla.ts.net
   ssh_user: root
   stack:
   - eth-docker
   ethereum_clients_enabled: true
+  eth_docker_path: /home/egk/eth-docker

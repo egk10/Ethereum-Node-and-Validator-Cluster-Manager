@@ -213,7 +213,7 @@ class ValidatorAutoDiscovery:
         
         # Method 3: Traditional keystore file scanning (fallback)
         stack = node_config.get('stack', [])
-        eth_docker_path = node_config.get('eth_docker_path', '/home/user/eth-docker')
+        eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
         
         keystore_paths = []
         

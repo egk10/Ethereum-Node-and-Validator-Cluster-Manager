@@ -116,7 +116,7 @@ def _upgrade_single_network_node(node_config):
     results = {}
     ssh_user = node_config.get('ssh_user', 'root')
     ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
-    eth_docker_path = node_config.get('eth_docker_path', '/opt/eth-docker')
+    eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
     is_local = node_config.get('is_local', False)
     
     if is_local:
