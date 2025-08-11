@@ -15,8 +15,8 @@ nodes:
   - eth-docker
   tailscale_domain: minipcamd.velociraptor-scylla.ts.net
 - ethereum_clients_enabled: true
-  is_local: true
   name: lido188
+  ssh_user: root
   stack:
   - eth-docker
   - obol
@@ -49,5 +49,5 @@ nodes:
   tailscale_domain: minipcamd4.velociraptor-scylla.ts.net
   ssh_user: root
   stack:
-  - unknown
+  - eth-docker
   ethereum_clients_enabled: true

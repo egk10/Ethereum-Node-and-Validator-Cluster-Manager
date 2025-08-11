@@ -570,21 +570,22 @@ def _get_single_network_client_versions(node_config):
                             consensus_container = container_name  # Same container as execution
                             consensus_image = image
                     
-                    # Identify other execution clients
-                    elif any(exec_client in container_name.lower() for exec_client in 
-                           ['execution', 'geth', 'nethermind', 'reth', 'besu']):
+                    # Identify execution clients - check both container name and image
+                    elif ('execution' in container_name.lower() or 
+                          any(exec_client in container_name.lower() or exec_client in image.lower() 
+                              for exec_client in ['geth', 'nethermind', 'reth', 'besu', 'erigon'])):
                         execution_client_name = _identify_client_from_image(image, 'execution')
                         execution_container = container_name
                         execution_image = image
                     
                     # Identify consensus clients (beacon nodes) - these override erigon-caplin
-                    elif any(cons_client in container_name.lower() for cons_client in 
-                             ['consensus', 'lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine']) and 'validator' not in container_name.lower():
+                    elif (('consensus' in container_name.lower() or 
+                          any(cons_client in container_name.lower() or cons_client in image.lower()
+                              for cons_client in ['lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine'])) 
+                          and 'validator' not in container_name.lower()):
                         consensus_client_name = _identify_client_from_image(image, 'consensus')
                         consensus_container = container_name
-                        consensus_image = image
-                    
-                    # Identify validator clients (separate from consensus) - collect multiple
+                        consensus_image = image                    # Identify validator clients (separate from consensus) - collect multiple
                     # Detect Vero validator containers (Lido CSM)
                     elif 'vero' in image.lower() or ('eth-docker-validator' in container_name.lower() and 'vero' in image.lower()):
                         validator_clients.append(("vero", container_name, image))
@@ -718,6 +719,10 @@ def _get_single_network_client_versions(node_config):
             # No separate validator detected, fallback to consensus client for validator duties
             validator_client_name = consensus_client_name
             validator_current = consensus_current
+            validator_latest = consensus_latest
+        elif validator_client_name == consensus_client_name and consensus_client_name != "Unknown":
+            # Same client for both consensus and validator (e.g., lodestar, teku, prysm)
+            # Use the consensus client's latest version for validator too since they're always the same
             validator_latest = consensus_latest
         else:
             validator_latest = "Unknown"
@@ -1150,34 +1155,37 @@ def _identify_client_from_image(image, client_type):
     Identifies the Ethereum client from the Docker image name.
     Returns the client name for GitHub API lookup and display.
     Extracts clean client name from complex image strings.
+    Enhanced to handle local builds and various image formats.
     """
     image_lower = image.lower()
     
     if client_type == 'execution':
-        if 'geth' in image_lower:
-            return 'geth'
+        # Check for execution clients (order matters for specificity)
+        if 'reth' in image_lower:
+            return 'reth'
         elif 'nethermind' in image_lower:
             return 'nethermind'
-        elif 'reth' in image_lower:
-            return 'reth'
+        elif 'geth' in image_lower or 'go-ethereum' in image_lower:
+            return 'geth'
         elif 'besu' in image_lower:
             return 'besu'
         elif 'erigon' in image_lower:
             return 'erigon'
     
     elif client_type in ['consensus', 'validator']:
+        # Check for consensus/validator clients (order matters for specificity)
         if 'lighthouse' in image_lower:
             return 'lighthouse'
+        elif 'grandine' in image_lower:
+            return 'grandine'
+        elif 'lodestar' in image_lower:
+            return 'lodestar'
         elif 'prysm' in image_lower:
             return 'prysm'
         elif 'teku' in image_lower:
             return 'teku'
         elif 'nimbus' in image_lower:
             return 'nimbus'
-        elif 'lodestar' in image_lower:
-            return 'lodestar'
-        elif 'grandine' in image_lower:
-            return 'grandine'
     
     return "Unknown"
 
