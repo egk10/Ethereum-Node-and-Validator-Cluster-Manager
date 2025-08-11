@@ -1416,9 +1416,14 @@ def get_node_port_mappings(node_config, source: str = "both"):
             'network': network or '-'
         })
 
+    # Indexes to relate env ports to live docker ports
+    docker_index = {}  # (host_port, proto) -> {'container': str, 'container_port': int}
+    docker_keys = set()
+
     # 1) From docker ps
     if source in ('both', 'docker'):
-        ps_cmd = "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' | tail -n +2"
+        # Use double quotes inside to avoid breaking when wrapping entire command in single quotes for SSH
+        ps_cmd = 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}" | tail -n +2'
         r = _run(ps_cmd, timeout=15)
         if r.returncode == 0 and r.stdout.strip():
             for line in r.stdout.strip().split('\n'):
@@ -1442,6 +1447,15 @@ def get_node_port_mappings(node_config, source: str = "both"):
                             cont = right
                         # cont like "8545" or "30303-30304"
                         _add_entry(service, cname, host, cont, proto, 'docker')
+                        # Populate index for later env enrichment/dedup
+                        try:
+                            hp = int(str(host).split('-')[0]) if host else None
+                            cp = int(str(cont).split('-')[0]) if cont else None
+                        except Exception:
+                            hp, cp = None, None
+                        if hp is not None:
+                            docker_index[(hp, proto)] = {'container': cname, 'container_port': cp}
+                            docker_keys.add((hp, proto))
                 except Exception as e:
                     results['errors'].append(f"docker-parse:{str(e)[:40]}")
         else:
@@ -1503,7 +1517,24 @@ def get_node_port_mappings(node_config, source: str = "both"):
                         elif 'mev' in lk or 'boost' in lk:
                             service = 'mev-boost'
                         for tok in m:
-                            _add_entry(service, '.env', tok, None, proto, 'env', net_name)
+                            # Prefer live docker mapping when available; skip duplicate env entries
+                            try:
+                                hp = int(str(tok).split('-')[0]) if tok else None
+                            except Exception:
+                                hp = None
+                            if hp is not None and (hp, proto) in docker_keys:
+                                # Already represented by docker; skip to avoid duplicates
+                                continue
+                            # Enrich container info from docker when possible
+                            cont_name = service
+                            cont_port = None
+                            if hp is not None and (hp, proto) in docker_index:
+                                cont_name = docker_index[(hp, proto)]['container'] or '-'
+                                cont_port = docker_index[(hp, proto)]['container_port']
+                            # Default container_port to host_port if unknown to keep table filled
+                            if cont_port is None:
+                                cont_port = hp
+                            _add_entry(service, cont_name, hp, cont_port, proto, 'env', net_name)
             except Exception as e:
                 results['errors'].append(f"env-parse:{str(e)[:40]}")
 

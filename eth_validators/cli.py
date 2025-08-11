@@ -2351,20 +2351,31 @@ def node_ports(node, all, source):
             for err in errors:
                 click.echo(f"⚠️  {err}")
 
-    # Detect and show conflicts
-    conflict_rows = []
+    # Detect and show conflicts (compact summary + detailed per-port tables)
+    conflicts_summary = []
+    conflicts_detail = {}
     for (hp, proto, net), uses in conflicts.items():
         if len(uses) > 1:
-            nodes_str = ", ".join(sorted({u['node'] for u in uses}))
-            services_str = "; ".join([f"{u['node']}:{u['service']} ({u['source']})" for u in uses])
-            conflict_rows.append([hp, proto, net, len(uses), nodes_str, services_str])
+            conflicts_summary.append([hp, proto, net, len(uses)])
+            # Prepare detail rows for this port
+            det_rows = []
+            for u in sorted(uses, key=lambda x: (x['node'], x.get('service',''))):
+                det_rows.append([u['node'], u.get('service','-'), u.get('container','-') if 'container' in u else '-', u.get('source','-')])
+            conflicts_detail[(hp, proto, net)] = det_rows
 
     click.echo("\n" + "="*70)
     click.echo("🚨 Port Conflicts Across Nodes")
     click.echo("="*70)
-    if conflict_rows:
-        click.echo(tabulate(conflict_rows, headers=['Host Port','Proto','Network','Count','Nodes','Details'],
+    if conflicts_summary:
+        # Summary table
+        click.echo(tabulate(sorted(conflicts_summary, key=lambda r: (r[0], r[1], r[2])),
+                           headers=['Host Port','Proto','Network','Count'],
                            tablefmt='fancy_grid', stralign='left', numalign='center'))
+        # Detailed sections
+        for (hp, proto, net), rows in sorted(conflicts_detail.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
+            click.echo(f"\n• {hp}/{proto} (network: {net})")
+            click.echo(tabulate(rows, headers=['Node','Service','Container','Source'],
+                               tablefmt='simple', stralign='left', numalign='center'))
     else:
         click.echo("✅ No conflicts detected")
 
