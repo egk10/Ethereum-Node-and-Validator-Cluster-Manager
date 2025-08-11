@@ -1397,7 +1397,7 @@ def get_node_port_mappings(node_config, source: str = "both"):
             return 'prometheus'
         return 'other'
 
-    def _add_entry(service, container, host_port, container_port, proto, src, network=None):
+    def _add_entry(service, container, host_port, container_port, proto, src, network=None, published=None):
         try:
             hp = int(str(host_port).split('-')[0]) if host_port else None
         except Exception:
@@ -1413,7 +1413,8 @@ def get_node_port_mappings(node_config, source: str = "both"):
             'container_port': cp,
             'proto': proto or 'tcp',
             'source': src,
-            'network': network or '-'
+            'network': network or '-',
+            'published': bool(published) if published is not None else (hp is not None)
         })
 
     # Indexes to relate env ports to live docker ports
@@ -1422,40 +1423,64 @@ def get_node_port_mappings(node_config, source: str = "both"):
 
     # 1) From docker ps
     if source in ('both', 'docker'):
-        # Use double quotes inside to avoid breaking when wrapping entire command in single quotes for SSH
-        ps_cmd = 'docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}" | tail -n +2'
+        # Include container ID so we can detect host network mode when no explicit mappings are shown
+        ps_cmd = 'docker ps --format "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}" | tail -n +2'
         r = _run(ps_cmd, timeout=15)
         if r.returncode == 0 and r.stdout.strip():
             for line in r.stdout.strip().split('\n'):
                 try:
                     parts = line.split('\t')
-                    if len(parts) < 3:
+                    if len(parts) < 4:
                         continue
-                    cname, image, ports = parts[0], parts[1], parts[2]
+                    cid, cname, image, ports = parts[0], parts[1], parts[2], parts[3]
                     service = _guess_service(cname, image)
                     # ports string example: "0.0.0.0:8545->8545/tcp, :::8545->8545/tcp, 0.0.0.0:30303-30304->30303-30304/tcp, 0.0.0.0:30303-30304->30303-30304/udp"
                     for item in [p.strip() for p in ports.split(',') if p.strip()]:
-                        if '->' not in item:
-                            continue
-                        left, right = item.split('->', 1)
-                        # left may be "0.0.0.0:8545" or "*:8545" or ":::8545"; take last colon number or range
-                        host = left.split(':')[-1]
-                        proto = 'tcp'
-                        if '/' in right:
-                            cont, proto = right.split('/', 1)
+                        if '->' in item:
+                            left, right = item.split('->', 1)
+                            # left may be "0.0.0.0:8545" or "*:8545" or ":::8545"; take last colon number or range
+                            host = left.split(':')[-1]
+                            proto = 'tcp'
+                            if '/' in right:
+                                cont, proto = right.split('/', 1)
+                            else:
+                                cont = right
+                            # cont like "8545" or "30303-30304"
+                            _add_entry(service, cname, host, cont, proto, 'docker', published=True)
+                            # Populate index for later env enrichment/dedup
+                            try:
+                                hp = int(str(host).split('-')[0]) if host else None
+                                cp = int(str(cont).split('-')[0]) if cont else None
+                            except Exception:
+                                hp, cp = None, None
+                            if hp is not None:
+                                docker_index[(hp, proto)] = {'container': cname, 'container_port': cp}
+                                docker_keys.add((hp, proto))
                         else:
-                            cont = right
-                        # cont like "8545" or "30303-30304"
-                        _add_entry(service, cname, host, cont, proto, 'docker')
-                        # Populate index for later env enrichment/dedup
-                        try:
-                            hp = int(str(host).split('-')[0]) if host else None
-                            cp = int(str(cont).split('-')[0]) if cont else None
-                        except Exception:
-                            hp, cp = None, None
-                        if hp is not None:
-                            docker_index[(hp, proto)] = {'container': cname, 'container_port': cp}
-                            docker_keys.add((hp, proto))
+                            # Bare exposure like "30303/tcp". Determine if host network; if yes, treat as published on host.
+                            proto = 'tcp'
+                            port_part = item
+                            if '/' in item:
+                                port_part, proto = item.split('/', 1)
+                            # Inspect network mode for the container
+                            net_mode = None
+                            insp = _run(f"docker inspect -f '{{{{.HostConfig.NetworkMode}}}}' {cid}", timeout=10)
+                            if insp.returncode == 0:
+                                net_mode = (insp.stdout or '').strip()
+                            # If host network, host port equals container port (published)
+                            if net_mode == 'host':
+                                _add_entry(service, cname, port_part, port_part, proto, 'docker', published=True)
+                                try:
+                                    hp = int(str(port_part).split('-')[0]) if port_part else None
+                                    cp = int(str(port_part).split('-')[0]) if port_part else None
+                                except Exception:
+                                    hp, cp = None, None
+                                if hp is not None:
+                                    docker_index[(hp, proto)] = {'container': cname, 'container_port': cp}
+                                    docker_keys.add((hp, proto))
+                            else:
+                                # Not host network; keep as container-only exposure (not published)
+                                _add_entry(service, cname, None, port_part, proto, 'docker', published=False)
                 except Exception as e:
                     results['errors'].append(f"docker-parse:{str(e)[:40]}")
         else:

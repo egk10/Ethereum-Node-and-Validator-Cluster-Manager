@@ -2264,7 +2264,10 @@ def add_node_interactive():
 @click.option('--all', is_flag=True, help='Show port mappings for all configured nodes')
 @click.option('--source', type=click.Choice(['docker','env','both']), default='both', show_default=True,
               help='Data source: docker (live), env (.env files), or both')
-def node_ports(node, all, source):
+@click.option('--p2p-only', is_flag=True, help='Show only P2P ports (EL/CL: 30303,30304,9000,12000,13000)')
+@click.option('--published-only', is_flag=True, help='Show only Docker-published ports (ignore .env entries)')
+@click.option('--csv', is_flag=True, help='Output in CSV format')
+def node_ports(node, all, source, p2p_only, published_only, csv):
     """List open/forwarded ports per node and detect conflicts across nodes on the same network."""
     config = yaml.safe_load(get_config_path().read_text())
 
@@ -2292,6 +2295,9 @@ def node_ports(node, all, source):
     per_node_tables = []
     conflicts = {}
     entries_all = []
+    
+    # For CSV output, collect all rows first
+    csv_rows = []
 
     for i, ncfg in enumerate(nodes):
         name = ncfg.get('name', ncfg.get('tailscale_domain', f"node{i+1}"))
@@ -2308,18 +2314,46 @@ def node_ports(node, all, source):
         entries = res.get('entries', [])
         errors = res.get('errors', [])
 
+        # Apply filters
+        if published_only:
+            entries = [e for e in entries if e.get('source') == 'docker' and e.get('published')]
+        if p2p_only:
+            def _is_p2p(e):
+                port = e.get('host_port') or e.get('container_port')
+                if port is None:
+                    return False
+                try:
+                    p = int(port)
+                except Exception:
+                    return False
+                proto = str(e.get('proto','tcp')).lower()
+                # EL P2P default
+                if p in (30303, 30304) and proto in ('tcp','udp'):
+                    return True
+                # CL P2P defaults (common values across clients)
+                if p in (9000, 12000, 13000) and proto in ('tcp','udp'):
+                    return True
+                return False
+            entries = [e for e in entries if _is_p2p(e)]
+
         # Build table rows for this node
         rows = []
         for e in entries:
-            rows.append([
+            row = [
                 e.get('service','-'),
                 e.get('container','-'),
                 e.get('host_port') if e.get('host_port') is not None else '-',
                 e.get('container_port') if e.get('container_port') is not None else '-',
                 e.get('proto','tcp'),
                 e.get('source','-'),
-                e.get('network','-')
-            ])
+                e.get('network','-'),
+                'Y' if e.get('published') else 'N'
+            ]
+            rows.append(row)
+            
+            # For CSV, add node name as first column
+            if csv:
+                csv_rows.append([name] + row)
 
             # Track conflicts by host_port+proto within same network scope
             hp = e.get('host_port')
@@ -2335,11 +2369,50 @@ def node_ports(node, all, source):
                 })
                 entries_all.append({ 'node': name, **e })
 
-        headers = ['Service','Container','Host Port','Container Port','Proto','Source','Network']
-        per_node_tables.append((name, rows, headers, errors))
+        headers = ['Service','Container','Host Port','Container Port','Proto','Source','Network','Published']
+
+        # If nothing to show (after filters), provide a helpful hint
+        hint = None
+        if not rows and (p2p_only or published_only):
+            # Build a quick summary of env-only P2P ports if applicable
+            if published_only:
+                alt = res.get('entries', [])
+                if p2p_only:
+                    # Filter alt to P2P only (same logic)
+                    def _is_p2p_alt(e):
+                        port = e.get('host_port') or e.get('container_port')
+                        if port is None:
+                            return False
+                        try:
+                            p = int(port)
+                        except Exception:
+                            return False
+                        proto = str(e.get('proto','tcp')).lower()
+                        if p in (30303, 30304) and proto in ('tcp','udp'):
+                            return True
+                        if p in (9000, 12000, 13000) and proto in ('tcp','udp'):
+                            return True
+                        return False
+                    alt = [e for e in alt if _is_p2p_alt(e)]
+                env_ports = sorted({f"{e.get('host_port') or e.get('container_port')}/{e.get('proto','tcp')}" for e in alt if e.get('source')=='env'})
+                if env_ports:
+                    hint = f"No published ports detected; env suggests: {', '.join(env_ports)}"
+        per_node_tables.append((name, rows, headers, errors if errors else [], hint))
+
+    # CSV output
+    if csv:
+        import csv as csv_module
+        import sys
+        
+        csv_headers = ['Node', 'Service', 'Container', 'Host Port', 'Container Port', 'Proto', 'Source', 'Network', 'Published']
+        writer = csv_module.writer(sys.stdout)
+        writer.writerow(csv_headers)
+        for row in csv_rows:
+            writer.writerow(row)
+        return
 
     # Render per-node tables
-    for name, rows, headers, errors in per_node_tables:
+    for name, rows, headers, errors, hint in per_node_tables:
         click.echo("\n" + "="*70)
         click.echo(f"🖥️  {name} - Port Mappings")
         click.echo("="*70)
@@ -2347,6 +2420,8 @@ def node_ports(node, all, source):
             click.echo(tabulate(rows, headers=headers, tablefmt='fancy_grid', stralign='left', numalign='center'))
         else:
             click.echo("(no mappings found)")
+            if hint:
+                click.echo(f"ℹ️  {hint}")
         if errors:
             for err in errors:
                 click.echo(f"⚠️  {err}")
