@@ -1345,3 +1345,166 @@ def _extract_image_version(image_string):
         return version
     
     return "latest"
+
+def get_node_port_mappings(node_config, source: str = "both"):
+    """Collect port mappings for a node from docker and/or eth-docker .env files.
+
+    Returns a dict with entries and optional errors:
+      {
+        'node': name,
+        'entries': [ { 'service','container','host_port','container_port','proto','source','network' }... ],
+        'errors': [str,...]
+      }
+
+    source: 'docker' | 'env' | 'both'
+    """
+    name = node_config.get('name')
+    is_local = node_config.get('is_local', False)
+    ssh_user = node_config.get('ssh_user', 'root')
+    ssh_target = None if is_local else f"{ssh_user}@{node_config['tailscale_domain']}"
+    results = {'node': name, 'entries': [], 'errors': []}
+
+    def _run(cmd, timeout=15, cwd=None):
+        try:
+            if ssh_target is None:
+                return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+            else:
+                # Wrap remote command
+                return subprocess.run(f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{cmd}'", shell=True, capture_output=True, text=True, timeout=timeout)
+        except Exception as e:
+            class R:
+                pass
+            r = R()
+            r.returncode = 1
+            r.stdout = ''
+            r.stderr = str(e)
+            return r
+
+    def _guess_service(container_name: str, image: str = ""):
+        c = container_name.lower()
+        i = (image or "").lower()
+        if any(k in c or k in i for k in ['execution', 'geth', 'nethermind', 'reth', 'besu', 'erigon']):
+            return 'execution'
+        if any(k in c or k in i for k in ['consensus', 'beacon', 'lighthouse', 'teku', 'nimbus', 'lodestar', 'prysm', 'grandine', 'caplin']):
+            return 'consensus'
+        if any(k in c or k in i for k in ['validator', 'vc', 'vero', 'charon']):
+            return 'validator'
+        if 'mev' in c or 'boost' in c:
+            return 'mev-boost'
+        if 'grafana' in c:
+            return 'grafana'
+        if 'prometheus' in c:
+            return 'prometheus'
+        return 'other'
+
+    def _add_entry(service, container, host_port, container_port, proto, src, network=None):
+        try:
+            hp = int(str(host_port).split('-')[0]) if host_port else None
+        except Exception:
+            hp = None
+        try:
+            cp = int(str(container_port).split('-')[0]) if container_port else None
+        except Exception:
+            cp = None
+        results['entries'].append({
+            'service': service,
+            'container': container,
+            'host_port': hp,
+            'container_port': cp,
+            'proto': proto or 'tcp',
+            'source': src,
+            'network': network or '-'
+        })
+
+    # 1) From docker ps
+    if source in ('both', 'docker'):
+        ps_cmd = "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' | tail -n +2"
+        r = _run(ps_cmd, timeout=15)
+        if r.returncode == 0 and r.stdout.strip():
+            for line in r.stdout.strip().split('\n'):
+                try:
+                    parts = line.split('\t')
+                    if len(parts) < 3:
+                        continue
+                    cname, image, ports = parts[0], parts[1], parts[2]
+                    service = _guess_service(cname, image)
+                    # ports string example: "0.0.0.0:8545->8545/tcp, :::8545->8545/tcp, 0.0.0.0:30303-30304->30303-30304/tcp, 0.0.0.0:30303-30304->30303-30304/udp"
+                    for item in [p.strip() for p in ports.split(',') if p.strip()]:
+                        if '->' not in item:
+                            continue
+                        left, right = item.split('->', 1)
+                        # left may be "0.0.0.0:8545" or "*:8545" or ":::8545"; take last colon number or range
+                        host = left.split(':')[-1]
+                        proto = 'tcp'
+                        if '/' in right:
+                            cont, proto = right.split('/', 1)
+                        else:
+                            cont = right
+                        # cont like "8545" or "30303-30304"
+                        _add_entry(service, cname, host, cont, proto, 'docker')
+                except Exception as e:
+                    results['errors'].append(f"docker-parse:{str(e)[:40]}")
+        else:
+            if r.stderr:
+                results['errors'].append(f"docker:{r.stderr.strip()[:80]}")
+
+    # 2) From .env files in eth-docker directories
+    if source in ('both', 'env'):
+        env_files = []
+        networks = node_config.get('networks') or {}
+        if networks:
+            for net_key, net_cfg in networks.items():
+                path = net_cfg.get('eth_docker_path') or net_cfg.get('path') or ''
+                if path:
+                    env_files.append((net_key, f"{path}/.env"))
+        else:
+            base_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
+            env_files.append(('-', f"{base_path}/.env"))
+
+        for net_name, env_path in env_files:
+            # Read .env content
+            cat_cmd = f"test -f {env_path} && cat {env_path} || echo __MISSING__"
+            r = _run(cat_cmd, timeout=10)
+            if r.returncode != 0 or not r.stdout:
+                continue
+            content = r.stdout
+            if '__MISSING__' in content:
+                continue
+            try:
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if '=' not in line:
+                        continue
+                    key, val = line.split('=', 1)
+                    key = key.strip().upper()
+                    val = val.strip()
+                    # Accept any *_PORT or *PORTS variables
+                    if key.endswith('PORT') or key.endswith('PORTS') or key.endswith('_PORT_TCP') or key.endswith('_PORT_UDP'):
+                        # Extract numbers/ranges from val e.g., "8545", "30303-30304"
+                        import re as _re
+                        m = _re.findall(r"\b\d{2,5}(?:-\d{2,5})?\b", val)
+                        if not m:
+                            continue
+                        # Guess protocol by name
+                        proto = 'tcp'
+                        if 'UDP' in key:
+                            proto = 'udp'
+                        # Guess service from key
+                        service = 'other'
+                        lk = key.lower()
+                        if any(k in lk for k in ['el_', 'execution', 'geth', 'nethermind', 'reth', 'besu', 'erigon']):
+                            service = 'execution'
+                        elif any(k in lk for k in ['cl_', 'consensus', 'beacon', 'lighthouse', 'teku', 'nimbus', 'lodestar', 'prysm', 'grandine', 'caplin']):
+                            service = 'consensus'
+                        elif any(k in lk for k in ['validator', 'vc', 'vero', 'charon']):
+                            service = 'validator'
+                        elif 'mev' in lk or 'boost' in lk:
+                            service = 'mev-boost'
+                        for tok in m:
+                            _add_entry(service, '.env', tok, None, proto, 'env', net_name)
+            except Exception as e:
+                results['errors'].append(f"env-parse:{str(e)[:40]}")
+
+    return results

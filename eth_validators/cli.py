@@ -11,7 +11,14 @@ from datetime import datetime
 from . import performance
 from .config import get_node_config, get_all_node_configs
 from .performance import get_performance_summary
-from .node_manager import get_node_status, upgrade_node_docker_clients, get_system_update_status, perform_system_upgrade, get_docker_client_versions
+from .node_manager import (
+    get_node_status,
+    upgrade_node_docker_clients,
+    get_system_update_status,
+    perform_system_upgrade,
+    get_docker_client_versions,
+    get_node_port_mappings,
+)
 from .ai_analyzer import ValidatorLogAnalyzer
 from .validator_sync import ValidatorSyncManager, get_active_validators_only
 from .validator_editor import InteractiveValidatorEditor
@@ -2251,6 +2258,115 @@ def add_node_interactive():
     except Exception as e:
         click.echo(f"❌ Error saving configuration: {e}")
         return
+
+@node_group.command(name='ports')
+@click.argument('node', required=False)
+@click.option('--all', is_flag=True, help='Show port mappings for all configured nodes')
+@click.option('--source', type=click.Choice(['docker','env','both']), default='both', show_default=True,
+              help='Data source: docker (live), env (.env files), or both')
+def node_ports(node, all, source):
+    """List open/forwarded ports per node and detect conflicts across nodes on the same network."""
+    config = yaml.safe_load(get_config_path().read_text())
+
+    if all and node:
+        click.echo("❌ Cannot specify both --all and a node name")
+        return
+    if not all and not node:
+        click.echo("❌ Must specify either --all or a node name")
+        return
+
+    nodes = config.get('nodes', [])
+    if not nodes:
+        click.echo("❌ No nodes configured. Please check your config.yaml file.")
+        return
+
+    if not all:
+        node_cfg = next((n for n in nodes if n.get('tailscale_domain') == node or n.get('name') == node), None)
+        if not node_cfg:
+            click.echo(f"❌ Node {node} not found")
+            return
+        nodes = [node_cfg]
+
+    click.echo("🔎 Gathering port mappings...")
+
+    per_node_tables = []
+    conflicts = {}
+    entries_all = []
+
+    for i, ncfg in enumerate(nodes):
+        name = ncfg.get('name', ncfg.get('tailscale_domain', f"node{i+1}"))
+        stack = ncfg.get('stack', ['eth-docker'])
+        if isinstance(stack, str):
+            stack = [stack]
+
+        # Skip disabled stacks, but still allow env-based ports if desired
+        if 'disabled' in [s.lower() for s in stack]:
+            click.echo(f"⚪ Skipping disabled node {name}")
+            continue
+
+        res = get_node_port_mappings(ncfg, source=source)
+        entries = res.get('entries', [])
+        errors = res.get('errors', [])
+
+        # Build table rows for this node
+        rows = []
+        for e in entries:
+            rows.append([
+                e.get('service','-'),
+                e.get('container','-'),
+                e.get('host_port') if e.get('host_port') is not None else '-',
+                e.get('container_port') if e.get('container_port') is not None else '-',
+                e.get('proto','tcp'),
+                e.get('source','-'),
+                e.get('network','-')
+            ])
+
+            # Track conflicts by host_port+proto within same network scope
+            hp = e.get('host_port')
+            proto = e.get('proto', 'tcp')
+            net = e.get('network', '-')
+            if hp is not None:
+                key = (hp, proto, net)
+                conflicts.setdefault(key, []).append({
+                    'node': name,
+                    'service': e.get('service','-'),
+                    'container': e.get('container','-'),
+                    'source': e.get('source','-')
+                })
+                entries_all.append({ 'node': name, **e })
+
+        headers = ['Service','Container','Host Port','Container Port','Proto','Source','Network']
+        per_node_tables.append((name, rows, headers, errors))
+
+    # Render per-node tables
+    for name, rows, headers, errors in per_node_tables:
+        click.echo("\n" + "="*70)
+        click.echo(f"🖥️  {name} - Port Mappings")
+        click.echo("="*70)
+        if rows:
+            click.echo(tabulate(rows, headers=headers, tablefmt='fancy_grid', stralign='left', numalign='center'))
+        else:
+            click.echo("(no mappings found)")
+        if errors:
+            for err in errors:
+                click.echo(f"⚠️  {err}")
+
+    # Detect and show conflicts
+    conflict_rows = []
+    for (hp, proto, net), uses in conflicts.items():
+        if len(uses) > 1:
+            nodes_str = ", ".join(sorted({u['node'] for u in uses}))
+            services_str = "; ".join([f"{u['node']}:{u['service']} ({u['source']})" for u in uses])
+            conflict_rows.append([hp, proto, net, len(uses), nodes_str, services_str])
+
+    click.echo("\n" + "="*70)
+    click.echo("🚨 Port Conflicts Across Nodes")
+    click.echo("="*70)
+    if conflict_rows:
+        click.echo(tabulate(conflict_rows, headers=['Host Port','Proto','Network','Count','Nodes','Details'],
+                           tablefmt='fancy_grid', stralign='left', numalign='center'))
+    else:
+        click.echo("✅ No conflicts detected")
 
 
 def _manual_stack_selection():
