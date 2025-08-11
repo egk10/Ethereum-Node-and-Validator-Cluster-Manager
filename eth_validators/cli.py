@@ -2309,6 +2309,29 @@ def add_node_interactive():
         else:
             stack = ["eth-docker"]  # Default
     
+    # Step 3.5: Auto-detect eth-docker path if eth-docker is in stack
+    eth_docker_path = None
+    if 'eth-docker' in stack:
+        click.echo("\n🔍 Detecting eth-docker installation path...")
+        common_paths = [
+            '/home/egk/eth-docker',
+            '/home/egk/eth-hoodi', 
+            '/home/root/eth-docker',
+            '/opt/eth-docker'
+        ]
+        
+        for path in common_paths:
+            test_cmd = f"test -d {path} && test -f {path}/docker-compose.yml"
+            result = _run_command(test_node_cfg, test_cmd)
+            if result.returncode == 0:
+                eth_docker_path = path
+                click.echo(f"✅ Found eth-docker at: {path}")
+                break
+        
+        if not eth_docker_path:
+            click.echo("❓ Could not auto-detect eth-docker path. Using default.")
+            eth_docker_path = '/home/egk/eth-docker'
+    
     # Step 4: Additional configuration
     click.echo("\n⚙️  Step 4: Additional Configuration")
     click.echo("-" * 40)
@@ -2331,6 +2354,10 @@ def add_node_interactive():
         'ethereum_clients_enabled': ethereum_clients_enabled
     }
     
+    # Add eth_docker_path if detected
+    if eth_docker_path:
+        new_node['eth_docker_path'] = eth_docker_path
+    
     # Step 5: Summary and confirmation
     click.echo("\n📋 Step 5: Configuration Summary")
     click.echo("-" * 40)
@@ -2339,6 +2366,8 @@ def add_node_interactive():
     click.echo(f"Domain: {tailscale_domain}")
     click.echo(f"SSH User: {ssh_user}")
     click.echo(f"Detected Stacks: {', '.join(stack)}")
+    if eth_docker_path:
+        click.echo(f"eth-docker Path: {eth_docker_path}")
     click.echo(f"Ethereum Clients: {'Enabled' if ethereum_clients_enabled else 'Disabled'}")
     
     if not click.confirm("\nSave this configuration?", default=True):
