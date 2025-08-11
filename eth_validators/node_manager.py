@@ -1423,64 +1423,172 @@ def get_node_port_mappings(node_config, source: str = "both"):
 
     # 1) From docker ps
     if source in ('both', 'docker'):
-        # Include container ID so we can detect host network mode when no explicit mappings are shown
-        ps_cmd = 'docker ps --format "table {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}" | tail -n +2'
+        # Use pipe-separated format to avoid tab issues with long port mappings
+        ps_cmd = 'docker ps --format "{{.ID}}|{{.Names}}|{{.Image}}|{{.Ports}}"'
         r = _run(ps_cmd, timeout=15)
         if r.returncode == 0 and r.stdout.strip():
-            for line in r.stdout.strip().split('\n'):
+            # Handle line continuations in docker ps output - port mappings can wrap
+            raw_lines = r.stdout.strip().split('\n')
+            processed_lines = []
+            current_line = ""
+            
+            for line in raw_lines:
+                line = line.strip()
+                # Check if this line has the expected pipe-separated format (4 fields)
+                if line.count('|') >= 3:
+                    # This is a new container entry, save previous if exists
+                    if current_line:
+                        processed_lines.append(current_line)
+                    current_line = line
+                elif current_line and line:
+                    # This is likely a continuation of port mappings from previous line
+                    current_line = current_line.rstrip() + " " + line
+                    
+            # Don't forget the last line
+            if current_line:
+                processed_lines.append(current_line)
+            
+            for line in processed_lines:
                 try:
-                    parts = line.split('\t')
+                    parts = line.split('|')
                     if len(parts) < 4:
                         continue
-                    cid, cname, image, ports = parts[0], parts[1], parts[2], parts[3]
+                    cid, cname, image, ports = parts[0], parts[1], parts[2], '|'.join(parts[3:])  # Handle multiple pipes in ports
                     service = _guess_service(cname, image)
-                    # ports string example: "0.0.0.0:8545->8545/tcp, :::8545->8545/tcp, 0.0.0.0:30303-30304->30303-30304/tcp, 0.0.0.0:30303-30304->30303-30304/udp"
-                    for item in [p.strip() for p in ports.split(',') if p.strip()]:
+                    # Parse ports: handle complex formats like "0.0.0.0:30315->30315/tcp, [::]:30315->30315/tcp, 30303/tcp"
+                    import re as _re
+                    
+                    # Track unique port mappings to avoid duplicates from IPv4/IPv6
+                    seen_mappings = set()
+                    
+                    # Split on commas but handle complex IPv6 addresses carefully
+                    port_items = []
+                    current = ""
+                    bracket_depth = 0
+                    
+                    for char in ports:
+                        if char == '[':
+                            bracket_depth += 1
+                        elif char == ']':
+                            bracket_depth -= 1
+                        elif char == ',' and bracket_depth == 0:
+                            if current.strip():
+                                port_items.append(current.strip())
+                            current = ""
+                            continue
+                        current += char
+                    
+                    if current.strip():
+                        port_items.append(current.strip())
+                    
+                    for item in port_items:
+                        item = item.strip()
+                        if not item:
+                            continue
+                            
                         if '->' in item:
+                            # Published port mapping like "0.0.0.0:30315->30315/tcp" or "[::]:9002->9002/udp"
                             left, right = item.split('->', 1)
-                            # left may be "0.0.0.0:8545" or "*:8545" or ":::8545"; take last colon number or range
-                            host = left.split(':')[-1]
+                            
+                            # Parse protocol from right side (e.g., "30315/tcp" or "8545-8546/tcp")
                             proto = 'tcp'
+                            cont_part = right
                             if '/' in right:
-                                cont, proto = right.split('/', 1)
+                                cont_part, proto = right.rsplit('/', 1)
+                            
+                            # Extract host port from left side - handle IPv4 and IPv6 formats
+                            host_part = None
+                            if left.startswith('[') and ']:' in left:
+                                # IPv6 format like "[::]:9002"
+                                host_part = left.split(']:')[-1]
+                            elif ':' in left and not left.startswith('['):
+                                # IPv4 format like "0.0.0.0:30315"  
+                                host_part = left.split(':')[-1]
                             else:
-                                cont = right
-                            # cont like "8545" or "30303-30304"
-                            _add_entry(service, cname, host, cont, proto, 'docker', published=True)
-                            # Populate index for later env enrichment/dedup
-                            try:
-                                hp = int(str(host).split('-')[0]) if host else None
-                                cp = int(str(cont).split('-')[0]) if cont else None
-                            except Exception:
-                                hp, cp = None, None
-                            if hp is not None:
-                                docker_index[(hp, proto)] = {'container': cname, 'container_port': cp}
-                                docker_keys.add((hp, proto))
+                                # Direct port
+                                host_part = left
+                            
+                            if host_part and cont_part:
+                                # Create unique key to avoid IPv4/IPv6 duplicates
+                                mapping_key = (host_part, cont_part, proto)
+                                if mapping_key not in seen_mappings:
+                                    seen_mappings.add(mapping_key)
+                                    
+                                    # Handle port ranges (e.g., "8545-8546")
+                                    if '-' in host_part and _re.match(r'^\d+-\d+$', host_part):
+                                        try:
+                                            start_port, end_port = host_part.split('-', 1)
+                                            for port_num in range(int(start_port), int(end_port) + 1):
+                                                _add_entry(service, cname, port_num, port_num, proto, 'docker', published=True)
+                                                docker_index[(port_num, proto)] = {'container': cname, 'container_port': port_num}
+                                                docker_keys.add((port_num, proto))
+                                        except (ValueError, TypeError):
+                                            # Fallback to treating as single port
+                                            try:
+                                                hp = int(host_part)
+                                                cp = int(cont_part) if cont_part.isdigit() else hp
+                                                _add_entry(service, cname, hp, cp, proto, 'docker', published=True)
+                                                docker_index[(hp, proto)] = {'container': cname, 'container_port': cp}
+                                                docker_keys.add((hp, proto))
+                                            except ValueError:
+                                                pass
+                                    else:
+                                        # Single port
+                                        try:
+                                            hp = int(host_part)
+                                            cp = int(cont_part) if cont_part.isdigit() else hp
+                                            _add_entry(service, cname, hp, cp, proto, 'docker', published=True)
+                                            docker_index[(hp, proto)] = {'container': cname, 'container_port': cp}
+                                            docker_keys.add((hp, proto))
+                                        except ValueError:
+                                            pass
+                                            
                         else:
-                            # Bare exposure like "30303/tcp". Determine if host network; if yes, treat as published on host.
+                            # Bare exposure like "30303/tcp" or "9000-9001/tcp"
                             proto = 'tcp'
                             port_part = item
                             if '/' in item:
-                                port_part, proto = item.split('/', 1)
-                            # Inspect network mode for the container
+                                port_part, proto = item.rsplit('/', 1)
+                            
+                            # Inspect network mode for the container to determine if published
                             net_mode = None
                             insp = _run(f"docker inspect -f '{{{{.HostConfig.NetworkMode}}}}' {cid}", timeout=10)
                             if insp.returncode == 0:
                                 net_mode = (insp.stdout or '').strip()
+                            
                             # If host network, host port equals container port (published)
                             if net_mode == 'host':
-                                _add_entry(service, cname, port_part, port_part, proto, 'docker', published=True)
-                                try:
-                                    hp = int(str(port_part).split('-')[0]) if port_part else None
-                                    cp = int(str(port_part).split('-')[0]) if port_part else None
-                                except Exception:
-                                    hp, cp = None, None
-                                if hp is not None:
-                                    docker_index[(hp, proto)] = {'container': cname, 'container_port': cp}
-                                    docker_keys.add((hp, proto))
+                                # Handle port ranges in host network mode
+                                if '-' in port_part and _re.match(r'^\d+-\d+$', port_part):
+                                    try:
+                                        start_port, end_port = port_part.split('-', 1)
+                                        for port_num in range(int(start_port), int(end_port) + 1):
+                                            _add_entry(service, cname, port_num, port_num, proto, 'docker', published=True)
+                                            docker_index[(port_num, proto)] = {'container': cname, 'container_port': port_num}
+                                            docker_keys.add((port_num, proto))
+                                    except (ValueError, TypeError):
+                                        try:
+                                            hp = int(port_part)
+                                            _add_entry(service, cname, hp, hp, proto, 'docker', published=True)
+                                            docker_index[(hp, proto)] = {'container': cname, 'container_port': hp}
+                                            docker_keys.add((hp, proto))
+                                        except ValueError:
+                                            pass
+                                else:
+                                    try:
+                                        hp = int(port_part)
+                                        _add_entry(service, cname, hp, hp, proto, 'docker', published=True)
+                                        docker_index[(hp, proto)] = {'container': cname, 'container_port': hp}
+                                        docker_keys.add((hp, proto))
+                                    except ValueError:
+                                        pass
                             else:
                                 # Not host network; keep as container-only exposure (not published)
-                                _add_entry(service, cname, None, port_part, proto, 'docker', published=False)
+                                try:
+                                    cp = int(port_part) if port_part.isdigit() else None
+                                    _add_entry(service, cname, None, cp, proto, 'docker', published=False)
+                                except ValueError:
+                                    pass
                 except Exception as e:
                     results['errors'].append(f"docker-parse:{str(e)[:40]}")
         else:
@@ -1564,3 +1672,49 @@ def get_node_port_mappings(node_config, source: str = "both"):
                 results['errors'].append(f"env-parse:{str(e)[:40]}")
 
     return results
+
+
+def run_command_on_node(node_name, command, timeout=10):
+    """Run a command on a node via SSH and return the output.
+    
+    Args:
+        node_name: The name of the node from config
+        command: The command to run
+        timeout: Timeout in seconds
+        
+    Returns:
+        Command output as string, or None if failed
+    """
+    import subprocess
+    import yaml
+    try:
+        from eth_validators.config import get_config_path
+        config = yaml.safe_load(get_config_path().read_text())
+        
+        # Find the node config
+        node_config = None
+        for node in config.get('nodes', []):
+            if node.get('name') == node_name:
+                node_config = node
+                break
+        
+        if not node_config:
+            return None
+            
+        is_local = node_config.get('is_local', False)
+        ssh_user = node_config.get('ssh_user', 'root')
+        
+        if is_local:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+        else:
+            ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+            ssh_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{command}'"
+            result = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            return None
+            
+    except Exception:
+        return None

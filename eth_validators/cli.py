@@ -2327,49 +2327,107 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
                 except Exception:
                     return False
                 proto = str(e.get('proto','tcp')).lower()
-                # EL P2P default
+                service = str(e.get('service','')).lower()
+                
+                # EL P2P default ports
                 if p in (30303, 30304) and proto in ('tcp','udp'):
                     return True
-                # CL P2P defaults (common values across clients)
+                    
+                # CL P2P default ports (common values across clients)
                 if p in (9000, 12000, 13000) and proto in ('tcp','udp'):
                     return True
+                
+                # Custom P2P ports: If it's an execution or consensus service with a published port,
+                # and it's in common P2P forwarding range, consider it P2P
+                if service in ('execution', 'consensus') and e.get('published'):
+                    # Common execution P2P forwarding range (30300-30400)
+                    if service == 'execution' and 30300 <= p <= 30400 and proto in ('tcp','udp'):
+                        return True
+                    # Common consensus P2P forwarding range (9000-9100)
+                    if service == 'consensus' and 9000 <= p <= 9100 and proto in ('tcp','udp'):
+                        return True
+                
+                # Charon DV ports (typically 3600-3700 range)
+                if service == 'validator' and 3600 <= p <= 3700 and proto == 'tcp' and e.get('published'):
+                    return True
+                    
                 return False
             entries = [e for e in entries if _is_p2p(e)]
 
-        # Build table rows for this node
+        # Build table rows for this node - group by port and combine protocols
         rows = []
+        
+        # Group entries by (service, container, host_port, container_port, source, network, published)
+        # and combine protocols
+        grouped = {}
         for e in entries:
-            row = [
+            key = (
                 e.get('service','-'),
-                e.get('container','-'),
-                e.get('host_port') if e.get('host_port') is not None else '-',
-                e.get('container_port') if e.get('container_port') is not None else '-',
-                e.get('proto','tcp'),
+                e.get('container','-'), 
+                e.get('host_port'),
+                e.get('container_port'),
                 e.get('source','-'),
                 e.get('network','-'),
-                'Y' if e.get('published') else 'N'
+                e.get('published', False)
+            )
+            if key not in grouped:
+                grouped[key] = {'protocols': set(), 'entry': e}
+            grouped[key]['protocols'].add(e.get('proto', 'tcp'))
+        
+        # Create consolidated rows
+        for key, data in grouped.items():
+            service, container, host_port, container_port, source, network, published = key
+            protocols = sorted(list(data['protocols']))  # Sort for consistent order
+            combined_proto = ','.join(protocols)
+            
+            # Consolidate port display: show single port if same, or host→container if different
+            if host_port is not None and container_port is not None:
+                if host_port == container_port:
+                    port_display = str(host_port)
+                else:
+                    port_display = f"{host_port}→{container_port}"
+            elif host_port is not None:
+                port_display = str(host_port)
+            elif container_port is not None:
+                port_display = f"→{container_port}"  # Container-only port
+            else:
+                port_display = "-"
+            
+            row = [
+                service,
+                container,
+                port_display,
+                combined_proto,
+                source,
+                'Y' if published else 'N'
             ]
             rows.append(row)
             
-            # For CSV, add node name as first column
+            # For CSV, keep detailed format for analysis
             if csv:
-                csv_rows.append([name] + row)
+                for proto in protocols:
+                    csv_row = [name, service, container,
+                             host_port if host_port is not None else '-',
+                             container_port if container_port is not None else '-',
+                             proto, source, 'Y' if published else 'N']
+                    csv_rows.append(csv_row)
 
-            # Track conflicts by host_port+proto within same network scope
-            hp = e.get('host_port')
-            proto = e.get('proto', 'tcp')
-            net = e.get('network', '-')
-            if hp is not None:
-                key = (hp, proto, net)
-                conflicts.setdefault(key, []).append({
-                    'node': name,
-                    'service': e.get('service','-'),
-                    'container': e.get('container','-'),
-                    'source': e.get('source','-')
-                })
-                entries_all.append({ 'node': name, **e })
+            # Track conflicts by host_port+proto within same network scope (individual protocols)
+            for proto in protocols:
+                if host_port is not None:
+                    conflict_key = (host_port, proto, network)
+                    conflicts.setdefault(conflict_key, []).append({
+                        'node': name,
+                        'service': service,
+                        'container': container,
+                        'source': source
+                    })
+                    # Create individual entry for conflict tracking
+                    conflict_entry = data['entry'].copy()
+                    conflict_entry['proto'] = proto
+                    entries_all.append({ 'node': name, **conflict_entry })
 
-        headers = ['Service','Container','Host Port','Container Port','Proto','Source','Network','Published']
+        headers = ['Service','Container','Port','Proto','Source','Published']
 
         # If nothing to show (after filters), provide a helpful hint
         hint = None
@@ -2397,14 +2455,14 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
                 env_ports = sorted({f"{e.get('host_port') or e.get('container_port')}/{e.get('proto','tcp')}" for e in alt if e.get('source')=='env'})
                 if env_ports:
                     hint = f"No published ports detected; env suggests: {', '.join(env_ports)}"
-        per_node_tables.append((name, rows, headers, errors if errors else [], hint))
+        per_node_tables.append((name, rows, headers, errors if errors else [], hint, ncfg))
 
     # CSV output
     if csv:
         import csv as csv_module
         import sys
         
-        csv_headers = ['Node', 'Service', 'Container', 'Host Port', 'Container Port', 'Proto', 'Source', 'Network', 'Published']
+        csv_headers = ['Node', 'Service', 'Container', 'Host Port', 'Container Port', 'Proto', 'Source', 'Published']
         writer = csv_module.writer(sys.stdout)
         writer.writerow(csv_headers)
         for row in csv_rows:
@@ -2412,9 +2470,31 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
         return
 
     # Render per-node tables
-    for name, rows, headers, errors, hint in per_node_tables:
+    for name, rows, headers, errors, hint, ncfg in per_node_tables:
+        # Extract IP information
+        tailscale_ip = ncfg.get('tailscale_domain', 'N/A')
+        public_ip = ncfg.get('public_ip', ncfg.get('external_ip', 'N/A'))
+        
+        # Auto-detect public IP if not configured
+        if public_ip == 'N/A':
+            try:
+                # Query the node for its public IP
+                from eth_validators.node_manager import run_command_on_node
+                result = run_command_on_node(name, "curl -s ifconfig.me || curl -s ipinfo.io/ip || curl -s icanhazip.com")
+                if result and result.strip():
+                    public_ip = result.strip()
+            except Exception:
+                public_ip = 'N/A'
+        
         click.echo("\n" + "="*70)
         click.echo(f"🖥️  {name} - Port Mappings")
+        if tailscale_ip != 'N/A' or public_ip != 'N/A':
+            ip_info = []
+            if tailscale_ip != 'N/A':
+                ip_info.append(f"🔗 Tailscale: {tailscale_ip}")
+            if public_ip != 'N/A':
+                ip_info.append(f"🌐 Public: {public_ip}")
+            click.echo(" | ".join(ip_info))
         click.echo("="*70)
         if rows:
             click.echo(tabulate(rows, headers=headers, tablefmt='fancy_grid', stralign='left', numalign='center'))
@@ -2426,33 +2506,188 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
             for err in errors:
                 click.echo(f"⚠️  {err}")
 
-    # Detect and show conflicts (compact summary + detailed per-port tables)
-    conflicts_summary = []
-    conflicts_detail = {}
+    # Show P2P port usage matrix (only ports that would be forwarded on routers)
+    p2p_ports = []
+    node_names = sorted(set(entry['node'] for entry in entries_all))
+    
+    # Build node config mapping for IP info
+    node_configs = {ncfg.get('name', f"node{i+1}"): ncfg for i, ncfg in enumerate(nodes)}
+    
+    def _is_p2p_port(hp, proto):
+        """Check if this is a P2P port that would be forwarded on routers"""
+        try:
+            p = int(hp)
+        except (ValueError, TypeError):
+            return False
+        proto = str(proto).lower()
+        
+        # EL P2P ports (standard and custom forwarding range)
+        if 30300 <= p <= 30400 and proto in ('tcp', 'udp'):
+            return True
+        # CL P2P ports (standard and custom forwarding range)  
+        if 9000 <= p <= 9100 and proto in ('tcp', 'udp'):
+            return True
+        # Charon DV ports (typically forwarded)
+        if 3600 <= p <= 3700 and proto == 'tcp':
+            return True
+        # Other common P2P ports
+        if p in (12000, 13000) and proto in ('tcp', 'udp'):
+            return True
+            
+        return False
+    
     for (hp, proto, net), uses in conflicts.items():
-        if len(uses) > 1:
-            conflicts_summary.append([hp, proto, net, len(uses)])
-            # Prepare detail rows for this port
-            det_rows = []
-            for u in sorted(uses, key=lambda x: (x['node'], x.get('service',''))):
-                det_rows.append([u['node'], u.get('service','-'), u.get('container','-') if 'container' in u else '-', u.get('source','-')])
-            conflicts_detail[(hp, proto, net)] = det_rows
+        if len(uses) > 1 and _is_p2p_port(hp, proto):
+            # Create a row showing which nodes use this P2P port
+            row = [f"{hp}/{proto}"]
+            nodes_using_port = {u['node'] for u in uses}
+            
+            # Add checkmark or dash for each node
+            for node in node_names:
+                row.append("✓" if node in nodes_using_port else "-")
+            
+            p2p_ports.append(row)
 
     click.echo("\n" + "="*70)
-    click.echo("🚨 Port Conflicts Across Nodes")
+    click.echo("🌐 P2P Port Usage Matrix")
     click.echo("="*70)
-    if conflicts_summary:
-        # Summary table
-        click.echo(tabulate(sorted(conflicts_summary, key=lambda r: (r[0], r[1], r[2])),
-                           headers=['Host Port','Proto','Network','Count'],
-                           tablefmt='fancy_grid', stralign='left', numalign='center'))
-        # Detailed sections
-        for (hp, proto, net), rows in sorted(conflicts_detail.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
-            click.echo(f"\n• {hp}/{proto} (network: {net})")
-            click.echo(tabulate(rows, headers=['Node','Service','Container','Source'],
-                               tablefmt='simple', stralign='left', numalign='center'))
+    if p2p_ports:
+        # First, detect all public IPs once to avoid repeated SSH calls
+        node_public_ips = {}
+        for node_name in node_names:
+            node_cfg = node_configs.get(node_name, {})
+            public_ip = node_cfg.get('public_ip', node_cfg.get('external_ip', 'N/A'))
+            
+            # Auto-detect public IP if not configured
+            if public_ip == 'N/A':
+                try:
+                    from eth_validators.node_manager import run_command_on_node
+                    result = run_command_on_node(node_name, "curl -s ifconfig.me || curl -s ipinfo.io/ip || curl -s icanhazip.com")
+                    if result and result.strip():
+                        public_ip = result.strip()
+                except Exception:
+                    public_ip = 'N/A'
+            
+            node_public_ips[node_name] = public_ip
+        
+        # Group nodes by public IP
+        public_ips = {}
+        for node_name, public_ip in node_public_ips.items():
+            if public_ip not in public_ips:
+                public_ips[public_ip] = []
+            public_ips[public_ip].append(node_name)
+        
+        # Define color codes for different public IPs
+        colors = [
+            '\033[91m',  # Red
+            '\033[92m',  # Green  
+            '\033[94m',  # Blue
+            '\033[95m',  # Magenta
+            '\033[96m',  # Cyan
+            '\033[93m',  # Yellow
+        ]
+        reset = '\033[0m'
+        
+        # Assign colors to public IPs
+        ip_colors = {}
+        color_idx = 0
+        for public_ip in sorted(public_ips.keys()):
+            if public_ip != 'N/A':
+                ip_colors[public_ip] = colors[color_idx % len(colors)]
+                color_idx += 1
+            else:
+                ip_colors[public_ip] = ''  # No color for N/A
+        
+        # Build headers with visual indicators for IP groups
+        headers = ['P2P Port']
+        
+        # Define symbols for different public IPs
+        symbols = ['●', '▲', '■', '◆', '★', '♦']
+        ip_symbols = {}
+        symbol_idx = 0
+        for public_ip in sorted(public_ips.keys()):
+            if public_ip != 'N/A' and len(public_ips[public_ip]) > 1:  # Only mark shared IPs
+                ip_symbols[public_ip] = symbols[symbol_idx % len(symbols)]
+                symbol_idx += 1
+        
+        for node_name in node_names:
+            public_ip = node_public_ips[node_name]
+            symbol = ip_symbols.get(public_ip, '')
+            
+            if symbol:
+                # Use both color and symbol for shared IPs
+                color = ip_colors.get(public_ip, '')
+                header_name = f"{color}{symbol}{node_name}{reset}" if color else f"{symbol}{node_name}"
+            else:
+                header_name = node_name
+            
+            headers.append(header_name)
+        
+        # Color-code and symbolize the checkmarks in the matrix
+        colored_matrix = []
+        for row in sorted(p2p_ports, key=lambda r: (int(r[0].split('/')[0]), r[0].split('/')[1])):
+            colored_row = [row[0]]  # Port column (no color)
+            
+            for i, cell in enumerate(row[1:]):  # Skip port column
+                if cell == "✓":
+                    node_name = node_names[i]
+                    public_ip = node_public_ips[node_name]
+                    symbol = ip_symbols.get(public_ip, '')
+                    color = ip_colors.get(public_ip, '')
+                    
+                    if symbol:
+                        # Use colored symbol for shared IPs to highlight conflicts
+                        colored_checkmark = f"{color}{symbol}✓{reset}" if color else f"{symbol}✓"
+                    else:
+                        colored_checkmark = "✓"
+                    
+                    colored_row.append(colored_checkmark)
+                else:
+                    colored_row.append(cell)  # "-" stays uncolored
+            
+            colored_matrix.append(colored_row)
+        
+        # Print matrix with colored nodes and checkmarks
+        click.echo(tabulate(colored_matrix, headers=headers,
+                           tablefmt='fancy_grid', stralign='center', numalign='center'))
+        
+        # Print IP information below matrix with color legend
+        click.echo(f"\n📍 Node Network Information (Color & Symbol-coded by Public IP):")
+        
+        # Group nodes by public IP and show with colors and symbols
+        for public_ip, nodes_list in sorted(public_ips.items()):
+            if len(nodes_list) > 1:  # Only show groups with multiple nodes (potential conflicts)
+                color = ip_colors.get(public_ip, '')
+                symbol = ip_symbols.get(public_ip, '')
+                colored_ip = f"{color}{public_ip}{reset}" if color else public_ip
+                node_list = f"{color}{symbol}{', '.join(nodes_list)}{reset}" if color else f"{symbol}{', '.join(nodes_list)}"
+                click.echo(f"   🔴 SHARED PUBLIC IP {colored_ip}: {node_list}")
+                if public_ip != 'N/A':
+                    click.echo(f"      ⚠️  These nodes compete for the same router ports! (Symbol: {symbol})")
+            else:
+                # Single node per IP
+                node_name = nodes_list[0]
+                color = ip_colors.get(public_ip, '')
+                colored_ip = f"{color}{public_ip}{reset}" if color else public_ip
+                colored_node = f"{color}{node_name}{reset}" if color else node_name
+                click.echo(f"   ✅ UNIQUE PUBLIC IP {colored_ip}: {colored_node}")
+        
+        # Show detailed info for each node
+        click.echo(f"\n📋 Detailed Node Information:")
+        for node_name in node_names:
+            node_cfg = node_configs.get(node_name, {})
+            tailscale_ip = node_cfg.get('tailscale_domain', 'N/A')
+            public_ip = node_public_ips[node_name]
+            
+            color = ip_colors.get(public_ip, '')
+            symbol = ip_symbols.get(public_ip, '')
+            prefix = f"{symbol} " if symbol else ""
+            colored_name = f"{color}{prefix}{node_name}{reset}" if color else f"{prefix}{node_name}"
+            click.echo(f"   • {colored_name}: Tailscale={tailscale_ip}, Public={public_ip}")
+        
+        click.echo("\nℹ️  Only P2P ports that require router forwarding are shown")
     else:
-        click.echo("✅ No conflicts detected")
+        click.echo("✅ No P2P port conflicts detected")
 
 
 def _manual_stack_selection():
