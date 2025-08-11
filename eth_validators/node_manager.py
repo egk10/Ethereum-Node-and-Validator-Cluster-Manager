@@ -225,7 +225,7 @@ def get_system_update_status(node_config):
     Fallback strategy: If APT is locked/busy, uses apt-check as alternative.
     Supports both local and remote nodes.
     """
-    results = {}
+    results = {'fallback_used': False}
     ssh_user = node_config.get('ssh_user', 'root')
     is_local = node_config.get('is_local', False)
     
@@ -255,6 +255,7 @@ def get_system_update_status(node_config):
             
             # Check if we need to use fallback method
             if output == "FALLBACK":
+                results['fallback_used'] = True
                 # Use apt-check as fallback when APT is locked/busy
                 if is_local:
                     if ssh_user == 'root':
@@ -273,13 +274,13 @@ def get_system_update_status(node_config):
                     apt_check_output = fallback_process.stdout.strip()
                     if ';' in apt_check_output:
                         update_count = int(apt_check_output.split(';')[0])
-                        results['updates_available'] = f"{update_count} (apt-check)"
+                        results['updates_available'] = update_count
                         results['needs_system_update'] = update_count > 0
                     else:
-                        results['updates_available'] = f"Fallback Error"
+                        results['updates_available'] = "Fallback Error"
                         results['needs_system_update'] = False
                 else:
-                    results['updates_available'] = f"Fallback Failed"
+                    results['updates_available'] = "Fallback Failed"
                     results['needs_system_update'] = False
             else:
                 # Normal apt upgrade simulation worked

@@ -361,8 +361,9 @@ def config_group():
 @system_group.command(name='update')
 @click.argument('node', required=False)
 @click.option('--all', is_flag=True, help='Check system updates for all configured nodes')
-def system_update(node, all):
-    """Check for available Ubuntu system updates (apt update && apt list --upgradable)"""
+@click.option('--reboot', is_flag=True, help='Automatically reboot nodes if required after upgrade')
+def system_update(node, all, reboot):
+    """Check for available Ubuntu system updates and optionally upgrade."""
     config = yaml.safe_load(get_config_path().read_text())
     
     if all and node:
@@ -372,311 +373,145 @@ def system_update(node, all):
         click.echo("❌ Must specify either --all or a node name")
         return
     
+    nodes_to_check = []
     if all:
-        # Check system updates for all nodes
-        click.echo("🔄 Checking system update status for all configured nodes...")
-        
-        nodes = config.get('nodes', [])
-        if not nodes:
-            click.echo("❌ No nodes configured")
+        nodes_to_check = config.get('nodes', [])
+    else:
+        node_cfg = next(
+            (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
+            None
+        )
+        if not node_cfg:
+            click.echo(f"❌ Node {node} not found")
             return
+        nodes_to_check.append(node_cfg)
+
+    click.echo(f"🔄 Checking system update status for {'all configured' if all else node} nodes...")
+    
+    table_data = []
+    nodes_needing_update = []
+    
+    for i, node_cfg in enumerate(nodes_to_check):
+        name = node_cfg['name']
+        stack = node_cfg.get('stack', ['eth-docker'])
         
-        table_data = []
-        nodes_needing_update = []
+        if all:
+            click.echo(f"📡 Checking {name}... ({i+1}/{len(nodes_to_check)})", nl=False, err=True)
         
-        for i, node_cfg in enumerate(nodes):
-            name = node_cfg['name']
-            stack = node_cfg.get('stack', ['eth-docker'])
-            
-            click.echo(f"📡 Checking {name}... ({i+1}/{len(nodes)})", nl=False, err=True)
-            
-            # Skip disabled nodes but still show them, UNLESS they have validator-only clients
-            if _is_stack_disabled(stack):
-                # Check if this disabled node still has validator clients (like Charon)
-                validator_info = _get_validator_only_clients(node_cfg)
-                if not (validator_info and validator_info['has_clients']):
-                    # Truly disabled node with no validator clients
+        # Skip disabled nodes but still show them, UNLESS they have validator-only clients
+        if _is_stack_disabled(stack):
+            validator_info = _get_validator_only_clients(node_cfg)
+            if not (validator_info and validator_info['has_clients']):
+                if all:
                     table_data.append([f"🔴 {name}", "Disabled", "-", "-"])
                     click.echo(" ✓", err=True)
-                    continue
-                # If we reach here, it's a "disabled" node but has validator clients, so continue processing
+                else:
+                    click.echo(f"⚪ Node {name} is disabled")
+                continue
+        
+        try:
+            status = get_system_update_status(node_cfg)
+            updates_available = status.get('updates_available', 'Error')
+            needs_update = status.get('needs_system_update', False)
+            is_local = node_cfg.get('is_local', False)
+            reboot_needed_before = _check_reboot_needed(node_cfg.get('ssh_user', 'root'), node_cfg['tailscale_domain'], is_local)
             
-            try:
-                status = get_system_update_status(node_cfg)
-                
-                # Check if we got valid results
-                updates_available = status.get('updates_available', 'Error')
-                needs_update = status.get('needs_system_update', False)
-                is_local = node_cfg.get('is_local', False)
-                reboot_needed = _check_reboot_needed(node_cfg.get('ssh_user', 'root'), node_cfg['tailscale_domain'], is_local)
-                
-                # Handle different types of updates_available responses
+            if needs_update:
+                nodes_needing_update.append(node_cfg)
+
+            if all:
                 if isinstance(updates_available, int):
                     update_count = updates_available
-                    if needs_update:
-                        status_emoji = "🟡"
-                        status_text = f"Updates available ({update_count})"
-                        nodes_needing_update.append(name)
-                    else:
-                        status_emoji = "🟢"
-                        status_text = "Up to date"
-                    
+                    status_emoji = "🟡" if needs_update else "🟢"
+                    status_text = f"Updates available ({update_count})" if needs_update else "Up to date"
                     table_data.append([
                         f"{status_emoji} {name}",
                         status_text,
                         f"{update_count} packages" if update_count > 0 else "None",
-                        reboot_needed
+                        reboot_needed_before
                     ])
-                elif isinstance(updates_available, str) and 'apt-check' in updates_available:
-                    # Handle apt-check fallback format like "3 (apt-check)"
-                    try:
-                        update_count = int(updates_available.split()[0])
-                        if needs_update:
-                            status_emoji = "🟡"
-                            status_text = f"Updates available ({update_count})"
-                            nodes_needing_update.append(name)
-                        else:
-                            status_emoji = "🟢"
-                            status_text = "Up to date"
-                        
-                        table_data.append([
-                            f"{status_emoji} {name}",
-                            status_text,
-                            f"{update_count} packages (fallback)" if update_count > 0 else "None",
-                            reboot_needed
-                        ])
-                    except ValueError:
-                        table_data.append([f"❌ {name}", "Parse error", updates_available, "❓ Unknown"])
                 else:
-                    # Handle error cases like "Connection Error", "Timeout", etc.
                     table_data.append([f"❌ {name}", f"Check failed: {updates_available}", "-", "❓ Unknown"])
-                
                 click.echo(" ✓", err=True)
-                
-            except Exception as e:
-                table_data.append([f"❌ {name}", f"Error: {str(e)[:30]}...", "-", "❓ Unknown"])
-                click.echo(f" ❌ Error", err=True)
-        
-        click.echo("\nRendering system update status table...")
-        headers = ['Node', 'Update Status', 'Available Updates', 'Reboot Needed']
-        click.echo(tabulate(table_data, headers=headers, tablefmt='fancy_grid'))
-        
-        if nodes_needing_update:
-            click.echo(f"\n⚠️  Nodes needing system updates: {', '.join(nodes_needing_update)}")
-            click.echo(f"💡 Use 'system upgrade --all' to upgrade all nodes")
-        else:
-            click.echo(f"\n✅ All active nodes are up to date!")
-        
-    else:
-        # Check single node
-        node_cfg = next(
-            (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
-            None
-        )
-        if not node_cfg:
-            click.echo(f"❌ Node {node} not found")
-            return
-        
-        stack = node_cfg.get('stack', ['eth-docker'])
-        if _is_stack_disabled(stack):
-            # Check if this disabled node still has validator clients (like Charon)
-            validator_info = _get_validator_only_clients(node_cfg)
-            if not (validator_info and validator_info['has_clients']):
-                click.echo(f"⚪ Node {node} is disabled")
-                return
-            # If we reach here, it's a "disabled" node but has validator clients, so continue processing
-        
-        click.echo(f"🔄 Checking system update status for {node_cfg['name']}...")
-        
-        try:
-            status = get_system_update_status(node_cfg)
-            
-            # Check if we got valid results  
-            updates_available = status.get('updates_available', 'Error')
-            needs_update = status.get('needs_system_update', False)
-            is_local = node_cfg.get('is_local', False)
-            reboot_needed = _check_reboot_needed(node_cfg.get('ssh_user', 'root'), node_cfg['tailscale_domain'], is_local)
-            
-            click.echo(f"\n📊 SYSTEM UPDATE STATUS: {node_cfg['name'].upper()}")
-            click.echo("=" * 50)
-            
-            # Handle different types of updates_available responses
-            if isinstance(updates_available, int):
-                update_count = updates_available
-                if needs_update:
-                    click.echo(f"🟡 Status: Updates available ({update_count} packages)")
-                    click.echo(f"📦 Available updates: {update_count}")
-                    click.echo(f"🔄 Reboot needed: {reboot_needed}")
-                    click.echo(f"\n💡 Use 'system upgrade {node}' to install updates")
-                else:
-                    click.echo(f"🟢 Status: Up to date")
-                    click.echo(f"📦 Available updates: None")
-                    click.echo(f"🔄 Reboot needed: {reboot_needed}")
-                    
-            elif isinstance(updates_available, str) and 'apt-check' in updates_available:
-                # Handle apt-check fallback format like "3 (apt-check)"
-                try:
-                    update_count = int(updates_available.split()[0])
+            else: # single node display
+                click.echo(f"\n📊 SYSTEM UPDATE STATUS: {name.upper()}")
+                click.echo("=" * 50)
+                if isinstance(updates_available, int):
+                    update_count = updates_available
                     if needs_update:
-                        click.echo(f"� Status: Updates available ({update_count} packages, via fallback)")
+                        click.echo(f"🟡 Status: Updates available ({update_count} packages)")
                         click.echo(f"📦 Available updates: {update_count}")
-                        click.echo(f"🔄 Reboot needed: {reboot_needed}")
-                        click.echo(f"\n💡 Use 'system upgrade {node}' to install updates")
+                        click.echo(f"🔄 Reboot needed: {reboot_needed_before}")
                     else:
                         click.echo(f"🟢 Status: Up to date")
                         click.echo(f"📦 Available updates: None")
-                        click.echo(f"🔄 Reboot needed: {reboot_needed}")
-                except ValueError:
-                    click.echo(f"❌ Status: Parse error")
-                    click.echo(f"📦 Raw response: {updates_available}")
-            else:
-                # Handle error cases
-                click.echo(f"❌ Status: Check failed")
-                click.echo(f"📦 Error: {updates_available}")
-                click.echo(f"🔄 Reboot needed: {reboot_needed}")
-        
-        except Exception as e:
-            click.echo(f"❌ Error checking system updates: {e}")
-
-@system_group.command(name='upgrade')
-@click.argument('node', required=False)
-@click.option('--all', is_flag=True, help='Upgrade system packages for all configured nodes')
-@click.option('--reboot', is_flag=True, help='Automatically reboot nodes if required after upgrade')
-def system_upgrade(node, all, reboot):
-    """Install Ubuntu system updates (apt update && apt upgrade -y)"""
-    config = yaml.safe_load(get_config_path().read_text())
-    
-    if all and node:
-        click.echo("❌ Cannot specify both --all and a node name")
-        return
-    elif not all and not node:
-        click.echo("❌ Must specify either --all or a node name")
-        return
-    
-    if all:
-        # Upgrade all nodes
-        click.echo("🔄 Upgrading system packages for all configured nodes...")
-        
-        nodes = config.get('nodes', [])
-        if not nodes:
-            click.echo("❌ No nodes configured")
-            return
-        
-        upgrade_results = []
-        
-        for i, node_cfg in enumerate(nodes):
-            name = node_cfg['name']
-            stack = node_cfg.get('stack', ['eth-docker'])
-            
-            # Skip disabled nodes UNLESS they have validator clients
-            if _is_stack_disabled(stack):
-                # Check if this disabled node still has validator clients (like Charon)
-                validator_info = _get_validator_only_clients(node_cfg)
-                if not (validator_info and validator_info['has_clients']):
-                    click.echo(f"⚪ Skipping {name} (disabled)")
-                    continue
-                # If we reach here, it's a "disabled" node but has validator clients, so continue processing
-            
-            click.echo(f"\n🔄 Upgrading {name}... ({i+1}/{len([n for n in nodes if not _is_stack_disabled(n.get('stack', []))])})")
-            
-            try:
-                result = perform_system_upgrade(node_cfg)
-                
-                if result.get('upgrade_success', False):
-                    click.echo(f"✅ {name} system upgrade completed successfully")
-                    upgrade_results.append((name, True, None))
-                    
-                    # Check if reboot is needed and handle it
-                    is_local = node_cfg.get('is_local', False)
-                    reboot_status = _check_reboot_needed(node_cfg.get('ssh_user', 'root'), node_cfg['tailscale_domain'], is_local)
-                    if "Yes" in reboot_status:
-                        if reboot:
-                            click.echo(f"🔄 Rebooting {name}...")
-                            is_local = node_cfg.get('is_local', False)
-                            if is_local:
-                                reboot_cmd = 'sudo reboot'
-                            else:
-                                ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
-                                reboot_cmd = f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} 'sudo reboot'"
-                            subprocess.run(reboot_cmd, shell=True, timeout=15)
-                            click.echo(f"🔄 {name} reboot initiated")
-                        else:
-                            click.echo(f"⚠️  {name} needs a reboot (use --reboot flag to auto-reboot)")
+                        click.echo(f"🔄 Reboot needed: {reboot_needed_before}")
                 else:
-                    click.echo(f"❌ {name} system upgrade failed")
-                    if result.get('upgrade_error'):
-                        click.echo(f"   Error: {result['upgrade_error']}")
-                    upgrade_results.append((name, False, result.get('upgrade_error')))
-                
-            except Exception as e:
-                click.echo(f"❌ {name} system upgrade failed with exception: {e}")
-                upgrade_results.append((name, False, str(e)))
-        
-        # Summary
-        click.echo(f"\n📊 UPGRADE SUMMARY:")
-        successful = [r for r in upgrade_results if r[1]]
-        failed = [r for r in upgrade_results if not r[1]]
-        
-        if successful:
-            click.echo(f"✅ Successful upgrades: {', '.join([r[0] for r in successful])}")
-        if failed:
-            click.echo(f"❌ Failed upgrades: {', '.join([r[0] for r in failed])}")
-        
-        click.echo(f"🎉 System upgrade process completed!")
-        
-    else:
-        # Upgrade single node
-        node_cfg = next(
-            (n for n in config['nodes'] if n.get('tailscale_domain') == node or n.get('name') == node),
-            None
-        )
-        if not node_cfg:
-            click.echo(f"❌ Node {node} not found")
-            return
-        
-        stack = node_cfg.get('stack', ['eth-docker'])
-        if _is_stack_disabled(stack):
-            # Check if this disabled node still has validator clients (like Charon)
-            validator_info = _get_validator_only_clients(node_cfg)
-            if not (validator_info and validator_info['has_clients']):
-                click.echo(f"⚪ Node {node} is disabled")
-                return
-            # If we reach here, it's a "disabled" node but has validator clients, so continue processing
-        
-        click.echo(f"🔄 Upgrading system packages for {node_cfg['name']}...")
-        
-        try:
-            result = perform_system_upgrade(node_cfg)
-            
-            if result.get('upgrade_success', False):
-                click.echo(f"✅ {node_cfg['name']} system upgrade completed successfully")
-                
-                # Check if reboot is needed
-                is_local = node_cfg.get('is_local', False)
-                reboot_status = _check_reboot_needed(node_cfg.get('ssh_user', 'root'), node_cfg['tailscale_domain'], is_local)
-                if "Yes" in reboot_status:
-                    if reboot:
-                        click.echo(f"🔄 Rebooting {node_cfg['name']}...")
-                        if is_local:
-                            reboot_cmd = 'sudo reboot'
-                        else:
-                            ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
-                            reboot_cmd = f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} 'sudo reboot'"
-                        subprocess.run(reboot_cmd, shell=True, timeout=15)
-                        click.echo(f"🔄 {node_cfg['name']} reboot initiated")
-                    else:
-                        click.echo(f"⚠️  {node_cfg['name']} needs a reboot (use --reboot flag to auto-reboot)")
-                
-                if result.get('upgrade_output'):
-                    click.echo(f"\n📋 Upgrade output:")
-                    click.echo(result['upgrade_output'])
-            else:
-                click.echo(f"❌ {node_cfg['name']} system upgrade failed")
-                if result.get('upgrade_error'):
-                    click.echo(f"   Error: {result['upgrade_error']}")
-        
+                    click.echo(f"❌ Status: Check failed")
+                    click.echo(f"📦 Error: {updates_available}")
+                    click.echo(f"🔄 Reboot needed: {reboot_needed_before}")
+
         except Exception as e:
-            click.echo(f"❌ System upgrade failed: {e}")
+            if all:
+                table_data.append([f"❌ {name}", f"Error: {str(e)[:30]}...", "-", "❓ Unknown"])
+                click.echo(f" ❌ Error", err=True)
+            else:
+                click.echo(f"❌ Error checking system updates: {e}")
+
+    if all:
+        click.echo("\nRendering system update status table...")
+        headers = ['Node', 'Update Status', 'Available Updates', 'Reboot Needed']
+        click.echo(tabulate(table_data, headers=headers, tablefmt='fancy_grid'))
+
+    if nodes_needing_update:
+        node_names = [n['name'] for n in nodes_needing_update]
+        click.echo(f"\n⚠️  Nodes needing system updates: {', '.join(node_names)}")
+        
+        if click.confirm(f"\n💡 Do you want to upgrade {len(node_names)} node(s) now?", default=False):
+            click.echo("🔄 Upgrading system packages...")
+            upgrade_results = []
+            for i, node_cfg in enumerate(nodes_needing_update):
+                name = node_cfg['name']
+                click.echo(f"\n🔄 Upgrading {name}... ({i+1}/{len(nodes_needing_update)})")
+                try:
+                    result = perform_system_upgrade(node_cfg)
+                    if result.get('upgrade_success', False):
+                        click.echo(f"✅ {name} system upgrade completed successfully")
+                        upgrade_results.append((name, True, None))
+                        
+                        is_local = node_cfg.get('is_local', False)
+                        reboot_status = _check_reboot_needed(node_cfg.get('ssh_user', 'root'), node_cfg['tailscale_domain'], is_local)
+                        if "Yes" in reboot_status:
+                            if reboot:
+                                click.echo(f"🔄 Rebooting {name}...")
+                                if is_local:
+                                    reboot_cmd = 'sudo reboot'
+                                else:
+                                    ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
+                                    reboot_cmd = f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} 'sudo reboot'"
+                                subprocess.run(reboot_cmd, shell=True, timeout=15)
+                                click.echo(f"🔄 {name} reboot initiated")
+                            else:
+                                click.echo(f"⚠️  {name} needs a reboot (use --reboot flag to auto-reboot)")
+                    else:
+                        click.echo(f"❌ {name} system upgrade failed")
+                        if result.get('upgrade_error'):
+                            click.echo(f"   Error: {result['upgrade_error']}")
+                        upgrade_results.append((name, False, result.get('upgrade_error')))
+                except Exception as e:
+                    click.echo(f"❌ {name} system upgrade failed with exception: {e}")
+                    upgrade_results.append((name, False, str(e)))
+            
+            click.echo(f"\n📊 UPGRADE SUMMARY:")
+            successful = [r for r in upgrade_results if r[1]]
+            failed = [r for r in upgrade_results if not r[1]]
+            if successful:
+                click.echo(f"✅ Successful upgrades: {', '.join([r[0] for r in successful])}")
+            if failed:
+                click.echo(f"❌ Failed upgrades: {', '.join([r[0] for r in failed])}")
+            click.echo(f"🎉 System upgrade process completed!")
+    else:
+        click.echo(f"\n✅ All active nodes are up to date!")
 
 # Validator Management Group
 @cli.group(name='validator')
@@ -1804,8 +1639,7 @@ def versions(node, all):
                 compact_table.append([
                     Fore.LIGHTBLACK_EX + node_name + Style.RESET_ALL,
                     Fore.LIGHTBLACK_EX + "Off" + Style.RESET_ALL,
-                    Fore.LIGHTBLACK_EX + "No clients" + Style.RESET_ALL,
-                    '-',
+                    Fore.LIGHTBLACK_EX + "No clients" + Style.RESET_ALL if exec_name != "-" else '-',
                     Fore.LIGHTBLACK_EX + "No clients" + Style.RESET_ALL,
                     '-',
                     '-', '-', '-', '-'
@@ -1981,42 +1815,60 @@ def versions(node, all):
                                         network_display_name = network_info.get('network', network_key)
                                         exec_client = network_info.get('execution_client', 'Unknown')
                                         exec_current = network_info.get('execution_current', 'Unknown')
+                                        exec_latest = network_info.get('execution_latest', 'Unknown')
+                                        exec_needs_update = network_info.get('execution_needs_update', False)
                                         cons_client = network_info.get('consensus_client', 'Unknown')
                                         cons_current = network_info.get('consensus_current', 'Unknown')
+                                        cons_latest = network_info.get('consensus_latest', 'Unknown')
+                                        cons_needs_update = network_info.get('consensus_needs_update', False)
                                         val_client = network_info.get('validator_client', '-')
                                         val_current = network_info.get('validator_current', '-')
-                                        
+                                        val_latest = network_info.get('validator_latest', '-')
+                                        val_needs_update = network_info.get('validator_needs_update', False)
+                                        charon_needs_update = (charon_version != "N/A" and latest_charon != "Unknown" and charon_version != latest_charon and charon_version != "latest")
                                         exec_display = f"{exec_client}/{exec_current}" if exec_client != "Unknown" else "-"
+                                        exec_latest_display = exec_latest if exec_latest not in ["Unknown", "API Error", "Network Error", "Rate Limited"] else "-"
+                                        exec_update = '🔄' if exec_needs_update else '✅' if exec_latest_display != "-" else '❓'
                                         cons_display = f"{cons_client}/{cons_current}" if cons_client != "Unknown" else "-"
+                                        cons_latest_display = cons_latest if cons_latest not in ["Unknown", "API Error", "Network Error", "Rate Limited"] else "-"
+                                        cons_update = '🔄' if cons_needs_update else '✅' if cons_latest_display != "-" else '❓'
                                         val_display = f"{val_client}/{val_current}" if val_client not in ["Unknown", "Disabled", "-"] and val_current not in ["Unknown", "Not Running", "-"] else "-"
+                                        val_latest_display = val_latest if val_latest not in ["Unknown", "Not Running", "Disabled", "-", "API Error", "Network Error", "Rate Limited"] else "-"
+                                        val_update = '🔄' if val_needs_update else '✅' if val_display != "-" and val_latest_display != "-" else '❓' if val_display != "-" else '-'
                                         charon_display = charon_version if charon_version != "N/A" else "-"
-                                        
+                                        charon_latest_display = latest_charon if charon_version != "N/A" else "-"
+                                        charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
                                         updated_table_data.append([
-                                            f"🟢 {name}-{network_display_name}",
-                                            exec_display,
-                                            cons_display,
-                                            val_display,
-                                            charon_display
+                                            f"🟢 {name}-{network_display_name}", exec_display, cons_display, val_display, charon_display
                                         ])
                                 else:
                                     exec_client = version_info.get('execution_client', 'Unknown')
                                     exec_current = version_info.get('execution_current', 'Unknown')
+                                    exec_latest = version_info.get('execution_latest', 'Unknown')
+                                    exec_needs_update = version_info.get('execution_needs_update', False)
                                     cons_client = version_info.get('consensus_client', 'Unknown')
                                     cons_current = version_info.get('consensus_current', 'Unknown')
+                                    cons_latest = version_info.get('consensus_latest', 'Unknown')
+                                    cons_needs_update = version_info.get('consensus_needs_update', False)
                                     val_client = version_info.get('validator_client', '-')
                                     val_current = version_info.get('validator_current', '-')
-                                    
+                                    val_latest = version_info.get('validator_latest', '-')
+                                    val_needs_update = version_info.get('validator_needs_update', False)
+                                    charon_needs_update = (charon_version != "N/A" and latest_charon != "Unknown" and charon_version != latest_charon and charon_version != "latest")
                                     exec_display = f"{exec_client}/{exec_current}" if exec_client != "Unknown" else "-"
+                                    exec_latest_display = exec_latest if exec_latest not in ["Unknown", "API Error", "Network Error"] else "-"
+                                    exec_update = '🔄' if exec_needs_update else '✅' if exec_latest_display != "-" else '❓'
                                     cons_display = f"{cons_client}/{cons_current}" if cons_client != "Unknown" else "-"
+                                    cons_latest_display = cons_latest if cons_latest not in ["Unknown", "API Error", "Network Error"] else "-"
+                                    cons_update = '🔄' if cons_needs_update else '✅' if cons_latest_display != "-" else '❓'
                                     val_display = f"{val_client}/{val_current}" if val_client not in ["Unknown", "Disabled", "-"] and val_current not in ["Unknown", "Not Running", "-"] else "-"
+                                    val_latest_display = val_latest if val_latest not in ["Unknown", "Not Running", "Disabled", "-", "API Error", "Network Error"] else "-"
+                                    val_update = '🔄' if val_needs_update else '✅' if val_display != "-" and val_latest_display != "-" else '❓' if val_display != "-" else '-'
                                     charon_display = charon_version if charon_version != "N/A" else "-"
-                                    
+                                    charon_latest_display = latest_charon if charon_version != "N/A" else "-"
+                                    charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
                                     updated_table_data.append([
-                                        f"🟢 {name}",
-                                        exec_display,
-                                        cons_display,
-                                        val_display,
-                                        charon_display
+                                        f"🟢 {name}", exec_display, cons_display, val_display, charon_display
                                     ])
                             except Exception as e:
                                 updated_table_data.append([
@@ -2803,6 +2655,3 @@ def config_summary(config):
     except Exception as e:
         click.echo(f"❌ Failed to generate summary: {e}")
         raise click.Abort()
-
-if __name__ == "__main__":
-    cli()
