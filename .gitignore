@@ -11,7 +11,7 @@ __pycache__/
 eth_validators/validators_vs_hardware_backup_*.csv
 validators_export_*.json
 validators_export_*.csv
-
+validators.csv
 # Debug and test files
 debug_*.py
 test_*.py
@@ -20,11 +20,14 @@ AI_MODEL_EXPLANATION.py
 
 # Node-specific configuration files (PRIVATE - contain real node info)
 cluster-management.sh
-custom-prom-*.yml
-prometheus_cluster_config_*.yml
-grafana-cloud-*.yml
-*-monitoring-stack.yml
+
 setup-*-monitoring.sh
+test_*.py
+update_*.py
+AI_MODEL_EXPLANATION.py
+
+config.yaml
+validators.csv
 get-grafana-credentials.sh
 fix-grafana-cloud.sh
 
