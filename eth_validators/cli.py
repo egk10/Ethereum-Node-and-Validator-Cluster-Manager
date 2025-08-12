@@ -2461,9 +2461,11 @@ def node_ports(node, all, source, p2p_only, include_unpublished, verbose, csv):
 
         # If nothing to show (after filters), provide a helpful hint
         hint = None
-        if not rows and (p2p_only or published_only):
+        # When we showed only published ports (include_unpublished=False) or filtered to P2P only,
+        # try to suggest env-only P2P ports to guide the user
+        if not rows and (p2p_only or not include_unpublished):
             # Build a quick summary of env-only P2P ports if applicable
-            if published_only:
+            if not include_unpublished:
                 alt = res.get('entries', [])
                 if p2p_only:
                     # Filter alt to P2P only (same logic)

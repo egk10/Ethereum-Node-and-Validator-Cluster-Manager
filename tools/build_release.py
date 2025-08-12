@@ -214,7 +214,7 @@ Built with ❤️ for the Ethereum validator community
             raise ValueError(f"Unknown release type: {release_type}")
             
         release_info = RELEASE_TYPES[release_type]
-        release_name = f"ethereum-validator-manager-{release_type}-v{self.version}"
+    release_name = f"ethereum-validator-manager-{release_type}-v{self.version}"
         release_dir = self.build_dir / release_name
         
         print(f"🔨 Building {release_type} release...")
@@ -225,9 +225,9 @@ Built with ❤️ for the Ethereum validator community
         # Copy core files
         self.copy_core_files(release_dir)
         
-        # Copy optional modules (skip 'core' since it's already copied)
-        modules = [m for m in release_info["modules"] if m != "core"]
-        self.copy_optional_files(release_dir, modules)
+    # Copy optional modules (skip 'core' since it's already copied)
+    modules = [m for m in release_info["modules"] if m != "core"]
+    self.copy_optional_files(release_dir, modules)
         
         # Create requirements file
         self.create_requirements_file(release_dir, release_info["dependencies"])
@@ -251,14 +251,12 @@ Built with ❤️ for the Ethereum validator community
         return zip_path
         
     def build_all_releases(self):
-        """Build all release types"""
+        """Build all release types (now a single unified release)."""
         self.clean_build_dir()
-        
         release_files = []
         for release_type in RELEASE_TYPES:
             zip_path = self.build_release(release_type)
             release_files.append(zip_path)
-            
         return release_files
 
 def main():

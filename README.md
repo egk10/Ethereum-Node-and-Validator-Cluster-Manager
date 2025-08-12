@@ -42,31 +42,17 @@ cd ethereum-validator-manager-core-v1.0.4
 ./install.sh
 ```
 
-## 📦 Tipos de Release
+## 📦 Release
 
-### 🎯 Core (~52KB) - Produção
-
-```bash
-docker pull egk10/ethereum-node-and-validator-cluster-manager:latest-core
-```
-
-### 🛠️ Standard (~59KB) - Core + Backup
+Este projeto agora fornece um único pacote unificado (.zip) por release.
 
 ```bash
-docker pull egk10/ethereum-node-and-validator-cluster-manager:latest-standard
+# Baixar última release e instalar
+wget https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest/download/ethereum-validator-manager-unified.zip -O manager.zip
+unzip manager.zip && cd ethereum-validator-manager-*
+./install.sh
 ```
 
-### 📊 Monitoring (~72KB) - Standard + Grafana
-
-```bash  
-docker pull egk10/ethereum-node-and-validator-cluster-manager:latest-monitoring
-```
-
-### 🧪 Full (~82KB) - Todos os recursos
-
-```bash
-docker pull egk10/ethereum-node-and-validator-cluster-manager:latest-full
-```  
 Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamento remoto via **Tailscale** e automação usando **ETH-DOCKER**.
 
 

@@ -20,7 +20,7 @@ CORE_CONFIG = [
     "README.md"
 ]
 
-# Optional modules (included based on release type)
+# Optional modules (kept as buckets; unified release includes all where available)
 OPTIONAL_MODULES = {
     "ai": [
         "eth_validators/ai_analyzer.py",
@@ -34,42 +34,23 @@ OPTIONAL_MODULES = {
         "eth_validators/enhanced_performance_extractor.py"
     ],
     "grafana": [
-        "prometheus-config.yml",
-        "grafana-datasources.yml", 
-        "grafana-dashboards.yml",
-        "setup-cluster-monitoring.sh",
-        "setup-simple-monitoring.sh",
-        "cluster-monitoring.yml",
-        "dashboards/",
-        "*.json"  # Dashboard files
+        "config/grafana-datasources.yml",
+        "config/grafana-dashboards.yml",
+        "config/prometheus-config.yml",
+        "dashboards/"
     ],
     "docker": [
-        "cluster-management.sh",
-        "enable-external-monitoring.sh",
-        "eliedesk-monitoring-stack.yml"
+        "scripts/build_docker.sh"
     ]
 }
 
-# Release types and their included modules
+# Single unified release configuration
 RELEASE_TYPES = {
-    "core": {
-        "description": "Essential validator management functionality",
-        "modules": ["core"],
-        "dependencies": ["pyyaml", "click", "requests", "tabulate"]
-    },
-    "standard": {
-        "description": "Core functionality + backup management + enhanced performance",
-        "modules": ["core", "backup", "enhanced_performance"],
-        "dependencies": ["pyyaml", "click", "requests", "tabulate", "pandas"]
-    },
-    "monitoring": {
-        "description": "Standard + Grafana/Prometheus monitoring integration", 
-        "modules": ["core", "backup", "enhanced_performance", "grafana", "docker"],
-        "dependencies": ["pyyaml", "click", "requests", "tabulate", "pandas", "prometheus-client"]
-    },
-    "full": {
-        "description": "All features including experimental AI analysis",
+    "unified": {
+        "description": "Unified release with core features and optional modules when present.",
         "modules": ["core", "backup", "enhanced_performance", "grafana", "docker", "ai"],
-        "dependencies": ["pyyaml", "click", "requests", "tabulate", "pandas", "prometheus-client", "scikit-learn", "numpy"]
+        "dependencies": [
+            "pyyaml", "click", "requests", "tabulate", "pandas", "prometheus-client", "scikit-learn", "numpy"
+        ]
     }
 }

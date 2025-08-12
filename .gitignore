@@ -1,3 +1,12 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+eth_validators/config.yaml
+eth_validators/validators vs hardware.csv
+tools/dist/
+*.zip
 .venv/
 venv/
 .vscode/
