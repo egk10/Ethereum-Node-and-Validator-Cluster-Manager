@@ -111,9 +111,7 @@ python3 -m eth_validators quickstart
 python3 -m eth_validators --help
 ```
 
-### � Configuration
-- Run `python3 -m eth_validators quickstart` to generate `config.yaml` interactively.
-- Edit the generated `config.yaml` as needed.
+    ### ⚙️ Configuration
 """
         with open(target_dir / "README.md", "w") as f:
             f.write(content)

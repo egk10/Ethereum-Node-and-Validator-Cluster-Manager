@@ -1,7 +1,6 @@
 # 🚀 Ethereum Node and Validator Cluster Manager
 
 [![GitHub release](https://img.shields.io/github/release/egk10/Ethereum-Node-and-Validator-Cluster-Manager.svg)](https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest)
-[![Docker Pulls](https://img.shields.io/docker/pulls/egk10/ethereum-node-and-validator-cluster-manager.svg)](https://hub.docker.com/r/egk10/ethereum-node-and-validator-cluster-manager)
 
 ## Contributing to Ethereum decentralization
 
@@ -12,33 +11,35 @@ Sempre use a última release estável: https://github.com/egk10/Ethereum-Node-an
 
 ## 🚀 Instalação Rápida
 
-### ⚡ Easy Install (sempre pega a última)
+### ⚡ Easy Install (sempre pega a última — pacote unificado)
 ```bash
-# Baixe a última release unificada e instale
+# 1) Crie uma pasta nova para isolar a instalação
+mkdir -p ~/eth-manager && cd ~/eth-manager
+
+# 2) Baixe a última release unificada
 LATEST=$(curl -s https://api.github.com/repos/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest | grep browser_download_url | grep unified | cut -d '"' -f4)
-curl -L "$LATEST" -o manager.zip && unzip manager.zip && cd ethereum-validator-manager-*
+curl -L "$LATEST" -o manager.zip
+
+# 3) Extraia (com overwrite seguro) e instale
+unzip -o manager.zip
 ./install.sh
 
-# Teste os comandos
+# 4) Gere seu config.yaml
+python3 -m eth_validators quickstart
+
+# 5) Valide a instalação
 python3 -m eth_validators --help
 ```
 
-### Via Docker (Recomendado)
-
-```bash
-docker run --rm egk10/ethereum-node-and-validator-cluster-manager:latest python3 -m eth_validators --help
-
-# Com configuração
-docker run -v $PWD/config:/config egk10/ethereum-node-and-validator-cluster-manager:latest python3 -m eth_validators node list
-```
-
-### Via Download
+### Via Download (manual)
 
 ```bash
 # Baixar release mais recente (unificada)
 wget https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest/download/ethereum-validator-manager-unified.zip -O manager.zip
-unzip manager.zip && cd ethereum-validator-manager-*
+mkdir -p ~/eth-manager && mv manager.zip ~/eth-manager/ && cd ~/eth-manager
+unzip -o manager.zip
 ./install.sh
+python3 -m eth_validators quickstart
 ```
 
 ## 📦 Release
@@ -179,50 +180,20 @@ Isso mostrará a lista de comandos e instruções de uso do toolkit.
 
 ---
 
-## 🛠️ Como usar
+## 🛠️ Como usar (resumo)
 
-1. **Clone o repositório:**
-    ```bash
-    git clone https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager.git
-    cd Ethereum-Node-and-Validator-Cluster-Manager
-    ```
-
-2. **Crie e ative um ambiente virtual Python:**
-    ```bash
-    python3 -m venv venv
-    source venv/bin/activate
-    pip install -r requirements.txt
-    ```
-
-3. **Configure seu arquivo de configuração:**
-    - Use o Quickstart para gerar automaticamente:
-      ```bash
-      python3 -m eth_validators quickstart
-      ```
-    - Edite `config.yaml` conforme necessário; por padrão o sistema procura primeiro em `./config.yaml` e depois em `eth_validators/config.yaml`.
-    - **Importante**: Para atualizações do sistema Ubuntu, configure:
-      - `ssh_user: "root"` (recomendado), OU
-      - Configure sudo sem senha para o usuário no node remoto
-
-4. **Configure seu arquivo de validadores:**
-    - O projeto espera um arquivo chamado `validators vs hardware.csv` na pasta `eth_validators/`
-    - **Nunca compartilhe chaves privadas ou dados sensíveis!**
-
-5. **Execute os comandos:**
-    ```bash
-    # Verificar status dos nodes
-    python3 -m eth_validators status laptop
-    
-    # Upgrade Docker dos clientes Ethereum
-    python3 -m eth_validators upgrade laptop
-    
-    # Verificar e atualizar sistema Ubuntu
-    python3 -m eth_validators system-updates
-    python3 -m eth_validators system-upgrade --all
-    
-    # Performance dos validadores
-    python3 -m eth_validators performance
-    ```
+- Gere seu `config.yaml` com o Quickstart:
+  ```bash
+  python3 -m eth_validators quickstart
+  ```
+- Comandos do dia a dia:
+  ```bash
+  python3 -m eth_validators list
+  python3 -m eth_validators status <node>
+  python3 -m eth_validators performance
+  python3 -m eth_validators system-updates
+  python3 -m eth_validators system-upgrade --all
+  ```
 
 ## ⚠️ **Configuração SSH para Atualizações do Sistema**
 
@@ -323,17 +294,17 @@ python3 -m eth_validators system-upgrade --all --force
 - 🎯 Chega de IPs dinâmicos: use domínios Tailscale!
 - 🔄 Misture clientes e stacks para máxima resiliência.
 - 🔍 **NOVO**: Compara versões em tempo real com GitHub - nunca mais fique para trás!
-- 🧠 **REVOLUCIONÁRIO**: Sistema de análise AI para logs, padrões e recomendações inteligentes!
-- 🏥 **Health Scores AI**: Pontuação de saúde automatizada com detecção de anomalias
-- � **Padrões Temporais**: Detecção inteligente de problemas recorrentes e tendências
-- 💡 **Recomendações AI**: Sugestões personalizadas para otimização e resolução de problemas
-- �🚀 Suporte ao Grandine (o cliente consenso mais novo da galera!)
+- 🧠 Análise AI para logs, padrões e recomendações inteligentes
+- 🏥 Health Scores AI: Pontuação de saúde automatizada com detecção de anomalias
+- 🕒 Padrões temporais: detecção de problemas recorrentes e tendências
+- 💡 Recomendações AI: sugestões personalizadas para otimização e confiabilidade
+- 🚀 Suporte ao Grandine (cliente de consenso mais novo)
 - 🌈 Veja sua diversidade de clientes numa tabela linda
 - 🛠️ Open source: contribua, melhore e compartilhe com a comunidade Ethereum!
 
 ---
 
-## 🧠 **Sistema de Análise AI (REVOLUCIONÁRIO!)**
+## 🧠 Sistema de Análise AI
 
 Este toolkit agora inclui um sistema avançado de análise AI que monitora seus validadores 24/7, detecta anomalias, identifica padrões e fornece recomendações inteligentes para otimização.
 

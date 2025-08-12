@@ -9,7 +9,10 @@ CORE_MODULES = [
     "eth_validators/node_manager.py",
     "eth_validators/performance.py",
     "eth_validators/validator_sync.py",
-    "eth_validators/validator_editor.py"
+    "eth_validators/validator_editor.py",
+    # Required by CLI imports at module load
+    "eth_validators/validator_auto_discovery.py",
+    "eth_validators/simple_setup.py"
 ]
 
 # Core configuration files

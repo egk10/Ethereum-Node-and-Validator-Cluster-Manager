@@ -2,12 +2,12 @@
 
 All notable changes to this project will be documented here.
 
-## [0.7.0] - 2025-08-12
-### Added
-
-### Changed
-
+## [1.1.4] - 2025-08-12
 ### Fixed
+- Release packaging: include `eth_validators/validator_auto_discovery.py` and `eth_validators/simple_setup.py` to prevent ModuleNotFoundError on fresh installs.
+- tools/build_release: minor README header emoji fix.
+### Changed
+- README: remove Docker section/badge; simplify install to fresh-folder + quickstart; reduce repetition.
 ## [1.1.1] - 2025-08-12
 ### Changed
 - Docs: Make Quickstart the source of truth for generating `config.yaml` (interactive prompt).
