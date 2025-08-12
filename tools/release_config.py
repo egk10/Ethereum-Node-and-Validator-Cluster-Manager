@@ -14,7 +14,7 @@ CORE_MODULES = [
 
 # Core configuration files
 CORE_CONFIG = [
-    "eth_validators/config.example.yaml",
+    # config.yaml is now generated via `quickstart`; keep samples only under docs/examples
     "eth_validators/example_validators_vs_hardware.csv",
     "requirements.txt",
     "README.md"

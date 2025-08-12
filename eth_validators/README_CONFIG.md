@@ -7,10 +7,9 @@ This directory contains all the configuration files needed to run the Ethereum N
 ### 🔧 Configuration Files
 | File | Purpose | Usage |
 |------|---------|-------|
-| `config.sample.yaml` | **🎯 Public sample configuration** | Copy to `config.yaml` and customize |
-| `config.simple.yaml` | **⚡ Simplified config example** | Shows minimal configuration with auto-discovery |
+| `../docs/examples/config.simple.yaml` | **⚡ Simplified config example** | Copy to `config.yaml` and customize |
 | `config.yaml` | **🔒 Your actual configuration** | *Keep private - contains your real domains* |
-| `validators_vs_hardware.sample.csv` | **📊 Validator mapping example** | Copy to `validators_vs_hardware.csv` |
+| `../docs/examples/validators_vs_hardware.sample.csv` | **📊 Validator mapping example** | Copy to `validators_vs_hardware.csv` |
 | `validators_vs_hardware.csv` | **🔒 Your validator mappings** | *Keep private - contains real validator data* |
 
 ### 📋 Template Files
@@ -20,14 +19,22 @@ This directory contains all the configuration files needed to run the Ethereum N
 
 ## 🚀 Quick Start
 
+Preferred: generate `config.yaml` via the interactive quickstart.
+
+```bash
+python3 -m eth_validators quickstart
+```
+
+This creates `./config.yaml` using autodiscovery and your answers. You can still start from templates if you prefer manual control.
+
 ### 1. **First-time Setup**
 ```bash
-# Copy sample configuration
-cp config.sample.yaml config.yaml
-cp validators_vs_hardware.sample.csv validators_vs_hardware.csv
+# Recommended: interactive setup
+python3 -m eth_validators quickstart
 
-# Edit with your actual details
-nano config.yaml
+# Optional: start from a sample
+cp ../docs/examples/config.simple.yaml ../config.yaml
+cp ../docs/examples/validators_vs_hardware.sample.csv validators_vs_hardware.csv
 ```
 
 ### 2. **Validate Configuration**
@@ -119,8 +126,8 @@ python3 -m eth_validators config validate --fix
 
 ### Need a fresh start?
 ```bash
-cp config.sample.yaml config.yaml
-python3 -m eth_validators config validate --fix
+mv -f config.yaml config.yaml.bak.$(date +%s) 2>/dev/null || true
+python3 -m eth_validators quickstart
 ```
 
 ### Want to see what's detected?
@@ -136,4 +143,4 @@ python3 -m eth_validators config discover
 
 ---
 
-💡 **Pro Tip**: Start with `config_templates/minimal.yaml`, run `config validate --fix`, and let auto-discovery do the heavy lifting!
+💡 **Pro Tip**: Run `quickstart` first; if you prefer files, start with `config_templates/minimal.yaml`, then `config validate --fix`.

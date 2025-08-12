@@ -7,53 +7,43 @@
 
 Sistema avançado para manutenção, upgrade e monitoramento de validadores Ethereum Mainnet com suporte multi-network!
 
-## 🎉 **Latest Release: v1.0.6** 
-🎯 **Consolidated CLI + Enhanced Charon Automation** - [📋 Full Installation Guide](INSTALL_v1.0.6.md)
+## 🎉 Releases
+Sempre use a última release estável: https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest
 
 ## 🚀 Instalação Rápida
 
-### ⚡ Easy Install (Latest v1.0.6)
+### ⚡ Easy Install (sempre pega a última)
 ```bash
-# Quick install with consolidated CLI
-curl -fsSL https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/download/v1.0.6/install.sh | bash
+# Baixe a última release unificada e instale
+LATEST=$(curl -s https://api.github.com/repos/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest | grep browser_download_url | grep unified | cut -d '"' -f4)
+curl -L "$LATEST" -o manager.zip && unzip manager.zip && cd ethereum-validator-manager-*
+./install.sh
 
-# Test the new consolidated commands
-python3 -m eth_validators node list
-python3 -m eth_validators node versions --all
+# Teste os comandos
+python3 -m eth_validators --help
 ```
 
 ### Via Docker (Recomendado)
 
 ```bash
-# Latest v1.0.6 with consolidated CLI
-docker run --rm egk10/ethereum-node-and-validator-cluster-manager:1.0.6 python3 -m eth_validators --help
+docker run --rm egk10/ethereum-node-and-validator-cluster-manager:latest python3 -m eth_validators --help
 
 # Com configuração
-docker run -v $PWD/config:/config egk10/ethereum-node-and-validator-cluster-manager:1.0.6-standard python3 -m eth_validators node list
+docker run -v $PWD/config:/config egk10/ethereum-node-and-validator-cluster-manager:latest python3 -m eth_validators node list
 ```
 
 ### Via Download
 
 ```bash
-# Baixar release mais recente
-wget https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest/download/ethereum-validator-manager-core-v1.0.4.zip
-unzip ethereum-validator-manager-core-v1.0.4.zip
-cd ethereum-validator-manager-core-v1.0.4
-./install.sh
-```
-
-## 📦 Release
-
-Este projeto agora fornece um único pacote unificado (.zip) por release.
-
-```bash
-# Baixar última release e instalar
+# Baixar release mais recente (unificada)
 wget https://github.com/egk10/Ethereum-Node-and-Validator-Cluster-Manager/releases/latest/download/ethereum-validator-manager-unified.zip -O manager.zip
 unzip manager.zip && cd ethereum-validator-manager-*
 ./install.sh
 ```
 
-Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamento remoto via **Tailscale** e automação usando **ETH-DOCKER**.
+## 📦 Release
+
+Um único pacote unificado (.zip) por release. Extraia e execute `./install.sh`. Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamento remoto via **Tailscale** e automação usando **ETH-DOCKER**.
 
 
 ## 🚦 Instalação Passo a Passo (para todos os níveis)
@@ -90,14 +80,17 @@ Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamen
     ```
 
 
-5. **Configure seus arquivos de exemplo:**
-    - Copie e renomeie os arquivos de exemplo para os nomes esperados pelo código:
+5. **Configure seu ambiente (Quickstart):**
+    - Agora o `config.yaml` é gerado automaticamente pelo fluxo interativo:
       ```bash
-      cp eth_validators/config.example.yaml eth_validators/config.yaml
-      cp eth_validators/example_validators_vs_hardware.csv eth_validators/'validators vs hardware.csv'
+      python3 -m eth_validators quickstart
       ```
-    - Edite os arquivos `config.yaml` e `validators vs hardware.csv` conforme seu setup.
-    - **Nunca compartilhe dados sensíveis!**
+    - Isso cria um `config.yaml` no diretório atual com base nas suas respostas e autodiscovery.
+    - Opcional: para começar com um template mínimo, copie o exemplo e ajuste:
+      ```bash
+      cp docs/examples/config.simple.yaml ./config.yaml
+      ```
+    - Para mapear validadores ao hardware, use seu CSV privado `eth_validators/validators_vs_hardware.csv` (não comite).
 
 6. **(Opcional) Teste a instalação e o ambiente:**
     - Verifique se o ambiente virtual está ativo e as dependências instaladas:
@@ -202,11 +195,11 @@ Isso mostrará a lista de comandos e instruções de uso do toolkit.
     ```
 
 3. **Configure seu arquivo de configuração:**
-    - Copie o arquivo de exemplo:
+    - Use o Quickstart para gerar automaticamente:
       ```bash
-      cp eth_validators/config.example.yaml eth_validators/config.yaml
+      python3 -m eth_validators quickstart
       ```
-    - Edite `config.yaml` com seus nodes e configurações
+    - Edite `config.yaml` conforme necessário; por padrão o sistema procura primeiro em `./config.yaml` e depois em `eth_validators/config.yaml`.
     - **Importante**: Para atualizações do sistema Ubuntu, configure:
       - `ssh_user: "root"` (recomendado), OU
       - Configure sudo sem senha para o usuário no node remoto
