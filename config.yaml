@@ -57,3 +57,11 @@ nodes:
   - eth-docker
   ethereum_clients_enabled: true
   eth_docker_path: /home/egk/eth-docker
+- name: eliedesk
+  tailscale_domain: localhost
+  ssh_user: local
+  stack:
+  - nethermind
+  - nethermind
+  ethereum_clients_enabled: true
+  is_local: true

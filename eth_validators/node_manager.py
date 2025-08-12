@@ -1718,3 +1718,218 @@ def run_command_on_node(node_name, command, timeout=10):
             
     except Exception:
         return None
+
+
+def get_env_p2p_ports(node_config):
+    """Extract P2P ports from .env file configuration"""
+    import re
+    
+    name = node_config.get('name')
+    is_local = node_config.get('is_local', False)
+    eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
+    p2p_ports = {}
+    
+    try:
+        if is_local:
+            env_file = f"{eth_docker_path}/.env"
+            with open(env_file, 'r') as f:
+                env_content = f.read()
+        else:
+            ssh_user = node_config.get('ssh_user', 'root')
+            tailscale_domain = node_config.get('tailscale_domain')
+            result = subprocess.run(f"ssh {ssh_user}@{tailscale_domain} 'cat {eth_docker_path}/.env'", 
+                                  shell=True, capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                return p2p_ports
+            env_content = result.stdout
+        
+        # Extract P2P related port variables
+        p2p_patterns = {
+            'EL_P2P_PORT': 'execution',
+            'EL_P2P_PORT_2': 'execution', 
+            'EL_DISCOVERY_PORT': 'execution',
+            'ERIGON_P2P_PORT_3': 'execution',
+            'ERIGON_TORRENT_PORT': 'execution',
+            'CL_P2P_PORT': 'consensus',
+            'PRYSM_PORT': 'consensus',
+            'CL_QUIC_PORT': 'consensus',
+            'CHARON_P2P_EXTERNAL_HOSTNAME_PORT': 'validator'
+        }
+        
+        for var_name, service_type in p2p_patterns.items():
+            pattern = rf'^{var_name}=(\d+)'
+            match = re.search(pattern, env_content, re.MULTILINE)
+            if match:
+                port = int(match.group(1))
+                p2p_ports[port] = {
+                    'service': service_type,
+                    'env_var': var_name,
+                    'source': 'env'
+                }
+                
+    except Exception as e:
+        pass  # Return empty dict on error
+        
+    return p2p_ports
+
+
+def get_compose_p2p_ports(node_config):
+    """Extract P2P ports from docker-compose.yml port mappings"""
+    import re
+    import yaml
+    
+    name = node_config.get('name')
+    is_local = node_config.get('is_local', False)
+    eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
+    p2p_ports = {}
+    
+    try:
+        # Get COMPOSE_FILE or default files
+        compose_files = ['docker-compose.yml']
+        
+        if is_local:
+            env_file = f"{eth_docker_path}/.env"
+            try:
+                with open(env_file, 'r') as f:
+                    for line in f:
+                        if line.strip().startswith('COMPOSE_FILE='):
+                            compose_file_value = line.strip().split('=', 1)[1]
+                            compose_files = [f.strip() for f in compose_file_value.split(':')]
+                            break
+            except:
+                pass
+        else:
+            ssh_user = node_config.get('ssh_user', 'root')
+            tailscale_domain = node_config.get('tailscale_domain')
+            result = subprocess.run(f"ssh {ssh_user}@{tailscale_domain} 'cd {eth_docker_path} && grep COMPOSE_FILE .env'", 
+                                  shell=True, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0 and result.stdout.strip():
+                compose_file_value = result.stdout.strip().split('=', 1)[1]
+                compose_files = [f.strip() for f in compose_file_value.split(':')]
+        
+        # Parse each compose file for P2P services
+        p2p_services = ['execution', 'consensus', 'validator']
+        
+        for compose_file in compose_files:
+            try:
+                if is_local:
+                    with open(f"{eth_docker_path}/{compose_file}", 'r') as f:
+                        compose_data = yaml.safe_load(f)
+                else:
+                    result = subprocess.run(f"ssh {ssh_user}@{tailscale_domain} 'cat {eth_docker_path}/{compose_file}'", 
+                                          shell=True, capture_output=True, text=True, timeout=10)
+                    if result.returncode != 0:
+                        continue
+                    compose_data = yaml.safe_load(result.stdout)
+                
+                if not compose_data or 'services' not in compose_data:
+                    continue
+                
+                # Look for P2P services and their ports
+                for service_name, service_config in compose_data['services'].items():
+                    # Check if this is a P2P service
+                    service_type = None
+                    for p2p_service in p2p_services:
+                        if p2p_service in service_name.lower():
+                            service_type = p2p_service
+                            break
+                    
+                    # Special case: Erigon execution service may also run Caplin consensus
+                    if service_name.lower() == 'execution' and not service_type:
+                        service_type = 'execution'
+                        
+                        # Check if this is Erigon with Caplin by looking at the image or env
+                        image = service_config.get('image', '')
+                        if 'erigon' in image.lower():
+                            # For Erigon, also check for consensus ports from environment
+                            # Add virtual consensus ports that should be exposed
+                            env_vars = service_config.get('environment', [])
+                            if isinstance(env_vars, list):
+                                env_dict = {}
+                                for env_var in env_vars:
+                                    if '=' in env_var:
+                                        key, value = env_var.split('=', 1)
+                                        env_dict[key] = value
+                            elif isinstance(env_vars, dict):
+                                env_dict = env_vars
+                            else:
+                                env_dict = {}
+                            
+                            # Add Erigon Caplin consensus ports if they exist in env
+                            caplin_ports = {
+                                'CL_P2P_PORT': 'consensus',
+                                'PRYSM_PORT': 'consensus', 
+                                'CL_QUIC_PORT': 'consensus'
+                            }
+                            
+                            for env_var, cons_service in caplin_ports.items():
+                                port_value = env_dict.get(env_var)
+                                if port_value and port_value.isdigit():
+                                    port_num = int(port_value)
+                                    if _is_likely_p2p_port(port_num, 'tcp', cons_service):
+                                        p2p_ports[port_num] = {
+                                            'service': cons_service,
+                                            'container_port': port_num,
+                                            'protocol': 'tcp',
+                                            'source': 'compose_erigon_caplin',
+                                            'compose_file': compose_file,
+                                            'env_var': env_var
+                                        }
+                                    if env_var in ['PRYSM_PORT', 'CL_P2P_PORT'] and _is_likely_p2p_port(port_num, 'udp', cons_service):
+                                        p2p_ports[port_num] = {
+                                            'service': cons_service,
+                                            'container_port': port_num,
+                                            'protocol': 'udp',
+                                            'source': 'compose_erigon_caplin',
+                                            'compose_file': compose_file,
+                                            'env_var': env_var
+                                        }
+                    
+                    if not service_type:
+                        continue
+                    
+                    # Extract port mappings
+                    ports = service_config.get('ports', [])
+                    for port_mapping in ports:
+                        if isinstance(port_mapping, str):
+                            # Parse port mapping like "30307:30307" or "30307:30307/tcp"
+                            match = re.match(r'(\d+):(\d+)(?:/(tcp|udp))?', port_mapping)
+                            if match:
+                                host_port = int(match.group(1))
+                                container_port = int(match.group(2))
+                                protocol = match.group(3) or 'tcp'
+                                
+                                # Consider it P2P if it's in common P2P ranges or explicitly configured
+                                if (_is_likely_p2p_port(host_port, protocol, service_type)):
+                                    p2p_ports[host_port] = {
+                                        'service': service_type,
+                                        'container_port': container_port,
+                                        'protocol': protocol,
+                                        'source': 'compose',
+                                        'compose_file': compose_file
+                                    }
+                                    
+            except Exception:
+                continue
+                
+    except Exception:
+        pass
+        
+    return p2p_ports
+
+
+def _is_likely_p2p_port(port, protocol, service_type):
+    """Check if a port is likely a P2P port based on common ranges and service type"""
+    # Standard P2P ranges
+    if 30300 <= port <= 30400:  # Execution P2P
+        return service_type == 'execution'
+    if 32300 <= port <= 32400:  # Erigon extended P2P
+        return service_type == 'execution'  
+    if 42000 <= port <= 42100:  # Erigon discovery
+        return service_type == 'execution'
+    if 9000 <= port <= 9100:   # Consensus P2P
+        return service_type == 'consensus'
+    if 3600 <= port <= 3700:   # Charon DV
+        return service_type == 'validator'
+    
+    return False

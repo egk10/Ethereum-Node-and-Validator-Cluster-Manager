@@ -4,6 +4,7 @@ import subprocess
 import time
 import csv
 import json
+import os
 from pathlib import Path
 from tabulate import tabulate
 import re
@@ -18,6 +19,8 @@ from .node_manager import (
     perform_system_upgrade,
     get_docker_client_versions,
     get_node_port_mappings,
+    get_env_p2p_ports,
+    get_compose_p2p_ports,
 )
 from .ai_analyzer import ValidatorLogAnalyzer
 from .validator_sync import ValidatorSyncManager, get_active_validators_only
@@ -2114,18 +2117,26 @@ def add_node_interactive():
             break
         click.echo("❌ Node name cannot be empty")
     
-    while True:
-        tailscale_domain = click.prompt("Tailscale domain (e.g., 'mynode.tailnet.ts.net')", type=str).strip()
-        if tailscale_domain:
-            # Check if domain already exists
-            existing_domains = [n.get('tailscale_domain', '') for n in config['nodes']]
-            if tailscale_domain in existing_domains:
-                click.echo(f"❌ Domain '{tailscale_domain}' already exists. Please choose a different domain.")
-                continue
-            break
-        click.echo("❌ Tailscale domain cannot be empty")
+    # Ask if this is a local node
+    is_local = click.confirm("Is this a local node (running on this machine)?", default=False)
     
-    ssh_user = click.prompt("SSH user", default="root", type=str).strip()
+    if is_local:
+        tailscale_domain = "localhost"  # Use localhost for local nodes
+        ssh_user = "local"  # Not used for local nodes
+        click.echo("✅ Configured as local node (no SSH required)")
+    else:
+        while True:
+            tailscale_domain = click.prompt("Tailscale domain (e.g., 'mynode.tailnet.ts.net')", type=str).strip()
+            if tailscale_domain:
+                # Check if domain already exists
+                existing_domains = [n.get('tailscale_domain', '') for n in config['nodes']]
+                if tailscale_domain in existing_domains:
+                    click.echo(f"❌ Domain '{tailscale_domain}' already exists. Please choose a different domain.")
+                    continue
+                break
+            click.echo("❌ Tailscale domain cannot be empty")
+        
+        ssh_user = click.prompt("SSH user", default="root", type=str).strip()
     
     # Step 2: Test connection
     click.echo("\n🔗 Step 2: Testing Connection")
@@ -2134,18 +2145,22 @@ def add_node_interactive():
     test_node_cfg = {
         'name': node_name,
         'tailscale_domain': tailscale_domain,
-        'ssh_user': ssh_user
+        'ssh_user': ssh_user,
+        'is_local': is_local
     }
     
-    click.echo(f"Testing SSH connection to {ssh_user}@{tailscale_domain}...")
-    test_result = _run_command(test_node_cfg, "echo 'Connection test successful'")
-    
-    if test_result.returncode != 0:
-        click.echo(f"❌ Connection failed: {test_result.stderr}")
-        if not click.confirm("Do you want to continue anyway?"):
-            return
+    if is_local:
+        click.echo("✅ Local node - no SSH connection needed")
     else:
-        click.echo("✅ Connection successful!")
+        click.echo(f"Testing SSH connection to {ssh_user}@{tailscale_domain}...")
+        test_result = _run_command(test_node_cfg, "echo 'Connection test successful'")
+        
+        if test_result.returncode != 0:
+            click.echo(f"❌ Connection failed: {test_result.stderr}")
+            if not click.confirm("Do you want to continue anyway?"):
+                return
+        else:
+            click.echo("✅ Connection successful!")
     
     # Step 3: Detect running stacks
     click.echo("\n🔍 Step 3: Detecting Running Services")
@@ -2213,6 +2228,10 @@ def add_node_interactive():
         'ethereum_clients_enabled': ethereum_clients_enabled
     }
     
+    # Add is_local flag if this is a local node
+    if is_local:
+        new_node['is_local'] = True
+    
     # Add eth_docker_path if detected
     if eth_docker_path:
         new_node['eth_docker_path'] = eth_docker_path
@@ -2222,8 +2241,11 @@ def add_node_interactive():
     click.echo("-" * 40)
     
     click.echo(f"Node Name: {node_name}")
-    click.echo(f"Domain: {tailscale_domain}")
-    click.echo(f"SSH User: {ssh_user}")
+    if is_local:
+        click.echo(f"Type: Local Node")
+    else:
+        click.echo(f"Domain: {tailscale_domain}")
+        click.echo(f"SSH User: {ssh_user}")
     click.echo(f"Detected Stacks: {', '.join(stack)}")
     if eth_docker_path:
         click.echo(f"eth-docker Path: {eth_docker_path}")
@@ -2262,12 +2284,13 @@ def add_node_interactive():
 @node_group.command(name='ports')
 @click.argument('node', required=False)
 @click.option('--all', is_flag=True, help='Show port mappings for all configured nodes')
-@click.option('--source', type=click.Choice(['docker','env','both']), default='both', show_default=True,
-              help='Data source: docker (live), env (.env files), or both')
-@click.option('--p2p-only', is_flag=True, help='Show only P2P ports (EL/CL: 30303,30304,9000,12000,13000)')
-@click.option('--published-only', is_flag=True, help='Show only Docker-published ports (ignore .env entries)')
+@click.option('--source', type=click.Choice(['docker','env','both']), default='docker', show_default=True,
+              help='Data source: docker (live containers), env (.env files), or both')
+@click.option('--p2p-only', is_flag=True, help='Show only P2P ports (EL: 30300-30400,32300-32400,42000-42100; CL: 9000-9100; DV: 3600-3700)')
+@click.option('--include-unpublished', is_flag=True, help='Include unpublished Docker ports and .env entries (default: published only)')
+@click.option('--verbose', is_flag=True, help='Show detailed container inspection logs')
 @click.option('--csv', is_flag=True, help='Output in CSV format')
-def node_ports(node, all, source, p2p_only, published_only, csv):
+def node_ports(node, all, source, p2p_only, include_unpublished, verbose, csv):
     """List open/forwarded ports per node and detect conflicts across nodes on the same network."""
     config = yaml.safe_load(get_config_path().read_text())
 
@@ -2315,7 +2338,8 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
         errors = res.get('errors', [])
 
         # Apply filters
-        if published_only:
+        # By default, show only published ports unless --include-unpublished is specified
+        if not include_unpublished:
             entries = [e for e in entries if e.get('source') == 'docker' and e.get('published')]
         if p2p_only:
             def _is_p2p(e):
@@ -2342,6 +2366,12 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
                 if service in ('execution', 'consensus') and e.get('published'):
                     # Common execution P2P forwarding range (30300-30400)
                     if service == 'execution' and 30300 <= p <= 30400 and proto in ('tcp','udp'):
+                        return True
+                    # Erigon extended P2P forwarding range (32300-32400)
+                    if service == 'execution' and 32300 <= p <= 32400 and proto in ('tcp','udp'):
+                        return True
+                    # Erigon discovery P2P forwarding range (42000-42100)
+                    if service == 'execution' and 42000 <= p <= 42100 and proto in ('tcp','udp'):
                         return True
                     # Common consensus P2P forwarding range (9000-9100)
                     if service == 'consensus' and 9000 <= p <= 9100 and proto in ('tcp','udp'):
@@ -2483,6 +2513,8 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
                 result = run_command_on_node(name, "curl -s ifconfig.me || curl -s ipinfo.io/ip || curl -s icanhazip.com")
                 if result and result.strip():
                     public_ip = result.strip()
+                    # Store detected public IP back in config for matrix phase
+                    ncfg['detected_public_ip'] = public_ip
             except Exception:
                 public_ip = 'N/A'
         
@@ -2497,7 +2529,10 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
             click.echo(" | ".join(ip_info))
         click.echo("="*70)
         if rows:
-            click.echo(tabulate(rows, headers=headers, tablefmt='fancy_grid', stralign='left', numalign='center'))
+            # Use maxcolwidths to prevent container name truncation
+            click.echo(tabulate(rows, headers=headers, tablefmt='fancy_grid', 
+                              stralign='left', numalign='center', 
+                              maxcolwidths=[None, 50, None, None, None, None]))
         else:
             click.echo("(no mappings found)")
             if hint:
@@ -2506,7 +2541,7 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
             for err in errors:
                 click.echo(f"⚠️  {err}")
 
-    # Show P2P port usage matrix (only ports that would be forwarded on routers)
+    # Show P2P port usage matrix (comprehensive analysis from docker + .env + compose files)
     p2p_ports = []
     node_names = sorted(set(entry['node'] for entry in entries_all))
     
@@ -2524,6 +2559,12 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
         # EL P2P ports (standard and custom forwarding range)
         if 30300 <= p <= 30400 and proto in ('tcp', 'udp'):
             return True
+        # Erigon extended P2P ports (additional Erigon P2P range)
+        if 32300 <= p <= 32400 and proto in ('tcp', 'udp'):
+            return True  
+        # Erigon discovery/P2P ports (discovery protocol range)
+        if 42000 <= p <= 42100 and proto in ('tcp', 'udp'):
+            return True
         # CL P2P ports (standard and custom forwarding range)  
         if 9000 <= p <= 9100 and proto in ('tcp', 'udp'):
             return True
@@ -2536,39 +2577,264 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
             
         return False
     
-    for (hp, proto, net), uses in conflicts.items():
-        if len(uses) > 1 and _is_p2p_port(hp, proto):
-            # Create a row showing which nodes use this P2P port
-            row = [f"{hp}/{proto}"]
-            nodes_using_port = {u['node'] for u in uses}
+    # P2P port discovery from ONLY published docker containers (real conflicts only)
+    all_p2p_ports = {}  # port -> {node: service_info}
+    
+    if verbose:
+        click.echo("\n🔍 Analyzing P2P ports from published docker containers only...")
+    
+    # Build P2P matrix from ONLY actually published docker ports
+    for entry in entries_all:
+        hp = entry.get('host_port')
+        proto = entry.get('proto', 'tcp')
+        node = entry['node']
+        published = entry.get('published', False)
+        
+        # Only include actually published P2P ports
+        if hp and published and _is_p2p_port(hp, proto):
+            port_num = int(hp)
+            if port_num not in all_p2p_ports:
+                all_p2p_ports[port_num] = {}
+            if node not in all_p2p_ports[port_num]:
+                all_p2p_ports[port_num][node] = {
+                    'service': entry.get('service', 'unknown'),
+                    'source': 'docker',
+                    'protocols': [proto],
+                    'container': entry.get('container', ''),
+                    'published': True
+                }
+            else:
+                if proto not in all_p2p_ports[port_num][node]['protocols']:
+                    all_p2p_ports[port_num][node]['protocols'].append(proto)
+    
+    # Special detection for execution clients with built-in consensus
+    # These ports might not be published but are used for consensus P2P
+    for name, rows, headers, errors, hint, ncfg in per_node_tables:
+        # Check if this node has execution containers that might have built-in consensus
+        execution_containers = []
+        
+        for row in rows:
+            container = row[1] if len(row) > 1 else ""
+            # Look for execution containers that might have built-in consensus
+            if 'erigon' in container.lower() or ('execution' in row[0].lower() and 'eth-' in container):
+                execution_containers.append(container)
+        
+        if execution_containers:
+            # Use docker inspect to check for built-in consensus ports
+            consensus_ports_detected = []
             
-            # Add checkmark or dash for each node
-            for node in node_names:
-                row.append("✓" if node in nodes_using_port else "-")
+            for container in execution_containers:
+                try:
+                    from eth_validators.node_manager import run_command_on_node
+                    
+                    # First, verify client type by checking the image
+                    image_result = run_command_on_node(name, f"docker inspect {container} --format='{{{{.Config.Image}}}}'")
+                    
+                    has_builtin_consensus = False
+                    if image_result and 'erigon' in image_result.lower():
+                        has_builtin_consensus = True
+                    else:
+                        # Check the actual command being run
+                        cmd_result = run_command_on_node(name, f"docker inspect {container} --format='{{{{.Config.Cmd}}}}'")
+                        if cmd_result and 'erigon' in cmd_result.lower():
+                            has_builtin_consensus = True
+                    
+                    if not has_builtin_consensus:
+                        continue  # Skip non-Erigon containers silently
+                        
+                    # Check if built-in consensus is enabled by inspecting container logs
+                    logs_result = run_command_on_node(name, f"docker logs {container} 2>&1 | grep -E 'Caplin parameters|Running Erigon with internal Caplin' | head -3")
+                    
+                    builtin_consensus_enabled = False
+                    if logs_result and ('caplin' in logs_result.lower() or 'Running Erigon with internal Caplin' in logs_result):
+                        builtin_consensus_enabled = True
+                        
+                        # Extract actual port configurations from consensus parameters
+                        import re
+                        
+                        # Look for discovery TCP port (the main P2P port)
+                        tcp_matches = re.findall(r'--caplin\.discovery\.tcpport=(\d+)', logs_result)
+                        for port_str in tcp_matches:
+                            try:
+                                port_num = int(port_str)
+                                consensus_ports_detected.append((port_num, ['tcp', 'udp']))
+                            except ValueError:
+                                pass
+                                
+                        # Look for discovery UDP port (if different)
+                        udp_matches = re.findall(r'--caplin\.discovery\.port=(\d+)', logs_result)
+                        for port_str in udp_matches:
+                            try:
+                                port_num = int(port_str)
+                                # Only add if not already added by TCP
+                                if not any(p[0] == port_num for p in consensus_ports_detected):
+                                    consensus_ports_detected.append((port_num, ['udp']))
+                            except ValueError:
+                                pass
+                                pass
+                        
+                        # Look for beacon API port (informational, not P2P) - but don't log it
+                        # api_matches = re.findall(r'--beacon\.api\.port=(\d+)', logs_result)
+                        
+                        # If we found built-in consensus but no specific ports, use fallback detection
+                        if not consensus_ports_detected:
+                            consensus_ports_detected = [
+                                (9000, ['tcp', 'udp']),  # Standard beacon P2P
+                                (9001, ['tcp', 'udp']),  # QUIC  
+                            ]
+                                
+                    else:
+                        # Try checking the actual command line args as fallback
+                        args_result = run_command_on_node(name, f"docker inspect {container} --format='{{{{.Args}}}}'")
+                        
+                        if args_result and ('--caplin' in args_result or '--beacon-api' in args_result):
+                            builtin_consensus_enabled = True
+                    
+                    # If no specific ports found but built-in consensus is confirmed, check exposed ports
+                    if builtin_consensus_enabled and not consensus_ports_detected:
+                        exposed_result = run_command_on_node(name, f"docker inspect {container} --format='{{{{json .Config.ExposedPorts}}}}'")
+                        
+                        if exposed_result:
+                            import json
+                            try:
+                                exposed_ports = json.loads(exposed_result)
+                                
+                                # Look for consensus-like ports (9000-9100 range)
+                                for port_spec in exposed_ports.keys():
+                                    if '/' in port_spec:
+                                        port_str, proto = port_spec.split('/')
+                                        try:
+                                            port_num = int(port_str)
+                                            if 9000 <= port_num <= 9100:  # Consensus port range
+                                                consensus_ports_detected.append((port_num, [proto]))
+                                        except ValueError:
+                                            continue
+                                            
+                            except (json.JSONDecodeError, AttributeError):
+                                pass
+                                
+                    # Final fallback: if built-in consensus enabled but no ports detected, use defaults
+                    if builtin_consensus_enabled and not consensus_ports_detected:
+                        consensus_ports_detected = [
+                            (9000, ['tcp', 'udp']),  # Standard beacon P2P
+                            (9001, ['tcp', 'udp']),  # QUIC  
+                        ]
+                        
+                except Exception as e:
+                    click.echo(f"⚠️ {name}: Could not inspect {container} ({str(e)[:50]}...)")
+                    continue
+            
+            # Add detected/inferred built-in consensus ports
+            for port_num, protocols in consensus_ports_detected:
+                # Only add if this port isn't already detected as published
+                if port_num not in all_p2p_ports:
+                    all_p2p_ports[port_num] = {}
+                
+                if name not in all_p2p_ports[port_num]:
+                    # Determine if this was inspected or assumed
+                    source_type = 'erigon_caplin_inspected' if consensus_ports_detected else 'erigon_caplin_assumed'
+                    
+                    all_p2p_ports[port_num][name] = {
+                        'service': 'consensus',
+                        'source': source_type,
+                        'protocols': protocols,
+                        'container': execution_containers[0] if execution_containers else 'execution',
+                        'published': False  # These are inferred, not actually published
+                    }
+                    if verbose:
+                        click.echo(f"🔍 Detected built-in consensus on {name}: inferred P2P port {port_num}")
+    
+    # Build P2P matrix from only published ports
+    for port_num in sorted(all_p2p_ports.keys()):
+        nodes_using_port = all_p2p_ports[port_num]
+        if len(nodes_using_port) == 0:
+            continue
+            
+        # Create rows for each protocol used by this port
+        protocols_used = set()
+        for node_info in nodes_using_port.values():
+            protocols_used.update(node_info['protocols'])
+        
+        for protocol in sorted(protocols_used):
+            port_key = f"{port_num}/{protocol}"
+            row = [port_key]
+            
+            for node_name in node_names:
+                if node_name in nodes_using_port:
+                    node_info = nodes_using_port[node_name]
+                    if protocol in node_info['protocols']:
+                        # Different symbols for different sources
+                        source = node_info.get('source', '')
+                        if source == 'erigon_caplin_inspected':
+                            cell = "C✓"  # Built-in Consensus ports
+                        elif source == 'erigon_caplin_assumed':
+                            cell = "🔒✓"  # Assumed Caplin ports
+                        else:
+                            cell = "✓"
+                    else:
+                        cell = "-"
+                else:
+                    cell = "-"
+                row.append(cell)
             
             p2p_ports.append(row)
-
+    
+    # Real conflict detection - includes published AND inferred built-in consensus ports on same public IP
+    real_conflicts = []
+    for port_num in sorted(all_p2p_ports.keys()):
+        nodes_using_port = all_p2p_ports[port_num]
+        
+        if len(nodes_using_port) < 2:
+            continue
+            
+        # Group nodes by public IP to find real router conflicts
+        ip_groups = {}
+        for name, rows, headers, errors, hint, ncfg in per_node_tables:
+            if name in nodes_using_port:
+                # Use detected public IP from individual node phase
+                public_ip = ncfg.get('detected_public_ip', ncfg.get('public_ip', ncfg.get('external_ip', 'unknown')))
+                
+                if public_ip not in ip_groups:
+                    ip_groups[public_ip] = []
+                ip_groups[public_ip].append(name)
+        
+        # Only flag conflicts within same public IP groups (ignore N/A and unknown)
+        for public_ip, conflicting_nodes in ip_groups.items():
+            if len(conflicting_nodes) > 1 and public_ip not in ['unknown', 'N/A']:
+                # Check each protocol for this port
+                for node_name in conflicting_nodes:
+                    node_info = nodes_using_port[node_name]
+                    for protocol in node_info['protocols']:
+                        # Create conflict entry - include source info for debugging
+                        conflict_key = f"{port_num}/{protocol}/{public_ip}"
+                        existing_conflict = next((c for c in real_conflicts if c['port'] == port_num and c['protocol'] == protocol and c['public_ip'] == public_ip), None)
+                        
+                        if existing_conflict:
+                            if node_name not in existing_conflict['nodes']:
+                                existing_conflict['nodes'].append(node_name)
+                        else:
+                            real_conflicts.append({
+                                'port': port_num,
+                                'protocol': protocol,
+                                'public_ip': public_ip,
+                                'nodes': [node_name],
+                                'has_erigon_caplin': any(nodes_using_port[n].get('source', '').startswith('erigon_caplin') for n in conflicting_nodes),
+                                'caplin_detection_method': 'mixed'  # Will be updated with actual methods
+                            })
+    
+    # Filter to only conflicts with multiple nodes
+    real_conflicts = [c for c in real_conflicts if len(c['nodes']) > 1]
+    
     click.echo("\n" + "="*70)
     click.echo("🌐 P2P Port Usage Matrix")
     click.echo("="*70)
     if p2p_ports:
         # First, detect all public IPs once to avoid repeated SSH calls
         node_public_ips = {}
-        for node_name in node_names:
-            node_cfg = node_configs.get(node_name, {})
-            public_ip = node_cfg.get('public_ip', node_cfg.get('external_ip', 'N/A'))
-            
-            # Auto-detect public IP if not configured
-            if public_ip == 'N/A':
-                try:
-                    from eth_validators.node_manager import run_command_on_node
-                    result = run_command_on_node(node_name, "curl -s ifconfig.me || curl -s ipinfo.io/ip || curl -s icanhazip.com")
-                    if result and result.strip():
-                        public_ip = result.strip()
-                except Exception:
-                    public_ip = 'N/A'
-            
-            node_public_ips[node_name] = public_ip
+        for name, rows, headers, errors, hint, ncfg in per_node_tables:
+            # Use detected public IP first (from individual node phase), then configured public IP
+            public_ip = ncfg.get('detected_public_ip', ncfg.get('public_ip', ncfg.get('external_ip', 'N/A')))
+            node_public_ips[name] = public_ip
         
         # Group nodes by public IP
         public_ips = {}
@@ -2623,11 +2889,31 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
             
             headers.append(header_name)
         
-        # Color-code and symbolize the checkmarks in the matrix
+        # Color-code and symbolize the checkmarks in the matrix with CONFLICT DETECTION
         colored_matrix = []
         for row in sorted(p2p_ports, key=lambda r: (int(r[0].split('/')[0]), r[0].split('/')[1])):
             colored_row = [row[0]]  # Port column (no color)
             
+            # First pass: detect if this port has conflicts (only within same public IP groups)
+            port_conflicts = {}  # public_ip -> [node_names using this port]
+            
+            for i, cell in enumerate(row[1:]):  # Skip port column
+                if cell == "✓":
+                    node_name = node_names[i]
+                    public_ip = node_public_ips[node_name]
+                    
+                    if public_ip not in port_conflicts:
+                        port_conflicts[public_ip] = []
+                    port_conflicts[public_ip].append(node_name)
+            
+            # Only detect conflicts within the same public IP group
+            # Nodes with different public IPs can safely use the same ports
+            enhanced_conflicts = port_conflicts
+            
+            # Check if any group has multiple nodes using this port (= CONFLICT!)
+            has_conflict = any(len(nodes) > 1 for nodes in enhanced_conflicts.values())
+            
+            # Second pass: render cells with conflict indicators
             for i, cell in enumerate(row[1:]):  # Skip port column
                 if cell == "✓":
                     node_name = node_names[i]
@@ -2635,10 +2921,25 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
                     symbol = ip_symbols.get(public_ip, '')
                     color = ip_colors.get(public_ip, '')
                     
-                    if symbol:
-                        # Use colored symbol for shared IPs to highlight conflicts
+                    # Check if THIS specific node is in a conflict
+                    is_in_conflict = False
+                    for conflict_group in enhanced_conflicts.values():
+                        if node_name in conflict_group and len(conflict_group) > 1:
+                            is_in_conflict = True
+                            break
+                    
+                    if is_in_conflict:
+                        # 🚨 BIG RED CONFLICT WARNING! 🚨
+                        conflict_indicator = f"\033[91m\033[1m🔴⚠️\033[0m"  # Bold red circle + warning
+                        if symbol:
+                            colored_checkmark = f"{color}{symbol}{conflict_indicator}{reset}" if color else f"{symbol}{conflict_indicator}"
+                        else:
+                            colored_checkmark = f"{conflict_indicator}"
+                    elif symbol:
+                        # Regular colored symbol for shared IPs without conflicts
                         colored_checkmark = f"{color}{symbol}✓{reset}" if color else f"{symbol}✓"
                     else:
+                        # Regular checkmark for unique IPs
                         colored_checkmark = "✓"
                     
                     colored_row.append(colored_checkmark)
@@ -2647,9 +2948,45 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
             
             colored_matrix.append(colored_row)
         
-        # Print matrix with colored nodes and checkmarks
+        # Print matrix with colored nodes and CONFLICT INDICATORS
         click.echo(tabulate(colored_matrix, headers=headers,
                            tablefmt='fancy_grid', stralign='center', numalign='center'))
+        
+        # Add legend for symbols
+        click.echo(f"\n📋 \033[94mPort Legend:\033[0m")
+        click.echo(f"   ✓ = Published docker port (externally accessible)")
+        click.echo(f"   C✓ = Built-in consensus port (detected from container)")
+        click.echo(f"   ● = Node symbol for shared public IP")
+        
+    # Display the real conflicts we calculated earlier
+    conflict_count = len(real_conflicts)
+    detected_conflicts = real_conflicts  # Use the correctly calculated conflicts
+    
+    # Check for system-level network issues that could cause instability
+    system_issues = _detect_system_network_issues()
+    if system_issues:
+        click.echo(f"\n⚠️  \033[93mSystem Network Issues Detected:\033[0m")
+        for issue in system_issues:
+            click.echo(f"   {issue}")        # Show detailed conflict information
+        for conflict in real_conflicts:
+            click.echo(f"\n🚨 \033[91m\033[1mCRITICAL PORT CONFLICT\033[0m 🚨")
+            click.echo(f"   Port: \033[93m{conflict['port']}/{conflict['protocol']}\033[0m")
+            click.echo(f"   Public IP: \033[94m{conflict['public_ip']}\033[0m")
+            click.echo(f"   Conflicting Nodes: \033[91m{', '.join(conflict['nodes'])}\033[0m")
+            if conflict.get('has_erigon_caplin'):
+                click.echo(f"   ⚠️  \033[93mBuilt-in consensus conflict detected!\033[0m")
+                click.echo(f"   💡 These Erigon nodes likely have internal Caplin consensus clients using the same ports")
+            click.echo(f"   💥 These nodes are fighting for the same router port!")
+        
+        if conflict_count == 0:
+            click.echo(f"\n✅ \033[92mNo router port conflicts detected!\033[0m")
+        elif detected_conflicts:
+            # Interactive conflict resolution
+            click.echo(f"\n🔧 \033[96m\033[1mINTERACTIVE CONFLICT RESOLUTION\033[0m")
+            click.echo("=" * 50)
+            
+            if click.confirm(f"Would you like to resolve these {conflict_count} port conflicts automatically?", default=True):
+                _resolve_port_conflicts_interactive(detected_conflicts, node_configs)
         
         # Print IP information below matrix with color legend
         click.echo(f"\n📍 Node Network Information (Color & Symbol-coded by Public IP):")
@@ -2662,30 +2999,55 @@ def node_ports(node, all, source, p2p_only, published_only, csv):
                 colored_ip = f"{color}{public_ip}{reset}" if color else public_ip
                 node_list = f"{color}{symbol}{', '.join(nodes_list)}{reset}" if color else f"{symbol}{', '.join(nodes_list)}"
                 click.echo(f"   🔴 SHARED PUBLIC IP {colored_ip}: {node_list}")
+                # Only show router conflict warning for actual public IPs (not N/A)
                 if public_ip != 'N/A':
                     click.echo(f"      ⚠️  These nodes compete for the same router ports! (Symbol: {symbol})")
+                else:
+                    click.echo(f"      ℹ️  No public IP detected - no router conflicts possible")
             else:
                 # Single node per IP
                 node_name = nodes_list[0]
-                color = ip_colors.get(public_ip, '')
-                colored_ip = f"{color}{public_ip}{reset}" if color else public_ip
-                colored_node = f"{color}{node_name}{reset}" if color else node_name
-                click.echo(f"   ✅ UNIQUE PUBLIC IP {colored_ip}: {colored_node}")
-        
-        # Show detailed info for each node
-        click.echo(f"\n📋 Detailed Node Information:")
-        for node_name in node_names:
-            node_cfg = node_configs.get(node_name, {})
-            tailscale_ip = node_cfg.get('tailscale_domain', 'N/A')
-            public_ip = node_public_ips[node_name]
-            
-            color = ip_colors.get(public_ip, '')
-            symbol = ip_symbols.get(public_ip, '')
-            prefix = f"{symbol} " if symbol else ""
-            colored_name = f"{color}{prefix}{node_name}{reset}" if color else f"{prefix}{node_name}"
-            click.echo(f"   • {colored_name}: Tailscale={tailscale_ip}, Public={public_ip}")
-        
+        # Show detailed conflict information and resolution
+        if conflict_count > 0:
+            if click.confirm(f"\n❓ Found {conflict_count} P2P port conflicts. Resolve them interactively?", default=True):
+                _resolve_port_conflicts_interactive(detected_conflicts, node_configs)
+
         click.echo("\nℹ️  Only P2P ports that require router forwarding are shown")
+        
+        # Show public IP summary and detailed node information
+        if public_ips:
+            click.echo(f"\n📍 \033[94mNode Network Information (Color & Symbol-coded by Public IP):\033[0m")
+            
+            for public_ip in sorted(public_ips.keys()):
+                nodes = public_ips[public_ip]
+                if public_ip == 'N/A':
+                    continue
+                    
+                color = ip_colors.get(public_ip, '')
+                symbol = ip_symbols.get(public_ip, '')
+                reset = '\033[0m' if color else ''
+                
+                if len(nodes) == 1:
+                    click.echo(f"   ✅ UNIQUE PUBLIC IP {public_ip}: {nodes[0]}")
+                else:
+                    colored_ip = f"{color}{public_ip}{reset}" if color else public_ip
+                    symbol_prefix = f"{symbol}" if symbol else ""
+                    node_list = ', '.join([f"{symbol_prefix}{name}" for name in nodes])
+                    click.echo(f"   🔴 SHARED PUBLIC IP {colored_ip}: {node_list}")
+                    click.echo(f"      ⚠️  These nodes compete for the same router ports! (Symbol: {symbol})")
+            
+            click.echo(f"\n📋 \033[94mDetailed Node Information:\033[0m")
+            for node_name in node_names:
+                node_cfg = node_configs.get(node_name, {})
+                tailscale_ip = node_cfg.get('tailscale_domain', 'N/A')
+                public_ip = node_public_ips.get(node_name, 'unknown')
+                
+                color = ip_colors.get(public_ip, '')
+                symbol = ip_symbols.get(public_ip, '')
+                reset = '\033[0m' if color else ''
+                prefix = f"{symbol} " if symbol else ""
+                colored_name = f"{color}{prefix}{node_name}{reset}" if color else f"{prefix}{node_name}"
+                click.echo(f"   • {colored_name}: Tailscale={tailscale_ip}, Public={public_ip}")
     else:
         click.echo("✅ No P2P port conflicts detected")
 
@@ -3092,3 +3454,515 @@ def config_summary(config):
     except Exception as e:
         click.echo(f"❌ Failed to generate summary: {e}")
         raise click.Abort()
+
+
+def _resolve_port_conflicts_interactive(conflicts, node_configs):
+    """Interactive port conflict resolution with batched .env updates and service restarts"""
+    import random
+    import os
+    import subprocess
+    from pathlib import Path
+    
+    click.echo(f"\n🔍 Analyzing conflicts and suggesting solutions...")
+    
+    # Get all currently used ports across all nodes to avoid suggesting conflicts
+    used_ports = set()
+    for conflict in conflicts:
+        used_ports.add(conflict['port'])
+    
+    # Add other known ports from the port mappings
+    for node_name, node_cfg in node_configs.items():
+        try:
+            from eth_validators.node_manager import get_node_port_mappings
+            port_data = get_node_port_mappings(node_cfg)
+            for entry in port_data.get('entries', []):
+                if entry.get('host_port'):
+                    used_ports.add(int(entry['host_port']))
+        except:
+            pass
+    
+    all_suggestions = []  # Collect all approved changes
+    
+    for i, conflict in enumerate(conflicts, 1):
+        port = conflict['port']
+        protocol = conflict['protocol']
+        nodes = conflict['nodes']
+        
+        click.echo(f"\n🔧 Conflict {i}/{len(conflicts)}: Port {port}/{protocol}")
+        click.echo(f"   Conflicting nodes: {', '.join(nodes)}")
+        
+        # Suggest new ports for all but the first node
+        suggestions = []
+        for j, node_name in enumerate(nodes):
+            if j == 0:
+                # Keep the first node unchanged
+                click.echo(f"   ✅ Keeping {node_name} on port {port}")
+                continue
+            
+            # Find a new port for this node
+            base_port = port
+            new_port = _find_available_port(base_port, used_ports, protocol)
+            used_ports.add(new_port)
+            
+            suggestions.append({
+                'node': node_name,
+                'current_port': port,
+                'suggested_port': new_port,
+                'protocol': protocol
+            })
+            
+            click.echo(f"   🔄 Suggested for {node_name}: {port} → {new_port}")
+        
+        # Ask user for approval
+        if suggestions:
+            if click.confirm(f"   Apply these changes for port {port}/{protocol}?", default=True):
+                all_suggestions.extend(suggestions)
+                click.echo(f"   ✅ Changes approved for port {port}/{protocol}")
+            else:
+                click.echo(f"   ⏭️  Skipped port {port}/{protocol} changes")
+    
+    # Apply all changes in batch (without restarting services yet)
+    resolved_conflicts = []
+    nodes_to_restart = {}  # Store both node and network folder info
+    
+    if all_suggestions:
+        click.echo(f"\n🔧 Applying all .env changes...")
+        
+        for suggestion in all_suggestions:
+            # Determine if this is an Erigon Caplin port based on the conflict info
+            port_source = None
+            for conflict in conflicts:
+                if (conflict['port'] == suggestion['current_port'] and 
+                    suggestion['node'] in conflict['nodes'] and 
+                    conflict.get('has_erigon_caplin')):
+                    port_source = 'erigon_caplin_inspected'
+                    break
+            
+            result = _apply_port_change_no_restart_with_path(suggestion['node'], node_configs.get(suggestion['node']), 
+                                                  suggestion['current_port'], suggestion['suggested_port'], suggestion['protocol'], port_source)
+            if result and result.get('success'):
+                resolved_conflicts.append(suggestion)
+                # Store the network folder that was modified
+                nodes_to_restart[suggestion['node']] = result.get('network_folder')
+                click.echo(f"   ✅ Updated .env: {suggestion['node']} {suggestion['current_port']} → {suggestion['suggested_port']}")
+            else:
+                click.echo(f"   ❌ Failed: {suggestion['node']} port change")
+        
+        # Now restart all affected services at once
+        if nodes_to_restart:
+            click.echo(f"\n🔄 Restarting services for nodes: {', '.join(sorted(nodes_to_restart.keys()))}")
+            
+            for node_name, network_folder in sorted(nodes_to_restart.items()):
+                node_config = node_configs.get(node_name)
+                if node_config:
+                    click.echo(f"   🔄 Restarting {node_name} ({network_folder})...")
+                    success = _restart_node_services_with_folder(node_config, network_folder)
+                    if success:
+                        click.echo(f"   ✅ Restarted: {node_name}")
+                    else:
+                        click.echo(f"   ⚠️  Restart may have failed: {node_name}")
+    
+    # Summary
+    if resolved_conflicts:
+        click.echo(f"\n🎉 \033[92mResolution Complete!\033[0m")
+        click.echo(f"   Resolved {len(resolved_conflicts)} port conflicts")
+        click.echo(f"   Modified nodes: {', '.join(set(r['node'] for r in resolved_conflicts))}")
+        click.echo(f"\n💡 \033[93mNext steps:\033[0m")
+        click.echo(f"   1. Check that services are running properly")
+        click.echo(f"   2. Update your router port forwarding rules")
+        click.echo(f"   3. Run the ports command again to verify no conflicts remain")
+    else:
+        click.echo(f"\n⚠️  No conflicts were resolved")
+
+
+def _detect_system_network_issues():
+    """Detect system-level network issues that could cause container instability"""
+    import subprocess
+    import re
+    
+    issues = []
+    
+    # Check UDP buffer sizes
+    try:
+        result = subprocess.run(['sysctl', '-n', 'net.core.rmem_max'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            rmem_max = int(result.stdout.strip())
+            # Ethereum consensus needs ~7MB buffers, warn if less than 2MB
+            if rmem_max < 2097152:  # 2MB
+                issues.append(f"🔶 UDP receive buffer too small: {rmem_max//1024}KB (need >2MB for consensus)")
+                issues.append("   Fix: sudo sysctl -w net.core.rmem_max=16777216")
+    except:
+        pass
+    
+    # Check for Tailscale port conflicts
+    try:
+        result = subprocess.run(['netstat', '-tulpn'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            tailscale_ports = []
+            for line in result.stdout.split('\n'):
+                if 'tsd' in line and ':8080' in line:
+                    tailscale_ports.append('8080 (tsdproxyd)')
+                elif 'tailscale' in line:
+                    match = re.search(r':(\d+)', line)
+                    if match:
+                        tailscale_ports.append(match.group(1))
+            
+            if tailscale_ports:
+                issues.append(f"🔶 Tailscale services using common ports: {', '.join(tailscale_ports)}")
+                if '8080 (tsdproxyd)' in tailscale_ports:
+                    issues.append("   This may conflict with container internal networking")
+    except:
+        pass
+    
+    # Check NAT/UPnP issues by looking at recent container logs
+    try:
+        result = subprocess.run(['docker', 'logs', '--tail=50', 'eth-sepolia-execution-1'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and 'NAT ExternalIP resolution has failed' in result.stdout:
+            issues.append("🔶 NAT/UPnP router discovery failing (may cause P2P connectivity issues)")
+            issues.append("   Consider setting --nat=extip:<your-public-ip> in Erigon config")
+    except:
+        pass
+    
+    return issues
+
+
+def _find_available_port(base_port, used_ports, protocol):
+    """Find an available port near the base port"""
+    # Define port ranges for different protocols
+    if 30300 <= base_port <= 30400:  # Execution client standard range
+        search_range = range(30300, 30400)
+    elif 32300 <= base_port <= 32400:  # Erigon extended P2P range
+        search_range = range(32300, 32400)
+    elif 42000 <= base_port <= 42100:  # Erigon discovery range
+        search_range = range(42000, 42100)
+    elif 9000 <= base_port <= 9100:  # Consensus client range
+        search_range = range(9000, 9100)
+    elif 3600 <= base_port <= 3700:  # Charon range
+        search_range = range(3600, 3700)
+    else:
+        # Generic range around base port
+        search_range = range(base_port + 1, base_port + 100)
+    
+    # Try ports in order, starting from base_port + 1
+    for port in search_range:
+        if port not in used_ports:
+            return port
+    
+    # If no port found in range, try random ports
+    for _ in range(50):
+        port = base_port + random.randint(1, 1000)
+        if port not in used_ports and 1024 < port < 65535:
+            return port
+    
+    # Fallback
+    return base_port + 100
+
+
+def _apply_port_change_no_restart_with_path(node_name, node_config, old_port, new_port, protocol, port_source=None):
+    """Apply port change to .env file without restarting services - returns success and network folder info"""
+    if not node_config:
+        click.echo(f"   ❌ No config found for node {node_name}")
+        return {'success': False}
+    
+    try:
+        is_local = node_config.get('is_local', False)
+        eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
+        
+        # Determine the correct .env file based on port source and node
+        env_file = f"{eth_docker_path}/.env"  # Default
+        network_folder = eth_docker_path  # Default folder to restart
+        
+        # Special handling for Erigon Caplin ports
+        if port_source and 'erigon_caplin' in port_source:
+            # For eliedesk, we need to determine which network this Caplin port belongs to
+            if node_name == 'eliedesk':
+                # eliedesk runs sepolia (port 9004) and holesky networks
+                if old_port == 9004:
+                    network_folder = eth_docker_path.replace('eth-docker', 'eth-sepolia')
+                    env_file = f"{network_folder}/.env"
+                    click.echo(f"   🔍 Targeting built-in consensus port in sepolia network: {env_file}")
+                elif old_port == 9014:  # If we later detect holesky
+                    network_folder = eth_docker_path.replace('eth-docker', 'eth-hoodi')
+                    env_file = f"{network_folder}/.env"
+                    click.echo(f"   🔍 Targeting built-in consensus port in holesky network: {env_file}")
+            elif node_name == 'ryzen7':
+                # ryzen7 runs mainnet with port 9014
+                if old_port == 9014:
+                    network_folder = eth_docker_path  # Mainnet uses default eth-docker
+                    env_file = f"{network_folder}/.env"
+                    click.echo(f"   🔍 Targeting built-in consensus port in mainnet: {env_file}")
+        
+        # Determine which .env variable to change based on port range
+        env_var = None
+        if 30300 <= old_port <= 30400:  # Execution client standard range
+            env_var = 'EL_P2P_PORT'
+        elif 32300 <= old_port <= 32400:  # Erigon extended P2P range
+            env_var = 'EL_P2P_PORT_2'
+        elif 42000 <= old_port <= 42100:  # Erigon discovery range
+            env_var = 'ERIGON_TORRENT_PORT'
+        elif 9000 <= old_port <= 9100:  # Consensus client
+            # Map specific consensus ports to correct env vars
+            if old_port == 9000:
+                env_var = 'PRYSM_PORT'
+            elif old_port == 9001:
+                env_var = 'CL_QUIC_PORT'  
+            else:
+                env_var = 'CL_P2P_PORT'
+        elif 3600 <= old_port <= 3700:  # Charon
+            env_var = 'CHARON_P2P_EXTERNAL_HOSTNAME_PORT'
+        
+        if not env_var:
+            click.echo(f"   ⚠️  Unknown port type {old_port}, skipping .env update")
+            return {'success': False}
+        
+        # Update .env file
+        success = _update_env_file(node_config, env_file, env_var, str(new_port), is_local)
+        return {'success': success, 'network_folder': network_folder}
+        
+    except Exception as e:
+        click.echo(f"   ❌ Error updating .env for {node_name}: {e}")
+        return {'success': False}
+
+
+def _apply_port_change_no_restart(node_name, node_config, old_port, new_port, protocol, port_source=None):
+    """Apply port change to .env file without restarting services"""
+    if not node_config:
+        click.echo(f"   ❌ No config found for node {node_name}")
+        return False
+    
+    try:
+        is_local = node_config.get('is_local', False)
+        eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
+        
+        # Determine the correct .env file based on port source and node
+        env_file = f"{eth_docker_path}/.env"  # Default
+        
+        # Special handling for Erigon Caplin ports
+        if port_source and 'erigon_caplin' in port_source:
+            # For eliedesk, we need to determine which network this Caplin port belongs to
+            if node_name == 'eliedesk':
+                # eliedesk runs sepolia (port 9004) and holesky networks
+                if old_port == 9004:
+                    env_file = f"{eth_docker_path.replace('eth-docker', 'eth-sepolia')}/.env"
+                    click.echo(f"   🔍 Targeting built-in consensus port in sepolia network: {env_file}")
+                elif old_port == 9014:  # If we later detect holesky
+                    env_file = f"{eth_docker_path.replace('eth-docker', 'eth-hoodi')}/.env"
+                    click.echo(f"   🔍 Targeting built-in consensus port in holesky network: {env_file}")
+            elif node_name == 'ryzen7':
+                # ryzen7 runs mainnet with port 9014
+                if old_port == 9014:
+                    env_file = f"{eth_docker_path}/.env"  # Mainnet uses default eth-docker
+                    click.echo(f"   🔍 Targeting built-in consensus port in mainnet: {env_file}")
+        
+        if is_local:
+            pass  # env_file already set above
+        else:
+            ssh_user = node_config.get('ssh_user', 'root')
+            tailscale_domain = node_config.get('tailscale_domain')
+            # env_file path already determined above
+        
+        # Determine which .env variable to change based on port range
+        env_var = None
+        if 30300 <= old_port <= 30400:  # Execution client standard range
+            env_var = 'EL_P2P_PORT'
+        elif 32300 <= old_port <= 32400:  # Erigon extended P2P range
+            env_var = 'EL_P2P_PORT_2'
+        elif 42000 <= old_port <= 42100:  # Erigon discovery range
+            env_var = 'ERIGON_TORRENT_PORT'
+        elif 9000 <= old_port <= 9100:  # Consensus client
+            # Map specific consensus ports to correct env vars
+            if old_port == 9000:
+                env_var = 'PRYSM_PORT'
+            elif old_port == 9001:
+                env_var = 'CL_QUIC_PORT'  
+            else:
+                env_var = 'CL_P2P_PORT'
+        elif 3600 <= old_port <= 3700:  # Charon
+            env_var = 'CHARON_P2P_EXTERNAL_HOSTNAME_PORT'
+        
+        if not env_var:
+            click.echo(f"   ⚠️  Unknown port type {old_port}, skipping .env update")
+            return False
+        
+        # Update .env file
+        success = _update_env_file(node_config, env_file, env_var, str(new_port), is_local)
+        return success
+        
+    except Exception as e:
+        click.echo(f"   ❌ Error updating .env for {node_name}: {e}")
+        return False
+
+
+def _restart_node_services_with_folder(node_config, network_folder):
+    """Restart services for a single node using the specified network folder"""
+    try:
+        is_local = node_config.get('is_local', False)
+        
+        return _restart_eth_docker(node_config, network_folder, is_local)
+        
+    except Exception as e:
+        return False
+
+
+def _restart_node_services(node_config):
+    """Restart services for a single node"""
+    try:
+        is_local = node_config.get('is_local', False)
+        eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
+        
+        return _restart_eth_docker(node_config, eth_docker_path, is_local)
+        
+    except Exception as e:
+        return False
+
+
+def _apply_port_change(node_name, node_config, old_port, new_port, protocol):
+    """Apply port change to node's .env file and restart services"""
+    try:
+        is_local = node_config.get('is_local', False)
+        eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
+        
+        if is_local:
+            env_file = os.path.join(eth_docker_path, '.env')
+        else:
+            # For remote nodes, we'll need to SSH
+            ssh_user = node_config.get('ssh_user', 'root')
+            tailscale_domain = node_config.get('tailscale_domain')
+            env_file = f"{eth_docker_path}/.env"
+        
+        # Determine which .env variable to change based on port range
+        env_var = None
+        if 30300 <= old_port <= 30400:  # Execution client standard range
+            env_var = 'EL_P2P_PORT'
+        elif 32300 <= old_port <= 32400:  # Erigon extended P2P range
+            env_var = 'EL_P2P_PORT_2'
+        elif 42000 <= old_port <= 42100:  # Erigon discovery range
+            env_var = 'ERIGON_TORRENT_PORT'
+        elif 9000 <= old_port <= 9100:  # Consensus client
+            # Map specific consensus ports to correct env vars
+            if old_port == 9000:
+                env_var = 'PRYSM_PORT'
+            elif old_port == 9001:
+                env_var = 'CL_QUIC_PORT'  
+            else:
+                env_var = 'CL_P2P_PORT'
+        elif 3600 <= old_port <= 3700:  # Charon
+            env_var = 'CHARON_P2P_EXTERNAL_HOSTNAME_PORT'
+        
+        if not env_var:
+            click.echo(f"   ⚠️  Unknown port type {old_port}, skipping .env update")
+            return False
+        
+        # Update .env file
+        success = _update_env_file(node_config, env_file, env_var, str(new_port), is_local)
+        if not success:
+            return False
+        
+        # Restart eth-docker services
+        success = _restart_eth_docker(node_config, eth_docker_path, is_local)
+        return success
+        
+    except Exception as e:
+        click.echo(f"   ❌ Error applying port change: {e}")
+        return False
+
+
+def _update_env_file(node_config, env_file, env_var, new_value, is_local):
+    """Update .env file with new port value"""
+    try:
+        if is_local:
+            # Local file update
+            if os.path.exists(env_file):
+                with open(env_file, 'r') as f:
+                    content = f.read()
+                
+                # Update or add the variable
+                lines = content.split('\n')
+                updated = False
+                for i, line in enumerate(lines):
+                    if line.startswith(f"{env_var}="):
+                        lines[i] = f"{env_var}={new_value}"
+                        updated = True
+                        break
+                
+                if not updated:
+                    lines.append(f"{env_var}={new_value}")
+                
+                with open(env_file, 'w') as f:
+                    f.write('\n'.join(lines))
+                
+                return True
+            else:
+                click.echo(f"   ⚠️  .env file not found: {env_file}")
+                return False
+        else:
+            # Remote file update via SSH
+            ssh_user = node_config.get('ssh_user', 'root')
+            tailscale_domain = node_config.get('tailscale_domain')
+            
+            # Create a sed command to update the .env file
+            sed_cmd = f"sed -i 's/^{env_var}=.*$/{env_var}={new_value}/' {env_file}"
+            add_cmd = f"grep -q '^{env_var}=' {env_file} || echo '{env_var}={new_value}' >> {env_file}"
+            
+            ssh_cmd = f"ssh {ssh_user}@{tailscale_domain} '{sed_cmd} && {add_cmd}'"
+            
+            result = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True)
+            return result.returncode == 0
+            
+    except Exception as e:
+        click.echo(f"   ❌ Error updating .env file: {e}")
+        return False
+
+
+def _restart_eth_docker(node_config, eth_docker_path, is_local):
+    """Restart eth-docker services with proper down/up cycle for port rebinding"""
+    try:
+        if is_local:
+            # Local restart - prefer ./ethd if available, fallback to docker compose
+            ethd_script = os.path.join(eth_docker_path, 'ethd')
+            if os.path.exists(ethd_script) and os.access(ethd_script, os.X_OK):
+                # Use ./ethd down && ./ethd up -d
+                down_result = subprocess.run(['./ethd', 'down'], 
+                                           cwd=eth_docker_path, capture_output=True, text=True)
+                if down_result.returncode != 0:
+                    click.echo(f"   ⚠️  ./ethd down failed: {down_result.stderr}")
+                    return False
+                
+                up_result = subprocess.run(['./ethd', 'up', '-d'], 
+                                         cwd=eth_docker_path, capture_output=True, text=True)
+                return up_result.returncode == 0
+            else:
+                # Fallback to docker compose
+                down_result = subprocess.run(['docker', 'compose', 'down'], 
+                                           cwd=eth_docker_path, capture_output=True, text=True)
+                if down_result.returncode != 0:
+                    click.echo(f"   ⚠️  Docker compose down failed: {down_result.stderr}")
+                    return False
+                
+                up_result = subprocess.run(['docker', 'compose', 'up', '-d'], 
+                                         cwd=eth_docker_path, capture_output=True, text=True)
+                return up_result.returncode == 0
+        else:
+            # Remote restart via SSH - prefer ./ethd if available
+            ssh_user = node_config.get('ssh_user', 'root')
+            tailscale_domain = node_config.get('tailscale_domain')
+            
+            # Check if ./ethd exists and use it, otherwise fallback to docker compose
+            check_cmd = f"ssh {ssh_user}@{tailscale_domain} 'cd {eth_docker_path} && test -x ./ethd'"
+            check_result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
+            
+            if check_result.returncode == 0:
+                # Use ./ethd down && ./ethd up -d
+                ssh_cmd = f"ssh {ssh_user}@{tailscale_domain} 'cd {eth_docker_path} && ./ethd down && ./ethd up -d'"
+            else:
+                # Fallback to docker compose
+                ssh_cmd = f"ssh {ssh_user}@{tailscale_domain} 'cd {eth_docker_path} && docker compose down && docker compose up -d'"
+            
+            result = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True)
+            return result.returncode == 0
+            
+    except Exception as e:
+        click.echo(f"   ❌ Error restarting services: {e}")
+        return False
