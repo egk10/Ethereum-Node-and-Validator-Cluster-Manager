@@ -530,9 +530,9 @@ def _get_single_network_client_versions(node_config):
         else:
             # Remote execution via SSH
             containers_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} 'docker ps --format \"{{{{.Names}}}}:{{{{.Image}}}}\" 2>/dev/null || echo \"Error\"'"
-            
+
         containers_process = subprocess.run(containers_cmd, shell=True, capture_output=True, text=True, timeout=10)
-        
+
         # Initialize results
         execution_current = "Unknown"
         consensus_current = "Unknown"
@@ -546,61 +546,93 @@ def _get_single_network_client_versions(node_config):
         execution_image = None
         consensus_image = None
         validator_image = None
-        
+
         # For nodes with multiple validator clients, collect all of them
         validator_clients = []  # List of (client_name, container, image)
-        
+        dvt_charon_present = False
+
         # Parse running containers to identify clients and versions
+        container_lines = []
         if containers_process.returncode == 0 and "Error" not in containers_process.stdout:
-            container_lines = containers_process.stdout.strip().split('\n')
-            
+            container_lines = containers_process.stdout.strip().split('\n') if containers_process.stdout.strip() else []
+
             for line in container_lines:
                 if ':' in line:
                     container_name, image = line.split(':', 1)
-                    
+                    # Track DVT/Charon presence
+                    if (
+                        ('charon' in container_name.lower())
+                        or ('obol' in container_name.lower())
+                        or ('obol' in image.lower())
+                        or ('charon' in image.lower())
+                    ):
+                        dvt_charon_present = True
+
                     # Special handling for Erigon with integrated Caplin consensus
                     if 'erigon' in container_name.lower() or 'erigon' in image.lower():
                         # Erigon can run with integrated Caplin consensus client
                         execution_client_name = _identify_client_from_image(image, 'execution')
                         execution_container = container_name
                         execution_image = image
-                        
+
                         # If no separate consensus client found yet, assume Caplin is integrated
                         if consensus_client_name == "Unknown":
-                            consensus_client_name = 'erigon-caplin' 
+                            consensus_client_name = 'erigon-caplin'
                             consensus_container = container_name  # Same container as execution
                             consensus_image = image
-                    
+
                     # Identify execution clients - check both container name and image
-                    elif ('execution' in container_name.lower() or 
-                          any(exec_client in container_name.lower() or exec_client in image.lower() 
-                              for exec_client in ['geth', 'nethermind', 'reth', 'besu', 'erigon'])):
+                    elif (
+                        'execution' in container_name.lower()
+                        or any(
+                            exec_client in container_name.lower() or exec_client in image.lower()
+                            for exec_client in ['geth', 'nethermind', 'reth', 'besu', 'erigon']
+                        )
+                    ):
                         execution_client_name = _identify_client_from_image(image, 'execution')
                         execution_container = container_name
                         execution_image = image
-                    
+
                     # Identify consensus clients (beacon nodes) - these override erigon-caplin
-                    elif (('consensus' in container_name.lower() or 
-                          any(cons_client in container_name.lower() or cons_client in image.lower()
-                              for cons_client in ['lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine'])) 
-                          and 'validator' not in container_name.lower()):
+                    # Exclude Charon-managed Lodestar validator containers from being treated as consensus
+                    elif (
+                        (
+                            'consensus' in container_name.lower()
+                            or any(
+                                cons_client in container_name.lower() or cons_client in image.lower()
+                                for cons_client in ['lighthouse', 'prysm', 'teku', 'nimbus', 'lodestar', 'grandine']
+                            )
+                        )
+                        and 'validator' not in container_name.lower()
+                        and not ('charon' in container_name.lower() and 'lodestar' in container_name.lower())
+                    ):
                         consensus_client_name = _identify_client_from_image(image, 'consensus')
                         consensus_container = container_name
-                        consensus_image = image                    # Identify validator clients (separate from consensus) - collect multiple
+                        consensus_image = image
+
+                    # Identify validator clients (separate from consensus) - collect multiple
                     # Detect Vero validator containers (Lido CSM)
-                    elif 'vero' in image.lower() or ('eth-docker-validator' in container_name.lower() and 'vero' in image.lower()):
+                    elif 'vero' in image.lower() or (
+                        'eth-docker-validator' in container_name.lower() and 'vero' in image.lower()
+                    ):
                         validator_clients.append(("vero", container_name, image))
                     # Detect Lodestar validator containers in DVT setups
-                    elif ('lodestar' in image.lower() and 'lodestar' in container_name.lower() and 
-                          consensus_container != container_name):
+                    elif (
+                        ("lodestar" in image.lower())
+                        and ("lodestar" in container_name.lower() or dvt_charon_present)
+                        and consensus_container != container_name
+                    ):
                         # Specific detection for Lodestar validator containers in DVT setups
                         validator_clients.append(("lodestar", container_name, image))
-                    elif (any(val_client in container_name.lower() for val_client in 
-                             ['validator', 'vc']) and 'grafana' not in container_name.lower() and 'prometheus' not in container_name.lower()):
+                    elif (
+                        any(val_client in container_name.lower() for val_client in ['validator', 'vc'])
+                        and 'grafana' not in container_name.lower()
+                        and 'prometheus' not in container_name.lower()
+                    ):
                         # Standard validator containers
                         detected_client = _identify_client_from_image(image, 'validator')
                         validator_clients.append((detected_client, container_name, image))
-        
+
         # Choose primary validator client for version display
         # Priority: Vero > Lodestar > Others (for multi-validator setups)
         if validator_clients:
@@ -613,17 +645,30 @@ def _get_single_network_client_versions(node_config):
                     return 1
                 else:
                     return 2
-            
+
             validator_clients.sort(key=validator_priority)
-            
+
             # Use the highest priority validator as primary
             validator_client_name, validator_container, validator_image = validator_clients[0]
-            
+
             # For display purposes, show multiple validators if present
             if len(validator_clients) > 1:
                 additional_validators = [client[0] for client in validator_clients[1:]]
-                # We'll use this information later in the display logic
-        
+                # Placeholder: can be used for display later
+                _ = additional_validators
+        else:
+            # If Charon is present but no validator detected, do not fall back to consensus
+            # Try a last-chance detection: any container image containing 'lodestar'
+            if dvt_charon_present and containers_process.returncode == 0 and container_lines:
+                for line in container_lines:
+                    if ':' in line:
+                        c_name, img = line.split(':', 1)
+                        if 'lodestar' in img.lower():
+                            validator_client_name = 'lodestar'
+                            validator_container = c_name
+                            validator_image = img
+                            break
+
         # Get actual versions from Docker logs, with fallback to image version and exec command
         if execution_container and execution_client_name != "Unknown":
             # Special handling for erigon when integrated with caplin
@@ -696,8 +741,11 @@ def _get_single_network_client_versions(node_config):
         
         # Handle case where validator might be integrated with consensus client
         # This can happen in all-in-one setups where validator runs with consensus
-        if validator_current == "Unknown" and consensus_client_name != "Unknown":
-            # Check if consensus client also runs validator (common in some setups)
+        if (
+            validator_current == "Unknown"
+            and consensus_client_name != "Unknown"
+            and not dvt_charon_present
+        ):
             # For now, assume separate validator detection is working correctly
             pass
         
@@ -718,9 +766,10 @@ def _get_single_network_client_versions(node_config):
             validator_latest = _get_latest_github_release(validator_client_name)
         elif validator_client_name == "Unknown" and consensus_client_name != "Unknown":
             # No separate validator detected, fallback to consensus client for validator duties
-            validator_client_name = consensus_client_name
-            validator_current = consensus_current
-            validator_latest = consensus_latest
+            if not dvt_charon_present:
+                validator_client_name = consensus_client_name
+                validator_current = consensus_current
+                validator_latest = consensus_latest
         elif validator_client_name == consensus_client_name and consensus_client_name != "Unknown":
             # Same client for both consensus and validator (e.g., lodestar, teku, prysm)
             # Use the consensus client's latest version for validator too since they're always the same
@@ -738,6 +787,14 @@ def _get_single_network_client_versions(node_config):
         results['validator_current'] = validator_current
         results['validator_latest'] = validator_latest
         results['validator_client'] = validator_client_name
+        results['dvt_charon_present'] = dvt_charon_present
+        # Origin labeling for display
+        if validator_client_name and 'lodestar' in str(validator_client_name).lower() and dvt_charon_present:
+            results['validator_origin'] = 'charon'
+        elif validator_client_name and validator_client_name != 'Unknown':
+            results['validator_origin'] = 'eth-docker'
+        else:
+            results['validator_origin'] = 'unknown'
         
         # Determine if updates are needed
         exec_needs_update = _version_needs_update(execution_current, execution_latest)
@@ -749,12 +806,12 @@ def _get_single_network_client_versions(node_config):
         else:
             # Validator is integrated with consensus client
             validator_needs_update = consensus_needs_update
-        
+
         results['execution_needs_update'] = exec_needs_update
         results['consensus_needs_update'] = consensus_needs_update
         results['validator_needs_update'] = validator_needs_update
         results['needs_client_update'] = exec_needs_update or consensus_needs_update or validator_needs_update
-        
+
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         results['execution_current'] = "SSH Error"
         results['execution_latest'] = "SSH Error"
@@ -840,47 +897,51 @@ def _get_lodestar_version_from_container(ssh_target, container_name):
     """
     Special version detection for Lodestar in DVT/Charon setups.
     Tries multiple methods to extract version information.
+    Supports both local and remote execution.
     """
     try:
-        # Try the Lodestar-specific version command first
-        lodestar_cmd = f"docker exec {container_name} /usr/app/node_modules/.bin/lodestar --version 2>/dev/null"
-        full_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{lodestar_cmd}'"
-        result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
-        
-        if result.returncode == 0 and result.stdout.strip():
-            output = result.stdout.strip()
-            # Parse version from Lodestar output like "Version: v1.32.0/8f56b55"
-            import re
-            version_match = re.search(r'Version:\s*v?(\d+\.\d+\.\d+)', output)
-            if version_match:
-                return version_match.group(1)
-        
-        # Fallback methods
-        fallback_commands = [
-            f"docker exec {container_name} cat package.json 2>/dev/null | grep '\"version\"' | head -1",
-            f"docker inspect {container_name} --format '{{{{.Config.Image}}}}' 2>/dev/null"
+        # Try multiple exec strategies since lodestar binary path varies by image
+        exec_cmds = [
+            f"docker exec {container_name} lodestar --version 2>/dev/null",
+            f"docker exec {container_name} /usr/app/node_modules/.bin/lodestar --version 2>/dev/null",
+            f"docker exec {container_name} node /usr/app/node_modules/.bin/lodestar --version 2>/dev/null",
         ]
-        
-        for cmd in fallback_commands:
-            full_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{cmd}'"
-            result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
-            
+
+        for lodestar_cmd in exec_cmds:
+            if ssh_target is None:
+                result = subprocess.run(lodestar_cmd, shell=True, capture_output=True, text=True, timeout=10)
+            else:
+                full_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{lodestar_cmd}'"
+                result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
+
             if result.returncode == 0 and result.stdout.strip():
                 output = result.stdout.strip()
-                
-                # Parse from package.json
-                if '"version"' in output:
-                    import re
-                    version_match = re.search(r'"version":\s*"([^"]+)"', output)
-                    if version_match:
-                        return version_match.group(1)
-                
-                # Parse from image tag
-                if ':' in output and 'lodestar' in output.lower():
-                    return _extract_image_version(f"image: {output}")
-        
+                # Support outputs like "Version: v1.32.0/8f56b55" or "lodestar v1.33.0"
+                import re
+                for pattern in [r'Version:\s*v?(\d+\.\d+\.\d+)', r'lodestar\s+v?(\d+\.\d+\.\d+)', r'v?(\d+\.\d+\.\d+)']:
+                    m = re.search(pattern, output, re.IGNORECASE)
+                    if m:
+                        return m.group(1)
+
+        # Fallback: inspect image tag
+        inspect_cmd = f"docker inspect {container_name} --format '{{{{.Config.Image}}}}' 2>/dev/null"
+        if ssh_target is None:
+            result = subprocess.run(inspect_cmd, shell=True, capture_output=True, text=True, timeout=10)
+        else:
+            full_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{inspect_cmd}'"
+            result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
+
+        if result.returncode == 0 and result.stdout.strip():
+            output = result.stdout.strip()
+            if ':' in output and 'lodestar' in output.lower():
+                return _extract_image_version(f"image: {output}")
+
+        # Last resort: use generic exec parser
+        exec_version = _get_version_via_docker_exec(ssh_target, container_name, 'lodestar')
+        if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
+            return exec_version
+
         return "Unknown"
-        
     except Exception:
         return "Unknown"
 

@@ -1,5 +1,8 @@
-click
-colorama
 pyyaml
+click
 requests
 tabulate
+pandas
+prometheus-client
+scikit-learn
+numpy
