@@ -166,33 +166,46 @@ def _detect_running_stacks(node_cfg):
 def _get_charon_version(ssh_target, tailscale_domain, node_cfg=None):
     """Get Charon version if it's running on the node"""
     try:
-        # First try to get the actual running version by executing charon version
-        command = "docker ps --format 'table {{.Names}}' | grep charon | head -1"
-        result = _run_command(node_cfg, command) if node_cfg else subprocess.run(f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{command}\"", shell=True, capture_output=True, text=True, timeout=15)
-        
+        # Only match containers with '-charon-' in the name (case-insensitive)
+        command = "docker ps --format '{{.Names}}' | grep -i -- '-charon-' | head -1"
+        result = _run_command(node_cfg, command) if node_cfg else subprocess.run(
+            f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{command}\"",
+            shell=True, capture_output=True, text=True, timeout=15
+        )
+
         if result.returncode == 0 and result.stdout.strip():
             container_name = result.stdout.strip()
-            
+
             # Try to get actual version from the running container
             version_command = f"docker exec {container_name} charon version 2>/dev/null | head -1 | awk '{{print $NF}}' || echo 'exec_failed'"
-            version_result = _run_command(node_cfg, version_command) if node_cfg else subprocess.run(f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{version_command}\"", shell=True, capture_output=True, text=True, timeout=10)
+            version_result = _run_command(node_cfg, version_command) if node_cfg else subprocess.run(
+                f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{version_command}\"",
+                shell=True, capture_output=True, text=True, timeout=10
+            )
+
+            version_output = version_result.stdout.strip() if version_result.returncode == 0 and version_result.stdout else ""
             
-            if version_result.returncode == 0 and version_result.stdout.strip() and version_result.stdout.strip() != "exec_failed":
-                version = version_result.stdout.strip()
+            # If exec succeeds and returns a valid version, use it
+            if version_output and version_output != "exec_failed" and not ("OCI runtime" in version_output or "exec failed" in version_output or "not found in $PATH" in version_output):
+                version = version_output
+                
                 # Clean up version string (remove 'v' prefix if present and extract just the version number)
                 if version.startswith('v'):
                     version = version[1:]
-                
+                    
                 # Extract just the version number (before any git commit info)
                 if '[' in version:
                     version = version.split('[')[0].strip()
-                
+                    
                 return version
-            
+
             # Fallback: get version from image tag
-            image_command = "docker ps --format 'table {{.Names}}\\t{{.Image}}' | grep charon | head -1 | awk '{print $2}'"
-            image_result = _run_command(node_cfg, image_command) if node_cfg else subprocess.run(f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{image_command}\"", shell=True, capture_output=True, text=True, timeout=10)
-            
+            image_command = "docker ps --format '{{.Names}}\t{{.Image}}' | grep -i -- '-charon-' | head -1 | awk '{print $2}'"
+            image_result = _run_command(node_cfg, image_command) if node_cfg else subprocess.run(
+                f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{image_command}\"",
+                shell=True, capture_output=True, text=True, timeout=10
+            )
+
             if image_result.returncode == 0 and image_result.stdout.strip():
                 image = image_result.stdout.strip()
                 if ':' in image:
@@ -200,11 +213,10 @@ def _get_charon_version(ssh_target, tailscale_domain, node_cfg=None):
                     return version
                 else:
                     return "latest"
-        
-        return "N/A"
-    except (subprocess.TimeoutExpired, Exception):
-        return "N/A"
 
+        return "N/A"  # Changed from "No DVT" to match expected value in conditions
+    except (subprocess.TimeoutExpired, Exception) as e:
+        return "N/A"  # Changed from "No DVT" to match expected value in conditions
 def _get_latest_charon_version():
     """Get the latest Charon version from GitHub releases"""
     try:
@@ -261,41 +273,198 @@ def _get_validator_only_clients(node_cfg):
     validator_clients = []
     
     try:
-        # Check for Charon
+        # Check for Charon DVT (only containers with '-charon-' in the name)
         charon_version = _get_charon_version(ssh_target, node_cfg['tailscale_domain'], node_cfg)
         if charon_version != "N/A":
             validator_clients.append(f"charon/{charon_version}")
-        
-        # Check for Lodestar validator
-        command = "docker ps --format 'table {{.Names}}\\t{{.Image}}' | grep -E 'lodestar.*validator|lodestar.*latest' | head -1"
+
+        # Check for Lodestar validator (only containers with '-lodestar-' in the name)
+        command = "docker ps --format '{{.Names}}' | grep -i -- '-lodestar-' | head -1"
         result = _run_command(node_cfg, command)
-        
         if result.returncode == 0 and result.stdout.strip():
-            # Get Lodestar version
-            container_line = result.stdout.strip()
-            if 'lodestar' in container_line.lower():
-                image_part = container_line.split('\t')[-1] if '\t' in container_line else container_line.split()[-1]
-                if ':' in image_part:
-                    version = image_part.split(':')[-1]
-                    validator_clients.append(f"lodestar/{version}")
+            container_name = result.stdout.strip()
+            
+            # Try to get actual version from the running container
+            version_command = f"docker exec {container_name} lodestar --version 2>/dev/null | head -1 | awk '{{print $1}}' || echo 'exec_failed'"
+            version_result = _run_command(node_cfg, version_command)
+            
+            version_output = version_result.stdout.strip() if version_result.returncode == 0 and version_result.stdout else ""
+            
+            # If exec succeeds and returns a valid version, use it
+            if version_output and version_output != "exec_failed" and not ("OCI runtime" in version_output or "exec failed" in version_output or "not found in $PATH" in version_output):
+                version = version_output
+                # Clean up version string (remove 'v' prefix if present)
+                if version.startswith('v'):
+                    version = version[1:]
+                validator_clients.append(f"lodestar/{version}")
+            else:
+                # Fallback: get version from image tag
+                image_command = "docker ps --format '{{.Names}}\t{{.Image}}' | grep -i -- '-lodestar-' | head -1 | awk '{print $2}'"
+                image_result = _run_command(node_cfg, image_command)
+                
+                if image_result.returncode == 0 and image_result.stdout.strip():
+                    image = image_result.stdout.strip()
+                    if ':' in image:
+                        version = image.split(':')[-1]
+                        validator_clients.append(f"lodestar/{version}")
+                    else:
+                        validator_clients.append("lodestar/latest")
                 else:
-                    validator_clients.append("lodestar/latest")
-        
-        # Check for Vero validator
-        command = "docker ps --format 'table {{.Names}}\\t{{.Image}}' | grep -E 'vero|validator.*vero' | head -1"
+                    # Use container name to indicate Lodestar is present but version unknown
+                    validator_clients.append("lodestar/unknown")
+
+        # Check for Vero validator (unchanged)
+        command = "docker ps --format 'table {{.Names}}\t{{.Image}}' | grep -E 'vero|validator.*vero' | head -1"
         result = _run_command(node_cfg, command)
-        
         if result.returncode == 0 and result.stdout.strip():
             container_line = result.stdout.strip()
             if 'vero' in container_line.lower():
                 validator_clients.append("vero/local")
-        
+
         return {
             'validator_clients': validator_clients,
             'display_name': ' + '.join(validator_clients) if validator_clients else 'Unknown',
             'has_clients': len(validator_clients) > 0
         }
-        
+    except Exception:
+        return {
+            'validator_clients': [],
+            'display_name': 'Error',
+            'has_clients': False
+        }
+    """
+    For nodes without execution/consensus clients, detect what validator clients are running.
+    Returns a dict with validator client info.
+    """
+    if _has_ethereum_clients(node_cfg):
+        return None
+    
+    ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
+    validator_clients = []
+    
+    try:
+        # Check for Charon DVT (only containers with '-charon-' in the name)
+        charon_version = _get_charon_version(ssh_target, node_cfg['tailscale_domain'], node_cfg)
+        if charon_version != "N/A":
+            validator_clients.append(f"charon/{charon_version}")
+
+        # Check for Lodestar validator (only containers with '-lodestar-' in the name)
+        command = "docker ps --format '{{.Names}}' | grep -i -- '-lodestar-' | head -1"
+        result = _run_command(node_cfg, command)
+        if result.returncode == 0 and result.stdout.strip():
+            container_name = result.stdout.strip()
+            
+            # Try to get actual version from the running container
+            version_command = f"docker exec {container_name} lodestar --version 2>/dev/null | head -1 | awk '{{print $1}}' || echo 'exec_failed'"
+            version_result = _run_command(node_cfg, version_command)
+            
+            version_output = version_result.stdout.strip() if version_result.returncode == 0 and version_result.stdout else ""
+            
+            # If exec succeeds and returns a valid version, use it
+            if version_output and version_output != "exec_failed" and not ("OCI runtime" in version_output or "exec failed" in version_output or "not found in $PATH" in version_output):
+                version = version_output
+                # Clean up version string (remove 'v' prefix if present)
+                if version.startswith('v'):
+                    version = version[1:]
+                validator_clients.append(f"lodestar/{version}")
+            else:
+                # Fallback: get version from image tag
+                image_command = "docker ps --format '{{.Names}}\t{{.Image}}' | grep -i -- '-lodestar-' | head -1 | awk '{print $2}'"
+                image_result = _run_command(node_cfg, image_command)
+                
+                if image_result.returncode == 0 and image_result.stdout.strip():
+                    image = image_result.stdout.strip()
+                    if ':' in image:
+                        version = image.split(':')[-1]
+                        validator_clients.append(f"lodestar/{version}")
+                    else:
+                        validator_clients.append("lodestar/latest")
+                else:
+                    # Use container name to indicate Lodestar is present but version unknown
+                    validator_clients.append("lodestar/unknown")
+
+        # Check for Vero validator (unchanged)
+        command = "docker ps --format 'table {{.Names}}\t{{.Image}}' | grep -E 'vero|validator.*vero' | head -1"
+        result = _run_command(node_cfg, command)
+        if result.returncode == 0 and result.stdout.strip():
+            container_line = result.stdout.strip()
+            if 'vero' in container_line.lower():
+                validator_clients.append("vero/local")
+
+        return {
+            'validator_clients': validator_clients,
+            'display_name': ' + '.join(validator_clients) if validator_clients else 'Unknown',
+            'has_clients': len(validator_clients) > 0
+        }
+    except Exception:
+        return {
+            'validator_clients': [],
+            'display_name': 'Error',
+            'has_clients': False
+        }
+
+def _get_dvt_node_validators(node_cfg):
+    """
+    For DVT nodes, detect what validator clients are running alongside Charon.
+    Similar to _get_validator_only_clients but doesn't check _has_ethereum_clients.
+    """
+    ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
+    validator_clients = []
+    
+    try:
+        # Check for Charon DVT (only containers with '-charon-' in the name)
+        charon_version = _get_charon_version(ssh_target, node_cfg['tailscale_domain'], node_cfg)
+        if charon_version != "N/A" and charon_version != "No DVT":
+            validator_clients.append(f"charon/{charon_version}")
+
+        # Check for Lodestar validator (only containers with '-lodestar-' in the name)
+        command = "docker ps --format '{{.Names}}' | grep -i -- '-lodestar-' | head -1"
+        result = _run_command(node_cfg, command)
+        if result.returncode == 0 and result.stdout.strip():
+            container_name = result.stdout.strip()
+            
+            # Try to get actual version from the running container
+            version_command = f"docker exec {container_name} lodestar --version 2>/dev/null | head -1 | awk '{{print $1}}' || echo 'exec_failed'"
+            version_result = _run_command(node_cfg, version_command)
+            
+            version_output = version_result.stdout.strip() if version_result.returncode == 0 and version_result.stdout else ""
+            
+            # If exec succeeds and returns a valid version, use it
+            if version_output and version_output != "exec_failed" and not ("OCI runtime" in version_output or "exec failed" in version_output or "not found in $PATH" in version_output):
+                version = version_output
+                # Clean up version string (remove 'v' prefix if present)
+                if version.startswith('v'):
+                    version = version[1:]
+                validator_clients.append(f"lodestar/{version}")
+            else:
+                # Fallback: get version from image tag
+                image_command = "docker ps --format '{{.Names}}\t{{.Image}}' | grep -i -- '-lodestar-' | head -1 | awk '{print $2}'"
+                image_result = _run_command(node_cfg, image_command)
+                
+                if image_result.returncode == 0 and image_result.stdout.strip():
+                    image = image_result.stdout.strip()
+                    if ':' in image:
+                        version = image.split(':')[-1]
+                        validator_clients.append(f"lodestar/{version}")
+                    else:
+                        validator_clients.append("lodestar/latest")
+                else:
+                    # Use container name to indicate Lodestar is present but version unknown
+                    validator_clients.append("lodestar/unknown")
+
+        # Check for Vero validator (unchanged)
+        command = "docker ps --format 'table {{.Names}}\t{{.Image}}' | grep -E 'vero|validator.*vero' | head -1"
+        result = _run_command(node_cfg, command)
+        if result.returncode == 0 and result.stdout.strip():
+            container_line = result.stdout.strip()
+            if 'vero' in container_line.lower():
+                validator_clients.append("vero/local")
+
+        return {
+            'validator_clients': validator_clients,
+            'display_name': ' + '.join(validator_clients) if validator_clients else 'DVT-only',
+            'has_clients': len(validator_clients) > 0
+        }
     except Exception:
         return {
             'validator_clients': [],
@@ -1500,12 +1669,13 @@ def update_charon(dry_run, selected_nodes, all):
 def versions(node, all):
     """Query live client versions, sync status, and container health via SSH/API"""
     config = yaml.safe_load(get_config_path().read_text())
+    nodes = config.get('nodes', [])
+    
+    if not nodes:
+        click.echo("❌ No nodes configured. Please check your config.yaml file.")
+        return
     
     if all:
-        nodes = config.get('nodes', [])
-        if not nodes:
-            click.echo("❌ No nodes configured. Please check your config.yaml file.")
-            return
         
         click.echo("🖥️  ETHEREUM NODE VERSION CHECK (LIVE DATA)")
         click.echo("=" * 100)
@@ -1557,8 +1727,38 @@ def versions(node, all):
                 charon_version = _get_charon_version(ssh_target, node_cfg['tailscale_domain'], node_cfg)
                 try:
                     version_info = get_docker_client_versions(node_cfg)
+                    
+                    # Check if this is a DVT-only node (execution and consensus are unknown but DVT charon is present)
+                    is_dvt_only = (version_info.get('execution_client') == 'Unknown' and 
+                                 version_info.get('consensus_client') == 'Unknown' and 
+                                 version_info.get('dvt_charon_present', False))
+                    
+                    if is_dvt_only:
+                        # Use DVT-specific validator detection 
+                        validator_info = _get_dvt_node_validators(node_cfg)
+                        if validator_info and validator_info['has_clients']:
+                            charon_needs_update = (charon_version != "N/A" and latest_charon != "Unknown" and charon_version != latest_charon and charon_version != "latest")
+                            charon_display = charon_version if charon_version and str(charon_version).strip() not in ["N/A", "-", ""] else "-"
+                            charon_latest_display = latest_charon if charon_version != "N/A" else "-"
+                            charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
+                            table_data.append([
+                                f"{status_emoji} {name}", status_text, "-", "-", "❓", "-", "-", "❓", validator_info['display_name'], "-", "✅", charon_display, charon_latest_display, charon_update
+                            ])
+                            click.echo(" ✓", err=True)
+                        else:
+                            # Fallback for DVT-only without validator detection
+                            charon_needs_update = (charon_version != "N/A" and latest_charon != "Unknown" and charon_version != latest_charon and charon_version != "latest")
+                            charon_display = charon_version if charon_version and str(charon_version).strip() not in ["N/A", "-", ""] else "-"
+                            charon_latest_display = latest_charon if charon_version != "N/A" else "-"
+                            charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
+                            table_data.append([
+                                f"{status_emoji} {name}", status_text, "-", "-", "❓", "-", "-", "❓", "-", "-", "-", charon_display, charon_latest_display, charon_update
+                            ])
+                            click.echo(" ✓", err=True)
+                        # Skip the rest of the processing for this node since we handled it as DVT-only
+                        continue
                     # Multi-network node
-                    if 'mainnet' in version_info or 'testnet' in version_info:
+                    elif 'mainnet' in version_info or 'testnet' in version_info:
                         for network_key, network_info in version_info.items():
                             network_display_name = network_info.get('network', network_key)
                             exec_client = network_info.get('execution_client', 'Unknown')
@@ -1573,6 +1773,12 @@ def versions(node, all):
                             val_current = network_info.get('validator_current', '-')
                             val_latest = network_info.get('validator_latest', '-')
                             val_needs_update = network_info.get('validator_needs_update', False)
+                            val_2_client = network_info.get('validator_2_client', '-')
+                            val_2_current = network_info.get('validator_2_current', '-')
+                            val_2_latest = network_info.get('validator_2_latest', '-')
+                            val_2_needs_update = network_info.get('validator_2_needs_update', False)
+                            val_origin = network_info.get('validator_origin', 'unknown')
+                            dvt_charon_present_network = network_info.get('dvt_charon_present', False)
                             charon_needs_update = (charon_version != "N/A" and latest_charon != "Unknown" and charon_version != latest_charon and charon_version != "latest")
                             exec_display = f"{exec_client}/{exec_current}" if exec_client != "Unknown" else "-"
                             exec_latest_display = exec_latest if exec_latest not in ["Unknown", "API Error", "Network Error", "Rate Limited"] else "-"
@@ -1580,14 +1786,37 @@ def versions(node, all):
                             cons_display = f"{cons_client}/{cons_current}" if cons_client != "Unknown" else "-"
                             cons_latest_display = cons_latest if cons_latest not in ["Unknown", "API Error", "Network Error", "Rate Limited"] else "-"
                             cons_update = '🔄' if cons_needs_update else '✅' if cons_latest_display != "-" else '❓'
-                            val_display = f"{val_client}/{val_current}" if val_client not in ["Unknown", "Disabled", "-"] and val_current not in ["Unknown", "Not Running", "-"] else "-"
+                            
+                            # Helper function to create stack-aware validator display names
+                            def format_validator_with_stack_network(client, origin, dvt_present):
+                                if client in ["Unknown", "Disabled", "-"]:
+                                    return client
+                                
+                                # For charon-managed validators, show "charon-{client}" 
+                                if origin == 'charon' or (dvt_present and 'lodestar' in client.lower()):
+                                    return f"charon-{client}"
+                                # For eth-docker managed validators, show "eth-docker-{client}"
+                                elif origin == 'eth-docker':
+                                    return f"eth-docker-{client}"
+                                # Default case - just return the client name
+                                else:
+                                    return client
+                            
+                            # Format validator names with stack information
+                            val_display_name = format_validator_with_stack_network(val_client, val_origin, dvt_charon_present_network)
+                            val_2_display_name = format_validator_with_stack_network(val_2_client, 'eth-docker', dvt_charon_present_network)
+                            
+                            val_display = f"{val_display_name}/{val_current}" if val_client not in ["Unknown", "Disabled", "-"] and val_current not in ["Unknown", "Not Running", "-"] else "-"
                             val_latest_display = val_latest if val_latest not in ["Unknown", "Not Running", "Disabled", "-", "API Error", "Network Error", "Rate Limited"] else "-"
                             val_update = '🔄' if val_needs_update else '✅' if val_display != "-" and val_latest_display != "-" else '❓' if val_display != "-" else '-'
+                            val_2_display = f"{val_2_display_name}/{val_2_current}" if val_2_client not in ["Unknown", "Disabled", "-"] and val_2_current not in ["Unknown", "Not Running", "-"] else "-"
+                            val_2_latest_display = val_2_latest if val_2_latest not in ["Unknown", "Not Running", "Disabled", "-", "API Error", "Network Error", "Rate Limited"] else "-"
+                            val_2_update = '🔄' if val_2_needs_update else '✅' if val_2_display != "-" and val_2_latest_display != "-" else '❓' if val_2_display != "-" else '-'
                             charon_display = charon_version if charon_version and str(charon_version).strip() not in ["N/A", "-", ""] else "-"
                             charon_latest_display = latest_charon if charon_version != "N/A" else "-"
                             charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
                             table_data.append([
-                                f"{status_emoji} {name}-{network_display_name}", status_text, exec_display, exec_latest_display, exec_update, cons_display, cons_latest_display, cons_update, val_display, val_latest_display, val_update, charon_display, charon_latest_display, charon_update
+                                f"{status_emoji} {name}-{network_display_name}", status_text, exec_display, exec_latest_display, exec_update, cons_display, cons_latest_display, cons_update, val_display, val_latest_display, val_update, val_2_display, val_2_latest_display, val_2_update, charon_display, charon_latest_display, charon_update
                             ])
                         click.echo(" ✓", err=True)
                         continue
@@ -1604,6 +1833,12 @@ def versions(node, all):
                     val_current = version_info.get('validator_current', '-')
                     val_latest = version_info.get('validator_latest', '-')
                     val_needs_update = version_info.get('validator_needs_update', False)
+                    val_origin = version_info.get('validator_origin', 'unknown')
+                    val_2_client = version_info.get('validator_2_client', '-')
+                    val_2_current = version_info.get('validator_2_current', '-')
+                    val_2_latest = version_info.get('validator_2_latest', '-')
+                    val_2_needs_update = version_info.get('validator_2_needs_update', False)
+                    dvt_charon_present = version_info.get('dvt_charon_present', False)
                     charon_needs_update = (charon_version != "N/A" and latest_charon != "Unknown" and charon_version != latest_charon and charon_version != "latest")
                     exec_display = f"{exec_client}/{exec_current}" if exec_client != "Unknown" else "-"
                     exec_latest_display = exec_latest if exec_latest not in ["Unknown", "API Error", "Network Error"] else "-"
@@ -1611,25 +1846,48 @@ def versions(node, all):
                     cons_display = f"{cons_client}/{cons_current}" if cons_client != "Unknown" else "-"
                     cons_latest_display = cons_latest if cons_latest not in ["Unknown", "API Error", "Network Error"] else "-"
                     cons_update = '🔄' if cons_needs_update else '✅' if cons_latest_display != "-" else '❓'
-                    val_display = f"{val_client}/{val_current}" if val_client not in ["Unknown", "Disabled", "-"] and val_current not in ["Unknown", "Not Running", "-"] else "-"
+                    
+                    # Helper function to create stack-aware validator display names
+                    def format_validator_with_stack(client, origin, dvt_present):
+                        if client in ["Unknown", "Disabled", "-"]:
+                            return client
+                        
+                        # For charon-managed validators, show "charon-{client}" 
+                        if origin == 'charon' or (dvt_present and 'lodestar' in client.lower()):
+                            return f"charon-{client}"
+                        # For eth-docker managed validators, show "eth-docker-{client}"
+                        elif origin == 'eth-docker':
+                            return f"eth-docker-{client}"
+                        # Default case - just return the client name
+                        else:
+                            return client
+                    
+                    # Format validator names with stack information
+                    val_display_name = format_validator_with_stack(val_client, val_origin, dvt_charon_present)
+                    val_2_display_name = format_validator_with_stack(val_2_client, 'eth-docker', dvt_charon_present)  # Second validator is usually eth-docker managed
+                    
+                    val_display = f"{val_display_name}/{val_current}" if val_client not in ["Unknown", "Disabled", "-"] and val_current not in ["Unknown", "Not Running", "-"] else "-"
                     val_latest_display = val_latest if val_latest not in ["Unknown", "Not Running", "Disabled", "-", "API Error", "Network Error"] else "-"
                     val_update = '🔄' if val_needs_update else '✅' if val_display != "-" and val_latest_display != "-" else '❓' if val_display != "-" else '-'
+                    val_2_display = f"{val_2_display_name}/{val_2_current}" if val_2_client not in ["Unknown", "Disabled", "-"] and val_2_current not in ["Unknown", "Not Running", "-"] else "-"
+                    val_2_latest_display = val_2_latest if val_2_latest not in ["Unknown", "Not Running", "Disabled", "-", "API Error", "Network Error"] else "-"
+                    val_2_update = '🔄' if val_2_needs_update else '✅' if val_2_display != "-" and val_2_latest_display != "-" else '❓' if val_2_display != "-" else '-'
                     charon_display = charon_version if charon_version and str(charon_version).strip() not in ["N/A", "-", ""] else "-"
                     charon_latest_display = latest_charon if charon_version != "N/A" else "-"
                     charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
                     table_data.append([
-                        f"{status_emoji} {name}", status_text, exec_display, exec_latest_display, exec_update, cons_display, cons_latest_display, cons_update, val_display, val_latest_display, val_update, charon_display, charon_latest_display, charon_update
+                        f"{status_emoji} {name}", status_text, exec_display, exec_latest_display, exec_update, cons_display, cons_latest_display, cons_update, val_display, val_latest_display, val_update, val_2_display, val_2_latest_display, val_2_update, charon_display, charon_latest_display, charon_update
                     ])
                     click.echo(" ✓", err=True)
                 except Exception as e:
                     table_data.append([
-                        f"{status_emoji} {name}", status_text, 'Error', '-', '❌', 'Error', '-', '❌', 'Error', '-', '❌', '-', '-', '-'
+                        f"{status_emoji} {name}", status_text, 'Error', '-', '❌', 'Error', '-', '❌', 'Error', '-', '❌', 'Error', '-', '❌', '-', '-', '-'
                     ])
                     click.echo(f" ❌ Error: {str(e)[:30]}...", err=True)
             # Disabled node row
             if status_text == "Disabled":
                 table_data.append([
-                    f"{status_emoji} {name}", status_text, '❌ No clients', '-', '-', '❌ No clients', '-', '-', '-', '-', '-', '-', '-', '-'
+                    f"{status_emoji} {name}", status_text, '❌ No clients', '-', '-', '❌ No clients', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-', '-'
                 ])
 
         click.echo("\nRendering version table...")
@@ -1638,7 +1896,7 @@ def versions(node, all):
         from colorama import Fore, Style
         import re
         from tabulate import tabulate
-        headers = ['Node', 'St', 'Execution', '✓', 'Consensus', '✓', 'Validator', '✓', 'DVT', '✓']
+        headers = ['Node', 'St', 'Execution', '✓', 'Consensus', '✓', 'Validator', '✓', 'Validator 2', '✓', 'DVT', '✓']
 
         # Double-line table processing - each node gets two rows
         compact_table = []
@@ -1673,14 +1931,20 @@ def versions(node, all):
                     Fore.LIGHTBLACK_EX + node_name + Style.RESET_ALL,
                     Fore.LIGHTBLACK_EX + "Off" + Style.RESET_ALL,
                     Fore.LIGHTBLACK_EX + "No clients" + Style.RESET_ALL,
-                    '-', '-', '-', '-', '-', '-', '-'
+                    '-', '-', '-', '-', '-', '-', '-', '-', '-'
                 ])
                 # Empty second line for disabled nodes
-                compact_table.append(['', '', '', '', '', '', '', '', '', ''])
+                compact_table.append(['', '', '', '', '', '', '', '', '', '', '', ''])
                 continue
 
             # Collect outdated nodes for upgrade
-            if '🔄' in [row[4], row[7], row[10], row[13]]:
+            update_indices = [4, 7, 10]  # Standard columns that always exist
+            if len(row) > 13:
+                update_indices.append(13)  # Validator 2 update status
+            if len(row) > 16:
+                update_indices.append(16)  # DVT update status
+            
+            if '🔄' in [row[i] for i in update_indices if i < len(row)]:
                 raw_node_name = row[0]
                 clean_name = re.sub(r'[🟢🔴]|\x1b\[[0-9;]*m', '', raw_node_name).strip()
                 if '-mainnet' in clean_name or '-testnet' in clean_name or '-hoodi' in clean_name:
@@ -1722,24 +1986,36 @@ def versions(node, all):
                     return parts[0].title(), parts[1] if len(parts) > 1 else ""
                 return charon_version, ""
 
-            # Extract client names and versions
-            exec_name, exec_version = parse_client_info(row[2])
-            cons_name, cons_version = parse_client_info(row[5])
-            val_name, val_version = parse_client_info(row[8])
-            dvt_name, dvt_version = parse_dvt_info(row[11])
+            # Extract client names and versions - handle variable row lengths
+            exec_name, exec_version = parse_client_info(row[2]) if len(row) > 2 else ("-", "")
+            cons_name, cons_version = parse_client_info(row[5]) if len(row) > 5 else ("-", "")
+            val_name, val_version = parse_client_info(row[8]) if len(row) > 8 else ("-", "")
+            val_2_name, val_2_version = parse_client_info(row[11]) if len(row) > 11 else ("-", "")
+            dvt_name, dvt_version = parse_dvt_info(row[14]) if len(row) > 14 else ("-", "")
 
             # Label charon-managed Lodestar validator clearly
             try:
-                if (dvt_name and dvt_name.lower().startswith('charon')) and (val_name and val_name.lower().startswith('lodestar')):
+                # Check if DVT column has Charon
+                has_charon_dvt = (dvt_name and dvt_name.lower().startswith('charon'))
+                
+                # Check if validator column contains both charon and lodestar (e.g., "charon/1.5.2 + lodestar/latest")
+                val_has_charon_and_lodestar = (val_name and val_name.lower().startswith('charon') and 
+                                             val_version and 'lodestar' in val_version.lower())
+                
+                # Check if validator column is just lodestar
+                val_is_lodestar = (val_name and val_name.lower().startswith('lodestar'))
+                
+                if has_charon_dvt and (val_has_charon_and_lodestar or val_is_lodestar):
                     val_name = 'charon-lodestar'
             except Exception:
                 pass
 
-            # Extract latest versions from row data (positions 3, 6, 9, 12)
+            # Extract latest versions from row data - handle variable row lengths
             exec_latest = row[3] if len(row) > 3 else "-"
             cons_latest = row[6] if len(row) > 6 else "-"
             val_latest = row[9] if len(row) > 9 else "-"
-            dvt_latest = row[12] if len(row) > 12 else "-"
+            val_2_latest = row[12] if len(row) > 12 else "-"
+            dvt_latest = row[15] if len(row) > 15 else "-"
 
             # Clean up latest version displays
             if exec_latest in ["Unknown", "API Error", "Network Error", "Rate Limited", "-"]:
@@ -1748,6 +2024,8 @@ def versions(node, all):
                 cons_latest = "-"
             if val_latest in ["Unknown", "Not Running", "Disabled", "API Error", "Network Error", "Rate Limited", "-"]:
                 val_latest = "-"
+            if val_2_latest in ["Unknown", "Not Running", "Disabled", "API Error", "Network Error", "Rate Limited", "-"]:
+                val_2_latest = "-"
             if dvt_latest in ["Unknown", "API Error", "Network Error", "Rate Limited", "-"]:
                 dvt_latest = "-"
 
@@ -1756,8 +2034,8 @@ def versions(node, all):
                 if not current or current == "-":
                     return ""
                 if not latest or latest == "-" or latest == current:
-                    return current[:14]
-                return f"{current[:6]}→{latest[:6]}"
+                    return current[:30]  # Increased from 14 to 30 for DVT validator text
+                return f"{current[:12]}→{latest[:12]}"  # Increased from 6 to 12 each
 
             # Sanitize DVT version strings
             def _sanitize_version_text(text):
@@ -1794,32 +2072,34 @@ def versions(node, all):
                     exec_name, exec_version = "-", ""
                     cons_name, cons_version = "-", ""
 
-            # Label Lodestar validator under Charon as 'charon-lodestar'
-            try:
-                if dvt_name and dvt_name.lower().startswith('charon') and val_name and val_name.lower().startswith('lodestar'):
-                    val_name = 'charon-lodestar'
-            except Exception:
-                pass
+            # Label Lodestar validator under Charon as 'charon-lodestar' (commented out to preserve full DVT info)
+            # try:
+            #     if dvt_name and dvt_name.lower().startswith('charon') and val_name and val_name.lower().startswith('lodestar'):
+            #         val_name = 'charon-lodestar'
+            # except Exception:
+            #     pass
 
-            # If DVT is Charon and validator is Lodestar, rename validator to 'charon-lodestar'
-            try:
-                if dvt_name and dvt_name.lower() == 'charon' and val_name and val_name.lower().startswith('lodestar'):
-                    val_name = 'charon-lodestar'
-            except Exception:
-                pass
+            # If DVT is Charon and validator is Lodestar, rename validator to 'charon-lodestar' (commented out to preserve full DVT info)
+            # try:
+            #     if dvt_name and dvt_name.lower() == 'charon' and val_name and val_name.lower().startswith('lodestar'):
+            #         val_name = 'charon-lodestar'
+            # except Exception:
+            #     pass
 
             # First row: names
             compact_table.append([
                 node_name,
                 "On" if row[1] == "Active" else row[1][:3],
                 exec_name[:16] if exec_name != "-" else "-",
-                color_status(row[4]),
+                color_status(row[4]) if len(row) > 4 else '-',
                 cons_name[:16] if cons_name != "-" else "-",
-                color_status(row[7]),
-                val_name[:16] if val_name != "-" else "-",
-                color_status(row[10]),
-                dvt_name[:16] if dvt_name != "-" else "-",
-                color_status(row[13])
+                color_status(row[7]) if len(row) > 7 else '-',
+                val_name[:30] if val_name != "-" else "-",
+                color_status(row[10]) if len(row) > 10 else '-',
+                val_2_name[:30] if val_2_name != "-" else "-",
+                color_status(row[13]) if len(row) > 13 else '-',
+                dvt_name[:30] if dvt_name != "-" else "-",
+                color_status(row[16]) if len(row) > 16 else '-'
             ])
 
             # Second row: versions
@@ -1833,6 +2113,8 @@ def versions(node, all):
                 '',
                 version_color + format_version_display(val_version, val_latest) + Style.RESET_ALL if val_version else '',
                 '',
+                version_color + format_version_display(val_2_version, val_2_latest) + Style.RESET_ALL if val_2_version else '',
+                '',
                 version_color + format_version_display(_sanitize_version_text(dvt_version), _sanitize_version_text(dvt_latest)) + Style.RESET_ALL if dvt_version else '',
                 ''
             ])
@@ -1844,7 +2126,7 @@ def versions(node, all):
             tablefmt='fancy_grid',
             stralign='left',
             numalign='center',
-            maxcolwidths=[16, 3, 16, 3, 16, 3, 16, 3, 16, 3]
+            maxcolwidths=[16, 3, 16, 3, 16, 3, 30, 3, 30, 3, 30, 3]
         ))
         click.echo(f"\n📊 CLUSTER SUMMARY:")
         click.echo(f"  🟢 Active: {active_nodes}  🔴 Disabled: {disabled_nodes}  Total: {len(nodes)}")
@@ -1894,6 +2176,16 @@ def versions(node, all):
                     click.echo("ℹ️  Skipped upgrade.")
 
         return
+    
+    # Single node mode
+    node_cfg = next((n for n in nodes if n.get('tailscale_domain') == node or n.get('name') == node), None)
+    if not node_cfg:
+        click.echo(f"❌ Node {node} not found")
+        return
+    
+    # Get Charon version for single node
+    ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
+    charon_version = _get_charon_version(ssh_target, node_cfg['tailscale_domain'], node_cfg)
     
     # Get detailed version information
     click.echo(f"\n📋 CLIENT VERSIONS:")

@@ -120,11 +120,11 @@ def _upgrade_single_network_node(node_config):
     is_local = node_config.get('is_local', False)
     
     if is_local:
-        # Execute locally without SSH
-        upgrade_cmd = f'cd {eth_docker_path} && git config --global --add safe.directory {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d'
+        # Execute locally using proper eth-docker approach - avoid screen issues
+        upgrade_cmd = f'cd {eth_docker_path} && git pull && docker compose pull && docker compose up -d --remove-orphans'
     else:
-        # Execute via SSH  
-        upgrade_cmd = f'ssh {ssh_target} "git config --global --add safe.directory {eth_docker_path} && cd {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d"'
+        # Execute via SSH using proper eth-docker approach
+        upgrade_cmd = f'ssh {ssh_target} "cd {eth_docker_path} && git pull && docker compose pull && docker compose up -d --remove-orphans"'
     
     try:
         process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=300)
@@ -159,55 +159,44 @@ def _upgrade_multi_network_node(node_config):
             'upgrade_success': True
         }
         
-        # Execute commands step by step for better error handling
-        commands = [
-            f"git config --global --add safe.directory {eth_docker_path}",
-            f"cd {eth_docker_path}",
-            "git checkout main",
-            "git pull",
-            "docker compose pull",
-            "docker compose build --pull",
-            "docker compose up -d"
-        ]
-        
-        for i, cmd in enumerate(commands, 1):
-            if is_local:
-                if cmd.startswith('cd '):
-                    # Skip cd command for local execution, we'll use cwd parameter
-                    continue
-                    
-                # Execute locally without SSH
-                try:
-                    process = subprocess.run(cmd, shell=True, capture_output=True, text=True, 
-                                           timeout=120, cwd=eth_docker_path)
-                    
+        # Execute eth-docker update commands
+        if is_local:
+            # Execute locally using proper docker compose commands
+            try:
+                # Run git pull
+                process = subprocess.run('git pull', shell=True, capture_output=True, text=True, 
+                                       timeout=60, cwd=eth_docker_path)
+                network_result['upgrade_output'] += f"git pull: {process.stdout}\n"
+                if process.returncode != 0:
+                    network_result['upgrade_error'] += f"git pull failed: {process.stderr}\n"
+                    network_result['upgrade_success'] = False
+                else:
+                    # Check for local images and rebuild them with latest base images
+                    rebuild_cmd = 'docker compose pull && docker compose build --pull && docker compose up -d --remove-orphans'
+                    process = subprocess.run(rebuild_cmd, shell=True, capture_output=True, text=True, 
+                                           timeout=300, cwd=eth_docker_path)
+                    network_result['upgrade_output'] += f"docker rebuild and up: {process.stdout}\n"
                     if process.returncode != 0:
-                        network_result['upgrade_error'] += f"Command '{cmd}' failed: {process.stderr}\n"
+                        network_result['upgrade_error'] += f"docker rebuild failed: {process.stderr}\n"
                         network_result['upgrade_success'] = False
-                        break
-                    else:
-                        network_result['upgrade_output'] += f"✓ {cmd}: {process.stdout}\n"
                         
-                except subprocess.TimeoutExpired:
-                    network_result['upgrade_error'] += f"Command '{cmd}' timeout after 2 minutes\n"
-                    network_result['upgrade_success'] = False
-                    break
-                except Exception as e:
-                    network_result['upgrade_error'] += f"Command '{cmd}' exception: {str(e)}\n"
-                    network_result['upgrade_success'] = False
-                    break
-            else:
-                # Execute via SSH - combine all commands
-                full_cmd = f'ssh {ssh_target} "cd {eth_docker_path} && {" && ".join(commands[2:])}"'
-                try:
-                    process = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=300)
-                    network_result['upgrade_output'] = process.stdout
-                    network_result['upgrade_error'] = process.stderr
-                    network_result['upgrade_success'] = process.returncode == 0
-                except subprocess.TimeoutExpired:
-                    network_result['upgrade_error'] = "Upgrade timeout after 5 minutes"
-                    network_result['upgrade_success'] = False
-                break  # Exit the command loop for SSH mode
+            except subprocess.TimeoutExpired:
+                network_result['upgrade_error'] += f"docker commands timeout\n"
+                network_result['upgrade_success'] = False
+            except Exception as e:
+                network_result['upgrade_error'] += f"docker commands exception: {str(e)}\n"
+                network_result['upgrade_success'] = False
+        else:
+            # Execute via SSH using proper docker compose commands with rebuild for local images
+            full_cmd = f'ssh {ssh_target} "cd {eth_docker_path} && git pull && docker compose pull && docker compose build --pull && docker compose up -d --remove-orphans"'
+            try:
+                process = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=600)
+                network_result['upgrade_output'] = process.stdout
+                network_result['upgrade_error'] = process.stderr
+                network_result['upgrade_success'] = process.returncode == 0
+            except subprocess.TimeoutExpired:
+                network_result['upgrade_error'] = "docker commands timeout after 10 minutes"
+                network_result['upgrade_success'] = False
         
         results[network_name] = network_result
         if not network_result['upgrade_success']:
@@ -540,12 +529,15 @@ def _get_single_network_client_versions(node_config):
         execution_client_name = "Unknown"
         consensus_client_name = "Unknown"
         validator_client_name = "Unknown"
+        validator_2_name = "Unknown"  # Second validator client
         execution_container = None
         consensus_container = None
         validator_container = None
+        validator_2_container = None  # Second validator container
         execution_image = None
         consensus_image = None
         validator_image = None
+        validator_2_image = None  # Second validator image
 
         # For nodes with multiple validator clients, collect all of them
         validator_clients = []  # List of (client_name, container, image)
@@ -594,7 +586,7 @@ def _get_single_network_client_versions(node_config):
                         execution_image = image
 
                     # Identify consensus clients (beacon nodes) - these override erigon-caplin
-                    # Exclude Charon-managed Lodestar validator containers from being treated as consensus
+                    # Exclude Charon-managed Lodestar validator containers and validator clients (vc) from being treated as consensus
                     elif (
                         (
                             'consensus' in container_name.lower()
@@ -604,6 +596,7 @@ def _get_single_network_client_versions(node_config):
                             )
                         )
                         and 'validator' not in container_name.lower()
+                        and '_vc' not in container_name.lower()  # Exclude validator clients like hyperdrive_sw_vc
                         and not ('charon' in container_name.lower() and 'lodestar' in container_name.lower())
                     ):
                         consensus_client_name = _identify_client_from_image(image, 'consensus')
@@ -651,12 +644,17 @@ def _get_single_network_client_versions(node_config):
             # Use the highest priority validator as primary
             validator_client_name, validator_container, validator_image = validator_clients[0]
 
-            # For display purposes, show multiple validators if present
+            # For display purposes, handle multiple validators
+            validator_2_name = "Unknown"
+            validator_2_container = None
+            validator_2_image = None
             if len(validator_clients) > 1:
-                additional_validators = [client[0] for client in validator_clients[1:]]
-                # Placeholder: can be used for display later
-                _ = additional_validators
+                validator_2_name, validator_2_container, validator_2_image = validator_clients[1]
         else:
+            # No validators detected - initialize validator_2 to Unknown
+            validator_2_name = "Unknown"
+            validator_2_container = None
+            validator_2_image = None
             # If Charon is present but no validator detected, do not fall back to consensus
             # Try a last-chance detection: any container image containing 'lodestar'
             if dvt_charon_present and containers_process.returncode == 0 and container_lines:
@@ -739,6 +737,30 @@ def _get_single_network_client_versions(node_config):
                 if validator_current in ["No Version Found", "Empty Logs", "Log Error", "Unknown", "Exec Error"]:
                     validator_current = _extract_image_version(f"image: {validator_image}")
         
+        # Get version info for second validator if it exists
+        validator_2_current = "Unknown"
+        if validator_2_name != "Unknown" and validator_2_container:
+            # Use same logic as first validator
+            if 'vero' in validator_2_name.lower():
+                validator_2_current = _get_vero_version_from_container(ssh_target, validator_2_container)
+            elif 'lodestar' in validator_2_name.lower():
+                validator_2_current = _get_lodestar_version_from_container(ssh_target, validator_2_container)
+            else:
+                validator_2_current = _get_client_version_from_logs(ssh_target, validator_2_container, validator_2_name)
+            
+            # Fallback methods for second validator
+            if validator_2_current in ["No Version Found", "Empty Logs", "Log Error", "Unknown"] or validator_2_current.startswith("Error:") or validator_2_current.startswith("Debug:"):
+                if 'vero' in validator_2_name.lower():
+                    validator_2_current = "local"
+                elif 'lodestar' not in validator_2_name.lower():
+                    exec_version = _get_version_via_docker_exec(ssh_target, validator_2_container, validator_2_name)
+                    if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
+                        validator_2_current = exec_version
+                
+                # Final fallback to image version for second validator
+                if validator_2_current in ["No Version Found", "Empty Logs", "Log Error", "Unknown", "Exec Error"]:
+                    validator_2_current = _extract_image_version(f"image: {validator_2_image}")
+        
         # Handle case where validator might be integrated with consensus client
         # This can happen in all-in-one setups where validator runs with consensus
         if (
@@ -770,6 +792,12 @@ def _get_single_network_client_versions(node_config):
                 validator_client_name = consensus_client_name
                 validator_current = consensus_current
                 validator_latest = consensus_latest
+
+        # Get latest version for second validator if present
+        validator_2_latest = "Unknown"
+        if validator_2_name != "Unknown" and validator_2_name != consensus_client_name:
+            validator_2_latest = _get_latest_github_release(validator_2_name)
+        
         elif validator_client_name == consensus_client_name and consensus_client_name != "Unknown":
             # Same client for both consensus and validator (e.g., lodestar, teku, prysm)
             # Use the consensus client's latest version for validator too since they're always the same
@@ -787,6 +815,9 @@ def _get_single_network_client_versions(node_config):
         results['validator_current'] = validator_current
         results['validator_latest'] = validator_latest
         results['validator_client'] = validator_client_name
+        results['validator_2_current'] = validator_2_current
+        results['validator_2_latest'] = validator_2_latest
+        results['validator_2_client'] = validator_2_name
         results['dvt_charon_present'] = dvt_charon_present
         # Origin labeling for display
         if validator_client_name and 'lodestar' in str(validator_client_name).lower() and dvt_charon_present:
@@ -807,10 +838,16 @@ def _get_single_network_client_versions(node_config):
             # Validator is integrated with consensus client
             validator_needs_update = consensus_needs_update
 
+        # Second validator update status
+        validator_2_needs_update = False
+        if validator_2_name != "Unknown" and validator_2_name != consensus_client_name:
+            validator_2_needs_update = _version_needs_update(validator_2_current, validator_2_latest)
+
         results['execution_needs_update'] = exec_needs_update
         results['consensus_needs_update'] = consensus_needs_update
         results['validator_needs_update'] = validator_needs_update
-        results['needs_client_update'] = exec_needs_update or consensus_needs_update or validator_needs_update
+        results['validator_2_needs_update'] = validator_2_needs_update
+        results['needs_client_update'] = exec_needs_update or consensus_needs_update or validator_needs_update or validator_2_needs_update
 
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         results['execution_current'] = "SSH Error"
@@ -822,9 +859,13 @@ def _get_single_network_client_versions(node_config):
         results['validator_current'] = "SSH Error"
         results['validator_latest'] = "SSH Error"
         results['validator_client'] = "Unknown"
+        results['validator_2_current'] = "SSH Error"
+        results['validator_2_latest'] = "SSH Error"
+        results['validator_2_client'] = "Unknown"
         results['execution_needs_update'] = False
         results['consensus_needs_update'] = False
         results['validator_needs_update'] = False
+        results['validator_2_needs_update'] = False
         results['needs_client_update'] = False
     
     return results
@@ -1393,6 +1434,10 @@ def _extract_image_version(image_string):
         version = image_part.split(":")[-1].strip()
         # Remove quotes and extra characters
         version = re.sub(r'["\']', '', version)
+        
+        # Special handling for local builds - treat as latest available version
+        if version == "local":
+            return "latest"
         
         # Clean up complex version strings to show only version number
         # Handle formats like: v25.7.0/linux-x86_64/openjdk-java-21 -> 25.7.0
