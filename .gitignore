@@ -59,3 +59,4 @@ demo_*.sh
 demo_*.py
 *.csv
 *.bat
+config.yaml

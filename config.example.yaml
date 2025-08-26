@@ -1,0 +1,31 @@
+cluster_name: example-cluster
+monitoring:
+  auto_discovery: true
+  discovery_frequency: weekly
+  enabled: true
+  performance_enabled: true
+networks:
+- mainnet
+nodes:
+- ethereum_clients_enabled: true
+  name: node1
+  ssh_user: user
+  stack:
+  - eth-docker
+  tailscale_domain: node1.example-tailnet.ts.net
+  eth_docker_path: /path/to/eth-docker
+- ethereum_clients_enabled: true
+  name: node2
+  ssh_user: user
+  stack:
+  - eth-docker
+  tailscale_domain: node2.example-tailnet.ts.net
+  eth_docker_path: /path/to/eth-docker
+- ethereum_clients_enabled: true
+  name: node3
+  ssh_user: user
+  stack:
+  - eth-docker
+  tailscale_domain: node3.example-tailnet.ts.net
+  eth_docker_path: /path/to/eth-docker
+# Add more nodes as needed, using only non-sensitive example data
