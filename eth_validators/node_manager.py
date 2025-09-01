@@ -636,7 +636,7 @@ def _get_single_network_client_versions(node_config):
                     # Fallback to traditional methods
                     execution_current = _get_client_version_from_logs(ssh_target, execution_container, execution_client_name)
             # For certain other clients, try docker exec first as it's more reliable than old logs
-            elif execution_client_name.lower() in ['nethermind', 'reth', 'besu', 'geth']:
+            elif execution_client_name.lower() in ['nethermind', 'reth', 'besu', 'geth', 'erigon']:
                 exec_version = _get_version_via_docker_exec(ssh_target, execution_container, execution_client_name)
                 if exec_version and exec_version not in ["Error", "Unknown", "Exec Error"]:
                     execution_current = exec_version

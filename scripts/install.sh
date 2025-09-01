@@ -34,18 +34,39 @@ mkdir -p "$INSTALL_DIR"
 mkdir -p "$CONFIG_DIR"
 mkdir -p "$DATA_DIR"
 
-# Install Python dependencies
+# Install Python dependencies with a safe fallback
 echo "🐍 Installing Python dependencies..."
-if command -v pip3 &> /dev/null; then
-    # Check if in virtual environment
-    if [[ -n "$VIRTUAL_ENV" ]]; then
-        pip3 install click pyyaml requests tabulate colorama pandas numpy
-    else
-        pip3 install --user click pyyaml requests tabulate colorama pandas numpy
-    fi
-else
-    echo "❌ Error: pip3 not found. Please install Python 3 and pip3"
+PKGS=(click pyyaml requests tabulate colorama pandas numpy)
+if ! command -v pip3 &> /dev/null; then
+    echo "❌ Error: pip3 not found. Please install Python 3 and pip3 (e.g. apt install python3-pip python3-venv)"
     exit 1
+fi
+
+# If running inside an existing virtualenv, install there
+if [[ -n "$VIRTUAL_ENV" ]]; then
+    echo "🔁 Detected active virtualenv; installing into it..."
+    pip3 install "${PKGS[@]}"
+else
+    # Try a per-user install first
+    echo "🔁 Trying pip --user install..."
+    if pip3 install --user "${PKGS[@]}"; then
+        echo "✅ Python packages installed with --user"
+    else
+        # Fallback: create a dedicated venv in the data directory and install there
+        echo "⚠️  --user install failed (common on PEP 668 systems). Creating virtualenv at $DATA_DIR/venv and installing packages there..."
+        if python3 -m venv "$DATA_DIR/venv"; then
+            # Activate venv for this script session
+            # shellcheck disable=SC1091
+            source "$DATA_DIR/venv/bin/activate"
+            pip install --upgrade pip
+            pip install "${PKGS[@]}"
+            deactivate || true
+            echo "✅ Python packages installed into virtualenv: $DATA_DIR/venv"
+        else
+            echo "❌ Failed to create virtualenv. On Debian/Ubuntu ensure package 'python3-venv' is installed."
+            exit 1
+        fi
+    fi
 fi
 
 # Copy application files
@@ -58,7 +79,7 @@ cat > "$INSTALL_DIR/eth-validators" << 'EOF'
 #!/bin/bash
 
 # Ethereum Validator Cluster Manager Wrapper Script
-# This script abstracts the Python virtual environment and module execution
+# This script uses a bundled virtualenv when present, otherwise falls back to system python3
 
 # Find the installation directory
 if [[ -f "/var/lib/eth-validators/eth_validators/__main__.py" ]]; then
@@ -70,10 +91,16 @@ else
     exit 1
 fi
 
-# Set Python path and execute
+# Prefer venv inside the app data dir if present
+if [[ -x "$APP_DIR/venv/bin/python" ]]; then
+    PY="$APP_DIR/venv/bin/python"
+else
+    PY="python3"
+fi
+
 export PYTHONPATH="$APP_DIR:$PYTHONPATH"
 cd "$APP_DIR"
-python3 -m eth_validators "$@"
+"$PY" -m eth_validators "$@"
 EOF
 
 # Make the script executable
