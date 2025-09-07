@@ -1,0 +1,106 @@
+#!/bin/bash
+# Ethereum Node and Validator Cluster Manager - Wrapper Script
+# This script abstracts away Python environment complexity for end users
+
+set -e  # Exit on any error
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR" && pwd)"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_info() {
+    echo -e "${BLUE}ℹ️  $1${NC}"
+}
+
+print_success() {
+    echo -e "${GREEN}✅ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠️  $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+# Function to check if we're in the right directory
+check_setup() {
+    if [[ ! -f "$PROJECT_ROOT/eth_validators/__main__.py" ]]; then
+        print_error "Error: eth_validators module not found in $PROJECT_ROOT"
+        print_error "Please run this script from the project root directory or ensure proper installation."
+        exit 1
+    fi
+}
+
+# Function to setup virtual environment if needed
+setup_venv() {
+    if [[ ! -d "$PROJECT_ROOT/venv" ]]; then
+        print_info "Setting up virtual environment..."
+        python3 -m venv "$PROJECT_ROOT/venv"
+        print_success "Virtual environment created"
+    fi
+
+    # Activate virtual environment
+    source "$PROJECT_ROOT/venv/bin/activate"
+
+    # Install/update requirements if needed
+    if [[ ! -f "$PROJECT_ROOT/.venv_setup_complete" ]] || [[ "$PROJECT_ROOT/requirements.txt" -nt "$PROJECT_ROOT/.venv_setup_complete" ]]; then
+        print_info "Installing/updating requirements..."
+        pip install --upgrade pip
+        if [[ -f "$PROJECT_ROOT/requirements.txt" ]]; then
+            pip install -r "$PROJECT_ROOT/requirements.txt"
+        fi
+        if [[ -f "$PROJECT_ROOT/requirements-ml.txt" ]]; then
+            pip install -r "$PROJECT_ROOT/requirements-ml.txt" || print_warning "Some ML requirements failed to install (optional)"
+        fi
+        touch "$PROJECT_ROOT/.venv_setup_complete"
+        print_success "Requirements installed"
+    fi
+}
+
+# Function to run the actual command
+run_command() {
+    # Check if we have arguments
+    if [[ $# -eq 0 ]]; then
+        # No arguments - show help
+        python3 -m eth_validators --help
+        return
+    fi
+
+    # Run the actual command
+    python3 -m eth_validators "$@"
+}
+
+# Main execution
+main() {
+    print_info "🚀 Ethereum Node and Validator Cluster Manager"
+
+    # Check setup
+    check_setup
+
+    # Setup virtual environment
+    setup_venv
+
+    # Run the command
+    run_command "$@"
+
+    print_success "Command completed"
+}
+
+# Handle special case: if script is called with no arguments or --help
+if [[ $# -eq 0 ]] || [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
+    main "$@"
+    exit 0
+fi
+
+# Run main function with all arguments
+main "$@"

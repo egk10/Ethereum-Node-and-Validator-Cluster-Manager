@@ -24,11 +24,20 @@ curl -L "$LATEST" -o manager.zip
 unzip -o manager.zip
 ./install.sh
 
-# 4) Gere seu config.yaml
-python3 -m eth_validators quickstart
+# 4) Agora você pode usar de 3 formas diferentes:
+./eth-manager --help                    # Wrapper script (recomendado)
+./run.sh --help                         # Script local simples
+python3 -m eth_validators --help        # Execução direta Python
 
-# 5) Valide a instalação
-python3 -m eth_validators --help
+# 5) Para instalação global (opcional - usar em qualquer lugar)
+./install-global.sh
+eth-manager --help                      # Agora funciona de qualquer lugar!
+
+# 6) Gere seu config.yaml
+./eth-manager quickstart
+
+# 7) Valide a instalação
+./eth-manager --help
 ```
 
 ### Via Download (manual)
@@ -42,9 +51,39 @@ unzip -o manager.zip
 python3 -m eth_validators quickstart
 ```
 
-## 📦 Release
+## 🎯 Como Usar (3 Opções)
 
-Um único pacote unificado (.zip) por release. Extraia e execute `./install.sh`. Este projeto foi criado para setups multi-hardware, multi-stack, com gerenciamento remoto via **Tailscale** e automação usando **ETH-DOCKER**.
+### 1️⃣ Wrapper Script (Recomendado - Sem Python!)
+```bash
+# Do diretório do projeto
+./eth-manager --help
+./eth-manager quickstart
+./eth-manager node status
+./eth-manager validator discover
+
+# Ou instale globalmente para usar de qualquer lugar
+./install-global.sh
+eth-manager --help                    # Funciona de qualquer lugar!
+eth-manager node status --all
+```
+
+### 2️⃣ Script Local Simples
+```bash
+# Do diretório do projeto
+./run.sh --help
+./run.sh quickstart
+./run.sh node status
+```
+
+### 3️⃣ Execução Direta Python (Avançado)
+```bash
+# Ative o ambiente virtual
+source venv/bin/activate
+
+# Execute normalmente
+python3 -m eth_validators --help
+python3 -m eth_validators quickstart
+```
 
 
 ## 🚦 Instalação Passo a Passo (para todos os níveis)
