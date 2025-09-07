@@ -2,10 +2,7 @@ name: CI and Release
 
 on:
   push:
-          - name: Smoke test
-        run: |
-          source venv/bin/activate
-          python3 -m eth_validators --helpnches: [ main ]
+    branches: [ main ]
     tags:
       - 'v*'
   workflow_dispatch:
