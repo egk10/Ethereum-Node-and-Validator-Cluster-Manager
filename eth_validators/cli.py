@@ -21,6 +21,7 @@ from .node_manager import (
     get_node_port_mappings,
     get_env_p2p_ports,
     get_compose_p2p_ports,
+    run_command_on_node,
 )
 from .ai_analyzer import ValidatorLogAnalyzer
 from .validator_sync import ValidatorSyncManager, get_active_validators_only
@@ -338,13 +339,7 @@ def cli():
     """🚀 Ethereum Node and Validator Cluster Manager"""
     pass
 
-# AI Smart Performance Group
-@cli.group(name='ai')
-def ai_group():
-    """🧠 AI-powered log analysis and intelligent monitoring tools"""
-    pass
-
-# Performance Monitoring Group  
+# Performance Monitoring Group
 @cli.group(name='performance')
 def performance_group():
     """📊 Validator performance metrics and attestation efficiency analysis"""
@@ -477,7 +472,34 @@ def system_update(node, all, reboot):
         node_names = [n['name'] for n in nodes_needing_update]
         click.echo(f"\n⚠️  Nodes needing system updates: {', '.join(node_names)}")
         
-        if click.confirm(f"\n💡 Do you want to upgrade {len(node_names)} node(s) now?", default=False):
+        # Use explicit input handling for better reliability
+        import sys
+        if sys.stdin.isatty():
+            while True:
+                try:
+                    response = input(f"\n💡 Do you want to upgrade {len(node_names)} node(s) now? [y/N]: ").strip().lower()
+                    if response in ['y', 'yes']:
+                        should_upgrade = True
+                        break
+                    elif response in ['n', 'no', '']:
+                        should_upgrade = False
+                        break
+                    else:
+                        click.echo("❌ Please enter 'y' for yes or 'n' for no.")
+                except (EOFError, KeyboardInterrupt):
+                    click.echo("\nℹ️  Input cancelled by user.")
+                    should_upgrade = False
+                    break
+                except Exception as e:
+                    click.echo(f"❌ Input error: {e}")
+                    should_upgrade = False
+                    break
+        else:
+            # Non-interactive mode, default to no
+            click.echo(f"\n⚠️  Non-interactive terminal detected. Skipping upgrade prompt (use --reboot to auto-upgrade).")
+            should_upgrade = False
+
+        if should_upgrade:
             click.echo("🔄 Upgrading system packages...")
             upgrade_results = []
             for i, node_cfg in enumerate(nodes_needing_update):
@@ -520,8 +542,8 @@ def system_update(node, all, reboot):
             if failed:
                 click.echo(f"❌ Failed upgrades: {', '.join([r[0] for r in failed])}")
             click.echo(f"🎉 System upgrade process completed!")
-    else:
-        click.echo(f"\n✅ All active nodes are up to date!")
+        else:
+            click.echo("ℹ️  System upgrade cancelled by user.")
 
 # Validator Management Group
 @cli.group(name='validator')
@@ -577,9 +599,9 @@ def validator_discover(output, config, verbose):
                 click.echo(f"   📡 {protocol}: {count} validators")
                 
             click.echo(f"\n🚀 Next Steps:")
-            click.echo(f"   • View validators: python3 -m eth_validators validator list")
-            click.echo(f"   • Monitor performance: python3 -m eth_validators performance summary")
-            click.echo(f"   • Check node status: python3 -m eth_validators node list")
+            click.echo(f"   • View cluster overview: python3 -m eth_validators node list")
+            click.echo(f"   • Check client versions: python3 -m eth_validators node versions --all")
+            click.echo(f"   • View port mappings: python3 -m eth_validators node ports --all")
         else:
             click.echo("\n⚠️  No validators discovered")
             click.echo("\n🔍 Troubleshooting tips:")
@@ -604,161 +626,11 @@ def validator_discover(output, config, verbose):
             click.echo(f"\n🐛 Detailed error: {traceback.format_exc()}")
         raise click.Abort()
 
-@validator_group.command(name='list')
-@click.option('--csv-file', default='validators_auto_discovered.csv', help='CSV file to read from')
-@click.option('--node', help='Filter by specific node name')
-@click.option('--protocol', help='Filter by protocol (e.g., lido-csm, obol-dvt)')
-@click.option('--status', help='Filter by validator status (e.g., active, exited)')
-def validator_list(csv_file, node, protocol, status):
-    """📋 List discovered validators with optional filtering"""
-    try:
-        csv_path = Path(csv_file)
-        
-        if not csv_path.exists():
-            click.echo(f"❌ CSV file not found: {csv_file}")
-            click.echo("💡 Run 'validator discover' first to generate the CSV file")
-            return
-        
-        # Read validators from CSV
-        with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
-            reader = csv.DictReader(csvfile)
-            validators = list(reader)
-        
-        if not validators:
-            click.echo("📭 No validators found in CSV file")
-            return
-        
-        # Apply filters
-        filtered = validators
-        if node:
-            filtered = [v for v in filtered if v['node_name'].lower() == node.lower()]
-        if protocol:
-            filtered = [v for v in filtered if protocol.lower() in v['protocol'].lower()]
-        if status:
-            filtered = [v for v in filtered if v['status'].lower() == status.lower()]
-        
-        if not filtered:
-            click.echo("📭 No validators match the specified filters")
-            return
-        
-        # Display results
-        click.echo(f"📋 Validators ({len(filtered)} found)")
-        click.echo("=" * 100)
-        
-        table_data = []
-        for validator in filtered:
-            table_data.append([
-                validator['validator_index'],
-                validator['public_key'][:12] + '...' + validator['public_key'][-6:],  # Shortened pubkey
-                validator['node_name'],
-                validator['protocol'],
-                validator['status'],
-                validator.get('last_updated', 'N/A')[:10]  # Date only
-            ])
-        
-        headers = ['Index', 'Public Key', 'Node', 'Protocol', 'Status', 'Updated']
-        click.echo(tabulate(table_data, headers=headers, tablefmt='grid'))
-        
-    except Exception as e:
-        click.echo(f"❌ Failed to list validators: {e}")
-        raise click.Abort()
 
-@validator_group.command(name='update-csv')
-@click.option('--csv-file', default='validators_vs_hardware.csv', help='Existing CSV file to update')
-@click.option('--backup/--no-backup', default=True, help='Create backup of existing CSV')
-@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
-def validator_update_csv(csv_file, backup, config):
-    """🔄 Update existing validators CSV with auto-discovered data"""
-    click.echo("🔄 Updating validators CSV with auto-discovered data...")
-    
-    try:
-        discovery = ValidatorAutoDiscovery(config)
-        
-        if backup and Path(csv_file).exists():
-            from datetime import datetime
-            backup_name = f"{csv_file}.backup_{int(datetime.now().timestamp())}"
-            Path(csv_file).rename(backup_name)
-            click.echo(f"💾 Backup created: {backup_name}")
-        
-        success = discovery.update_existing_csv(csv_file)
-        
-        if success:
-            click.echo(f"✅ Successfully updated {csv_file}")
-        else:
-            click.echo("⚠️ Update completed with warnings")
-            
-    except Exception as e:
-        click.echo(f"❌ CSV update failed: {e}")
-        raise click.Abort()
 
-@validator_group.command(name='compare')
-@click.option('--old-csv', default='validators_vs_hardware.csv', help='Original CSV file')
-@click.option('--new-csv', default='validators_auto_discovered.csv', help='Auto-discovered CSV file')
-def validator_compare(old_csv, new_csv):
-    """⚖️ Compare original CSV with auto-discovered validators"""
-    click.echo("⚖️ Comparing validator CSV files...")
-    
-    try:
-        old_path = Path(old_csv)
-        new_path = Path(new_csv)
-        
-        if not old_path.exists():
-            click.echo(f"❌ Original CSV not found: {old_csv}")
-            return
-            
-        if not new_path.exists():
-            click.echo(f"❌ Auto-discovered CSV not found: {new_csv}")
-            click.echo("💡 Run 'validator discover' first")
-            return
-        
-        # Read both files
-        with open(old_path, 'r', encoding='utf-8') as f:
-            old_reader = csv.DictReader(f)
-            old_validators = {row.get('validator index', row.get('validator_index', '')): row for row in old_reader}
-        
-        with open(new_path, 'r', encoding='utf-8') as f:
-            new_reader = csv.DictReader(f)
-            new_validators = {row['validator_index']: row for row in new_reader}
-        
-        # Compare
-        old_indices = set(old_validators.keys())
-        new_indices = set(new_validators.keys())
-        
-        common = old_indices & new_indices
-        only_old = old_indices - new_indices
-        only_new = new_indices - old_indices
-        
-        click.echo(f"\n📊 Comparison Results:")
-        click.echo(f"   Common validators: {len(common)}")
-        click.echo(f"   Only in original: {len(only_old)}")
-        click.echo(f"   Only in discovered: {len(only_new)}")
-        
-        if only_old:
-            click.echo(f"\n🔍 Validators only in original CSV:")
-            for idx in list(only_old)[:10]:  # Show first 10
-                if idx:  # Skip empty indices
-                    click.echo(f"   {idx}")
-            if len(only_old) > 10:
-                click.echo(f"   ... and {len(only_old) - 10} more")
-        
-        if only_new:
-            click.echo(f"\n🆕 Validators only in discovered CSV:")
-            for idx in list(only_new)[:10]:  # Show first 10
-                click.echo(f"   {idx}")
-            if len(only_new) > 10:
-                click.echo(f"   ... and {len(only_new) - 10} more")
-                
-        # Recommendation
-        if len(only_new) > len(only_old):
-            click.echo(f"\n💡 Recommendation: Consider using the auto-discovered CSV as it found {len(only_new) - len(only_old)} more validators")
-        elif len(only_old) > 0:
-            click.echo(f"\n💡 Recommendation: Review validators that appear only in the original CSV")
-        else:
-            click.echo(f"\n✅ Both files are consistent!")
-            
-    except Exception as e:
-        click.echo(f"❌ Comparison failed: {e}")
-        raise click.Abort()
+
+
+
 
 @cli.command(name='quickstart')
 def quickstart():
@@ -786,52 +658,7 @@ def quickstart():
         click.echo(f"❌ Quick start failed: {e}")
         raise click.Abort()
 
-@validator_group.command(name='automate')
-@click.option('--frequency', type=click.Choice(['daily', 'weekly', 'hourly']), default='daily', help='Update frequency')
-@click.option('--setup', is_flag=True, help='Setup automated discovery')
-def validator_automate(frequency, setup):
-    """⚡ Setup automated validator discovery"""
-    click.echo("⚡ Validator Auto-Discovery Automation")
-    click.echo("=" * 40)
-    
-    if not setup:
-        click.echo("🔄 Configuration preview:")
-        click.echo(f"   Frequency: {frequency}")
-        click.echo(f"   Command: validator discover")
-        click.echo("\n💡 Use --setup to enable automation")
-        return
-    
-    try:
-        # Simple cron setup
-        cron_schedule = {
-            'daily': '0 6 * * *',
-            'weekly': '0 6 * * 1', 
-            'hourly': '0 * * * *'
-        }[frequency]
-        
-        base_dir = Path(__file__).parent.parent
-        command = f"cd {base_dir} && python3 -m eth_validators validator discover"
-        cron_entry = f"{cron_schedule} {command} >> /var/log/validator-discovery.log 2>&1"
-        
-        click.echo(f"� Automation setup:")
-        click.echo(f"   Schedule: {frequency} at 6 AM")
-        click.echo(f"   Cron entry: {cron_entry}")
-        
-        if click.confirm("Add to crontab?"):
-            import subprocess
-            # Add to crontab
-            result = subprocess.run(f'(crontab -l 2>/dev/null; echo "{cron_entry}") | crontab -', 
-                                  shell=True, capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                click.echo("✅ Automation enabled!")
-                click.echo(f"🔄 Validators will be discovered {frequency}")
-            else:
-                click.echo(f"❌ Failed to setup automation: {result.stderr}")
-        
-    except Exception as e:
-        click.echo(f"❌ Automation setup failed: {e}")
-        raise click.Abort()
+
 
 def _check_reboot_needed(ssh_user, tailscale_domain, is_local=False):
     """Check if a node needs a reboot by checking for reboot-required file"""
@@ -1170,309 +997,7 @@ def upgrade(node, all):
         if result.get('upgrade_output'):
             click.echo(f"   Output: {result['upgrade_output']}")
 
-@node_group.command(name='inspect')
-@click.argument('node_name')
-def inspect_node_cmd(node_name):
-    """Inspect live validator duties and container status via SSH and beacon API"""
-    config = yaml.safe_load(get_config_path().read_text())
-    node_cfg = next(
-        (n for n in config['nodes'] if n.get('tailscale_domain') == node_name or n.get('name') == node_name),
-        None
-    )
-    if not node_cfg:
-        click.echo(f"Node {node_name} not found")
-        return
-    
-    click.echo(f"🔍 Inspecting validator duties and responsibilities for {node_cfg['name']}...")
-    
-    # Read validators CSV
-    validators_file = Path(__file__).parent / 'validators_vs_hardware.csv'
-    if not validators_file.exists():
-        click.echo("❌ validators_vs_hardware.csv not found")
-        return
-    
-    import csv
-    validators_for_node = []
-    
-    try:
-        with open(validators_file, mode='r', encoding='utf-8') as infile:
-            reader = csv.DictReader(infile)
-            for row in reader:
-                domain = row.get('tailscale dns', '').strip()
-                if domain == node_cfg['tailscale_domain']:
-                    validators_for_node.append(row)
-    except Exception as e:
-        click.echo(f"❌ Error reading CSV: {e}")
-        return
-    
-    if not validators_for_node:
-        click.echo(f"No validators found for {node_cfg['name']}")
-        return
-    
-    click.echo(f"📊 Found {len(validators_for_node)} validators for {node_cfg['name']}")
-    
-    # Group by stack/protocol
-    stacks = {}
-    for validator in validators_for_node:
-        stack = validator.get('stack', 'Unknown')
-        protocol = validator.get('Protocol', 'Unknown')
-        container = validator.get('AI Monitoring containers1', 'Unknown')
-        
-        key = f"{protocol} ({stack})"
-        if key not in stacks:
-            stacks[key] = []
-        stacks[key].append({
-            'index': validator.get('validator index ', 'N/A'),
-            'container': container,
-            'pubkey_short': validator.get('validator public address', '')[:10] + '...' if validator.get('validator public address') else 'N/A'
-        })
-    
-    # Display detailed analysis
-    click.echo("\n" + "="*80)
-    click.echo(f"🎯 VALIDATOR ANALYSIS: {node_cfg['name'].upper()}")
-    click.echo("="*80)
-    
-    for stack, validators in stacks.items():
-        click.echo(f"\n🔸 {stack}")
-        click.echo(f"   Validators: {len(validators)}")
-        click.echo(f"   Container: {validators[0]['container']}")
-        
-        # Check status of a few validators from this stack
-        if len(validators) > 0:
-            sample_indices = [v['index'] for v in validators[:3] if v['index'] != 'N/A']
-            if sample_indices:
-                click.echo(f"   Sample status check:")
-                ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
-                
-                for idx in sample_indices:
-                    try:
-                        status_cmd = f"ssh {ssh_target} \"curl -s http://localhost:{node_cfg['beacon_api_port']}/eth/v1/beacon/states/head/validators/{idx} | jq -r .data.status\""
-                        process = subprocess.run(status_cmd, shell=True, capture_output=True, text=True, timeout=10)
-                        status = process.stdout.strip().replace('"', '') if process.returncode == 0 else "Error"
-                        click.echo(f"     • Validator {idx}: {status}")
-                    except:
-                        click.echo(f"     • Validator {idx}: Connection Error")
-    
-    # Show container status
-    click.echo(f"\n🐳 Container Status:")
-    ssh_target = f"{node_cfg.get('ssh_user','root')}@{node_cfg['tailscale_domain']}"
-    
-    try:
-        command = "docker ps --format 'table {{.Names}}\\t{{.Status}}' | grep -E 'validator|hyperdrive|charon'"
-        result = _run_command(node_cfg, command)
-        if result.returncode == 0:
-            lines = result.stdout.strip().split('\n')
-            for line in lines:
-                if line and 'NAMES' not in line:
-                    click.echo(f"   {line}")
-        else:
-            click.echo("   Could not fetch container status")
-    except:
-        click.echo("   Connection error")
-    
-    click.echo("="*80)
 
-@performance_group.command(name='summary')
-def performance_cmd():
-    """Query live validator performance metrics via beacon chain APIs and CSV data"""
-    click.echo("Fetching performance data for all validators...")
-    table_data = performance.get_performance_summary()
-    headers = ["Node", "Validator Index", "Attester Eff.", "Misses", "Inclusion Dist.", "Status"]
-    
-    # ANSI color codes
-    RED = '\033[91m'
-    YELLOW = '\033[93m'
-    RESET = '\033[0m'
-
-    processed_table = []
-    for row in table_data:
-        # Deconstruct the row: [Node, Index, Eff., Misses, Dist., Status]
-        # Indices:                 0,     1,    2,      3,      4,      5
-        eff = row[2]
-        misses = row[3]
-        status = row[5]
-        
-        color = ""
-        
-        # Condition for red: status contains "exit" or misses are high
-        is_exiting = 'exit' in str(status)
-        has_high_misses = False
-        try:
-            # Check if misses is a number and greater than 3
-            if int(misses) > 3:
-                has_high_misses = True
-        except (ValueError, TypeError):
-            pass # Handles cases where misses is 'N/A'
-
-        # Condition for yellow: active but no performance data
-        is_active_no_data = 'active' in str(status) and eff == 'N/A'
-
-        if is_exiting or has_high_misses:
-            color = RED
-        elif is_active_no_data:
-            color = YELLOW
-        
-        if color:
-            # Apply color to each cell in the row
-            processed_table.append([f"{color}{item}{RESET}" for item in row])
-        else:
-            processed_table.append(row)
-
-    # Use 'plain' table format as it's safer for rendering ANSI color codes
-    click.echo(tabulate(processed_table, headers=headers, tablefmt="plain"))
-
-@node_group.command(name='update-charon')
-@click.option('--dry-run', is_flag=True, help='Show what would be done without making changes')
-@click.option('--node', 'selected_nodes', multiple=True, help='Update only specified nodes (can be used multiple times)')
-@click.option('--all', is_flag=True, help='Update Charon on all nodes with Charon/Obol stack')
-def update_charon(dry_run, selected_nodes, all):
-    """Update Charon containers via docker-compose pull and up -d on Obol distributed validator nodes"""
-    try:
-        config = yaml.safe_load(get_config_path().read_text())
-        nodes = config.get('nodes', [])
-        
-        if not nodes:
-            click.echo("❌ No nodes found in configuration")
-            return
-        
-        # Filter nodes that have Charon/Obol stack
-        charon_nodes = []
-        for node in nodes:
-            stack = node.get('stack', [])
-            if any(s.lower() in ['charon', 'obol'] for s in stack):
-                charon_nodes.append(node)
-        
-        if not charon_nodes:
-            click.echo("❌ No nodes with Charon/Obol stack found in configuration")
-            return
-        
-        # Select nodes to process
-        nodes_to_process = []
-        if all:
-            nodes_to_process = charon_nodes
-        elif selected_nodes:
-            for selected in selected_nodes:
-                for node in charon_nodes:
-                    if node['name'] == selected or node.get('tailscale_domain') == selected:
-                        nodes_to_process.append(node)
-                        break
-                else:
-                    click.echo(f"⚠️ Node '{selected}' not found or doesn't have Charon/Obol stack")
-        else:
-            click.echo("❌ Use --all or specify --node option(s)")
-            return
-        
-        if not nodes_to_process:
-            return
-        
-        click.echo("🔄 Updating Charon containers...")
-        click.echo(f"📡 Processing {len(nodes_to_process)} node(s)")
-        
-        if dry_run:
-            click.echo("🔍 DRY RUN MODE - No changes will be made")
-        
-        successful_updates = []
-        failed_updates = []
-        
-        for i, node in enumerate(nodes_to_process):
-            name = node['name']
-            domain = node.get('tailscale_domain')
-            ssh_user = node.get('ssh_user', 'root')
-            
-            click.echo(f"\n📡 Processing {name}... ({i+1}/{len(nodes_to_process)})")
-            
-            if dry_run:
-                click.echo(f"🔍 [DRY RUN] Would update Charon on {name}")
-                successful_updates.append(name)
-                continue
-            
-            # Find Charon directory
-            charon_paths = [
-                "/home/egk/charon-distributed-validator-node",
-                "~/charon-distributed-validator-node",
-                "~/obol-dvt", 
-                "~/obol",
-                "~/charon",
-                "/opt/charon",
-                "/opt/obol"
-            ]
-            
-            charon_dir = None
-            for path in charon_paths:
-                check_cmd = f"test -d {path} && test -f {path}/docker-compose.yml"
-                result = _run_command(node, check_cmd)
-                if result.returncode == 0:
-                    # Verify it contains Charon
-                    verify_cmd = f"grep -qi 'charon' {path}/docker-compose.yml"
-                    verify_result = _run_command(node, verify_cmd)
-                    if verify_result.returncode == 0:
-                        charon_dir = path
-                        break
-            
-            if not charon_dir:
-                click.echo(f"❌ Charon directory not found on {name}")
-                failed_updates.append(name)
-                continue
-            
-            click.echo(f"✅ Found Charon directory: {charon_dir}")
-            
-            # Get current status
-            status_cmd = f"cd {charon_dir} && docker compose ps charon"
-            status_result = _run_command(node, status_cmd)
-            
-            # Update Charon
-            click.echo(f"🔄 Pulling latest Charon image on {name}...")
-            pull_cmd = f"cd {charon_dir} && docker compose pull charon"
-            pull_result = _run_command(node, pull_cmd)
-            
-            if pull_result.returncode != 0:
-                click.echo(f"❌ Failed to pull Charon image on {name}")
-                failed_updates.append(name)
-                continue
-            
-            click.echo(f"🚀 Starting updated Charon container on {name}...")
-            up_cmd = f"cd {charon_dir} && docker compose up -d charon"
-            up_result = _run_command(node, up_cmd)
-            
-            if up_result.returncode != 0:
-                click.echo(f"❌ Failed to start Charon container on {name}")
-                failed_updates.append(name)
-                continue
-            
-            # Wait and verify
-            import time
-            time.sleep(3)
-            
-            verify_cmd = f"cd {charon_dir} && docker compose ps charon | grep -q 'Up'"
-            verify_result = _run_command(node, verify_cmd)
-            
-            if verify_result.returncode == 0:
-                click.echo(f"✅ Charon successfully updated on {name}")
-                successful_updates.append(name)
-            else:
-                click.echo(f"⚠️ Charon update completed but status unclear on {name}")
-                successful_updates.append(name)
-        
-        # Summary
-        click.echo("\n" + "=" * 60)
-        click.echo("📊 CHARON UPDATE SUMMARY")
-        click.echo("=" * 60)
-        
-        if successful_updates:
-            click.echo(f"✅ Successfully updated {len(successful_updates)} node(s):")
-            for node in successful_updates:
-                click.echo(f"   • {node}")
-        
-        if failed_updates:
-            click.echo(f"❌ Failed to update {len(failed_updates)} node(s):")
-            for node in failed_updates:
-                click.echo(f"   • {node}")
-        
-        click.echo("=" * 60)
-        
-    except Exception as e:
-        click.echo(f"❌ Charon update failed: {e}")
-        raise click.Abort()
 
 @node_group.command(name='versions')
 @click.argument('node', required=False)
@@ -1974,9 +1499,9 @@ def versions(node, all):
                                  latest_charon != "Unknown" and 
                                  charon_version != latest_charon and 
                                  charon_version != "latest")
-            charon_status = "🔄" if charon_needs_update else "✅"
-            
-            # Display all validator clients detected
+            charon_display = charon_version if charon_version != "N/A" else "-"
+            charon_latest_display = latest_charon if charon_version != "N/A" else "-"
+            charon_update = '🔄' if charon_needs_update else '✅' if charon_version != "N/A" else '-'
             click.echo(f"🔗 Validator Infrastructure: {validator_info['display_name']}")
             if charon_version != "N/A":
                 click.echo(f"   • Charon (Obol DV): {charon_version} (Latest: {latest_charon}) {charon_status}")
@@ -2275,783 +1800,11 @@ def add_node_interactive():
         click.echo("-" * 40)
         click.echo(f"• Test the node: python3 -m eth_validators node list")
         click.echo(f"• Check versions: python3 -m eth_validators node versions {node_name}")
-        click.echo(f"• View performance: python3 -m eth_validators performance summary")
+        click.echo(f"• View port mappings: python3 -m eth_validators node ports --all")
         
     except Exception as e:
         click.echo(f"❌ Error saving configuration: {e}")
         return
-
-@node_group.command(name='ports')
-@click.argument('node', required=False)
-@click.option('--all', is_flag=True, help='Show port mappings for all configured nodes')
-@click.option('--source', type=click.Choice(['docker','env','both']), default='docker', show_default=True,
-              help='Data source: docker (live containers), env (.env files), or both')
-@click.option('--p2p-only', is_flag=True, help='Show only P2P ports (EL: 30300-30400,32300-32400,42000-42100; CL: 9000-9100; DV: 3600-3700)')
-@click.option('--include-unpublished', is_flag=True, help='Include unpublished Docker ports and .env entries (default: published only)')
-@click.option('--verbose', is_flag=True, help='Show detailed container inspection logs')
-@click.option('--csv', is_flag=True, help='Output in CSV format')
-def node_ports(node, all, source, p2p_only, include_unpublished, verbose, csv):
-    """List open/forwarded ports per node and detect conflicts across nodes on the same network."""
-    config = yaml.safe_load(get_config_path().read_text())
-
-    if all and node:
-        click.echo("❌ Cannot specify both --all and a node name")
-        return
-    if not all and not node:
-        click.echo("❌ Must specify either --all or a node name")
-        return
-
-    nodes = config.get('nodes', [])
-    if not nodes:
-        click.echo("❌ No nodes configured. Please check your config.yaml file.")
-        return
-
-    if not all:
-        node_cfg = next((n for n in nodes if n.get('tailscale_domain') == node or n.get('name') == node), None)
-        if not node_cfg:
-            click.echo(f"❌ Node {node} not found")
-            return
-        nodes = [node_cfg]
-
-    click.echo("🔎 Gathering port mappings...")
-
-    per_node_tables = []
-    conflicts = {}
-    entries_all = []
-    
-    # For CSV output, collect all rows first
-    csv_rows = []
-
-    for i, ncfg in enumerate(nodes):
-        name = ncfg.get('name', ncfg.get('tailscale_domain', f"node{i+1}"))
-        stack = ncfg.get('stack', ['eth-docker'])
-        if isinstance(stack, str):
-            stack = [stack]
-
-        # Skip disabled stacks, but still allow env-based ports if desired
-        if 'disabled' in [s.lower() for s in stack]:
-            click.echo(f"⚪ Skipping disabled node {name}")
-            continue
-
-        res = get_node_port_mappings(ncfg, source=source)
-        entries = res.get('entries', [])
-        errors = res.get('errors', [])
-
-        # Apply filters
-        # By default, show only published ports unless --include-unpublished is specified
-        if not include_unpublished:
-            entries = [e for e in entries if e.get('source') == 'docker' and e.get('published')]
-        if p2p_only:
-            def _is_p2p(e):
-                port = e.get('host_port') or e.get('container_port')
-                if port is None:
-                    return False
-                try:
-                    p = int(port)
-                except Exception:
-                    return False
-                proto = str(e.get('proto','tcp')).lower()
-                service = str(e.get('service','')).lower()
-                
-                # EL P2P default ports
-                if p in (30303, 30304) and proto in ('tcp','udp'):
-                    return True
-                    
-                # CL P2P default ports (common values across clients)
-                if p in (9000, 12000, 13000) and proto in ('tcp','udp'):
-                    return True
-                
-                # Custom P2P ports: If it's an execution or consensus service with a published port,
-                # and it's in common P2P forwarding range, consider it P2P
-                if service in ('execution', 'consensus') and e.get('published'):
-                    # Common execution P2P forwarding range (30300-30400)
-                    if service == 'execution' and 30300 <= p <= 30400 and proto in ('tcp','udp'):
-                        return True
-                    # Erigon extended P2P forwarding range (32300-32400)
-                    if service == 'execution' and 32300 <= p <= 32400 and proto in ('tcp','udp'):
-                        return True
-                    # Erigon discovery P2P forwarding range (42000-42100)
-                    if service == 'execution' and 42000 <= p <= 42100 and proto in ('tcp','udp'):
-                        return True
-                    # Common consensus P2P forwarding range (9000-9100)
-                    if service == 'consensus' and 9000 <= p <= 9100 and proto in ('tcp','udp'):
-                        return True
-                
-                # Charon DV ports (typically 3600-3700 range)
-                if service == 'validator' and 3600 <= p <= 3700 and proto == 'tcp' and e.get('published'):
-                    return True
-                    
-                return False
-            entries = [e for e in entries if _is_p2p(e)]
-
-        # Build table rows for this node - group by port and combine protocols
-        rows = []
-        
-        # Group entries by (service, container, host_port, container_port, source, network, published)
-        # and combine protocols
-        grouped = {}
-        for e in entries:
-            key = (
-                e.get('service','-'),
-                e.get('container','-'), 
-                e.get('host_port'),
-                e.get('container_port'),
-                e.get('source','-'),
-                e.get('network','-'),
-                e.get('published', False)
-            )
-            if key not in grouped:
-                grouped[key] = {'protocols': set(), 'entry': e}
-            grouped[key]['protocols'].add(e.get('proto', 'tcp'))
-        
-        # Create consolidated rows
-        for key, data in grouped.items():
-            service, container, host_port, container_port, source, network, published = key
-            protocols = sorted(list(data['protocols']))  # Sort for consistent order
-            combined_proto = ','.join(protocols)
-            
-            # Consolidate port display: show single port if same, or host→container if different
-            if host_port is not None and container_port is not None:
-                if host_port == container_port:
-                    port_display = str(host_port)
-                else:
-                    port_display = f"{host_port}→{container_port}"
-            elif host_port is not None:
-                port_display = str(host_port)
-            elif container_port is not None:
-                port_display = f"→{container_port}"  # Container-only port
-            else:
-                port_display = "-"
-            
-            row = [
-                service,
-                container,
-                port_display,
-                combined_proto,
-                source,
-                'Y' if published else 'N'
-            ]
-            rows.append(row)
-            
-            # For CSV, keep detailed format for analysis
-            if csv:
-                for proto in protocols:
-                    csv_row = [name, service, container,
-                             host_port if host_port is not None else '-',
-                             container_port if container_port is not None else '-',
-                             proto, source, 'Y' if published else 'N']
-                    csv_rows.append(csv_row)
-
-            # Track conflicts by host_port+proto within same network scope (individual protocols)
-            for proto in protocols:
-                if host_port is not None:
-                    conflict_key = (host_port, proto, network)
-                    conflicts.setdefault(conflict_key, []).append({
-                        'node': name,
-                        'service': service,
-                        'container': container,
-                        'source': source
-                    })
-                    # Create individual entry for conflict tracking
-                    conflict_entry = data['entry'].copy()
-                    conflict_entry['proto'] = proto
-                    entries_all.append({ 'node': name, **conflict_entry })
-
-        headers = ['Service','Container','Port','Proto','Source','Published']
-
-        # If nothing to show (after filters), provide a helpful hint
-        hint = None
-        # When we showed only published ports (include_unpublished=False) or filtered to P2P only,
-        # try to suggest env-only P2P ports to guide the user
-        if not rows and (p2p_only or not include_unpublished):
-            # Build a quick summary of env-only P2P ports if applicable
-            if not include_unpublished:
-                alt = res.get('entries', [])
-                if p2p_only:
-                    # Filter alt to P2P only (same logic)
-                    def _is_p2p_alt(e):
-                        port = e.get('host_port') or e.get('container_port')
-                        if port is None:
-                            return False
-                        try:
-                            p = int(port)
-                        except Exception:
-                            return False
-                        proto = str(e.get('proto','tcp')).lower()
-                        if p in (30303, 30304) and proto in ('tcp','udp'):
-                            return True
-                        if p in (9000, 12000, 13000) and proto in ('tcp','udp'):
-                            return True
-                        return False
-                    alt = [e for e in alt if _is_p2p_alt(e)]
-                env_ports = sorted({f"{e.get('host_port') or e.get('container_port')}/{e.get('proto','tcp')}" for e in alt if e.get('source')=='env'})
-                if env_ports:
-                    hint = f"No published ports detected; env suggests: {', '.join(env_ports)}"
-        per_node_tables.append((name, rows, headers, errors if errors else [], hint, ncfg))
-
-    # CSV output
-    if csv:
-        import csv as csv_module
-        import sys
-        
-        csv_headers = ['Node', 'Service', 'Container', 'Host Port', 'Container Port', 'Proto', 'Source', 'Published']
-        writer = csv_module.writer(sys.stdout)
-        writer.writerow(csv_headers)
-        for row in csv_rows:
-            writer.writerow(row)
-        return
-
-    # Render per-node tables
-    for name, rows, headers, errors, hint, ncfg in per_node_tables:
-        # Extract IP information
-        tailscale_ip = ncfg.get('tailscale_domain', 'N/A')
-        public_ip = ncfg.get('public_ip', ncfg.get('external_ip', 'N/A'))
-        
-        # Auto-detect public IP if not configured
-        if public_ip == 'N/A':
-            try:
-                # Query the node for its public IP
-                from eth_validators.node_manager import run_command_on_node
-                result = run_command_on_node(name, "curl -s ifconfig.me || curl -s ipinfo.io/ip || curl -s icanhazip.com")
-                if result and result.strip():
-                    public_ip = result.strip()
-                    # Store detected public IP back in config for matrix phase
-                    ncfg['detected_public_ip'] = public_ip
-            except Exception:
-                public_ip = 'N/A'
-        
-        click.echo("\n" + "="*70)
-        click.echo(f"🖥️  {name} - Port Mappings")
-        if tailscale_ip != 'N/A' or public_ip != 'N/A':
-            ip_info = []
-            if tailscale_ip != 'N/A':
-                ip_info.append(f"🔗 Tailscale: {tailscale_ip}")
-            if public_ip != 'N/A':
-                ip_info.append(f"🌐 Public: {public_ip}")
-            click.echo(" | ".join(ip_info))
-        click.echo("="*70)
-        if rows:
-            # Use maxcolwidths to prevent container name truncation
-            click.echo(tabulate(rows, headers=headers, tablefmt='fancy_grid', 
-                              stralign='left', numalign='center', 
-                              maxcolwidths=[None, 50, None, None, None, None]))
-        else:
-            click.echo("(no mappings found)")
-            if hint:
-                click.echo(f"ℹ️  {hint}")
-        if errors:
-            for err in errors:
-                click.echo(f"⚠️  {err}")
-
-    # Show P2P port usage matrix (comprehensive analysis from docker + .env + compose files)
-    p2p_ports = []
-    node_names = sorted(set(entry['node'] for entry in entries_all))
-    
-    # Build node config mapping for IP info
-    node_configs = {ncfg.get('name', f"node{i+1}"): ncfg for i, ncfg in enumerate(nodes)}
-    
-    def _is_p2p_port(hp, proto):
-        """Check if this is a P2P port that would be forwarded on routers"""
-        try:
-            p = int(hp)
-        except (ValueError, TypeError):
-            return False
-        proto = str(proto).lower()
-        
-        # EL P2P ports (standard and custom forwarding range)
-        if 30300 <= p <= 30400 and proto in ('tcp', 'udp'):
-            return True
-        # Erigon extended P2P ports (additional Erigon P2P range)
-        if 32300 <= p <= 32400 and proto in ('tcp', 'udp'):
-            return True  
-        # Erigon discovery/P2P ports (discovery protocol range)
-        if 42000 <= p <= 42100 and proto in ('tcp', 'udp'):
-            return True
-        # CL P2P ports (standard and custom forwarding range)  
-        if 9000 <= p <= 9100 and proto in ('tcp', 'udp'):
-            return True
-        # Charon DV ports (typically forwarded)
-        if 3600 <= p <= 3700 and proto == 'tcp':
-            return True
-        # Other common P2P ports
-        if p in (12000, 13000) and proto in ('tcp', 'udp'):
-            return True
-            
-        return False
-    
-    # P2P port discovery from ONLY published docker containers (real conflicts only)
-    all_p2p_ports = {}  # port -> {node: service_info}
-    
-    if verbose:
-        click.echo("\n🔍 Analyzing P2P ports from published docker containers only...")
-    
-    # Build P2P matrix from ONLY actually published docker ports
-    for entry in entries_all:
-        hp = entry.get('host_port')
-        proto = entry.get('proto', 'tcp')
-        node = entry['node']
-        published = entry.get('published', False)
-        
-        # Only include actually published P2P ports
-        if hp and published and _is_p2p_port(hp, proto):
-            port_num = int(hp)
-            if port_num not in all_p2p_ports:
-                all_p2p_ports[port_num] = {}
-            if node not in all_p2p_ports[port_num]:
-                all_p2p_ports[port_num][node] = {
-                    'service': entry.get('service', 'unknown'),
-                    'source': 'docker',
-                    'protocols': [proto],
-                    'container': entry.get('container', ''),
-                    'published': True
-                }
-            else:
-                if proto not in all_p2p_ports[port_num][node]['protocols']:
-                    all_p2p_ports[port_num][node]['protocols'].append(proto)
-    
-    # Special detection for execution clients with built-in consensus
-    # These ports might not be published but are used for consensus P2P
-    for name, rows, headers, errors, hint, ncfg in per_node_tables:
-        # Check if this node has execution containers that might have built-in consensus
-        execution_containers = []
-        
-        for row in rows:
-            container = row[1] if len(row) > 1 else ""
-            # Look for execution containers that might have built-in consensus
-            if 'erigon' in container.lower() or ('execution' in row[0].lower() and 'eth-' in container):
-                execution_containers.append(container)
-        
-        if execution_containers:
-            # Use docker inspect to check for built-in consensus ports
-            consensus_ports_detected = []
-            
-            for container in execution_containers:
-                try:
-                    from eth_validators.node_manager import run_command_on_node
-                    
-                    # First, verify client type by checking the image
-                    image_result = run_command_on_node(name, f"docker inspect {container} --format='{{{{.Config.Image}}}}'")
-                    
-                    has_builtin_consensus = False
-                    if image_result and 'erigon' in image_result.lower():
-                        has_builtin_consensus = True
-                    else:
-                        # Check the actual command being run
-                        cmd_result = run_command_on_node(name, f"docker inspect {container} --format='{{{{.Config.Cmd}}}}'")
-                        if cmd_result and 'erigon' in cmd_result.lower():
-                            has_builtin_consensus = True
-                    
-                    if not has_builtin_consensus:
-                        continue  # Skip non-Erigon containers silently
-                        
-                    # Check if built-in consensus is enabled by inspecting container logs
-                    logs_result = run_command_on_node(name, f"docker logs {container} 2>&1 | grep -E 'Caplin parameters|Running Erigon with internal Caplin' | head -3")
-                    
-                    builtin_consensus_enabled = False
-                    if logs_result and ('caplin' in logs_result.lower() or 'Running Erigon with internal Caplin' in logs_result):
-                        builtin_consensus_enabled = True
-                        
-                        # Extract actual port configurations from consensus parameters
-                        import re
-                        
-                        # Look for discovery TCP port (the main P2P port)
-                        tcp_matches = re.findall(r'--caplin\.discovery\.tcpport=(\d+)', logs_result)
-                        for port_str in tcp_matches:
-                            try:
-                                port_num = int(port_str)
-                                consensus_ports_detected.append((port_num, ['tcp', 'udp']))
-                            except ValueError:
-                                pass
-                                
-                        # Look for discovery UDP port (if different)
-                        udp_matches = re.findall(r'--caplin\.discovery\.port=(\d+)', logs_result)
-                        for port_str in udp_matches:
-                            try:
-                                port_num = int(port_str)
-                                # Only add if not already added by TCP
-                                if not any(p[0] == port_num for p in consensus_ports_detected):
-                                    consensus_ports_detected.append((port_num, ['udp']))
-                            except ValueError:
-                                pass
-                                pass
-                        
-                        # Look for beacon API port (informational, not P2P) - but don't log it
-                        # api_matches = re.findall(r'--beacon\.api\.port=(\d+)', logs_result)
-                        
-                        # If we found built-in consensus but no specific ports, use fallback detection
-                        if not consensus_ports_detected:
-                            consensus_ports_detected = [
-                                (9000, ['tcp', 'udp']),  # Standard beacon P2P
-                                (9001, ['tcp', 'udp']),  # QUIC  
-                            ]
-                                
-                    else:
-                        # Try checking the actual command line args as fallback
-                        args_result = run_command_on_node(name, f"docker inspect {container} --format='{{{{.Args}}}}'")
-                        
-                        if args_result and ('--caplin' in args_result or '--beacon-api' in args_result):
-                            builtin_consensus_enabled = True
-                    
-                    # If no specific ports found but built-in consensus is confirmed, check exposed ports
-                    if builtin_consensus_enabled and not consensus_ports_detected:
-                        exposed_result = run_command_on_node(name, f"docker inspect {container} --format='{{{{json .Config.ExposedPorts}}}}'")
-                        
-                        if exposed_result:
-                            import json
-                            try:
-                                exposed_ports = json.loads(exposed_result)
-                                
-                                # Look for consensus-like ports (9000-9100 range)
-                                for port_spec in exposed_ports.keys():
-                                    if '/' in port_spec:
-                                        port_str, proto = port_spec.split('/')
-                                        try:
-                                            port_num = int(port_str)
-                                            if 9000 <= port_num <= 9100:  # Consensus port range
-                                                consensus_ports_detected.append((port_num, [proto]))
-                                        except ValueError:
-                                            continue
-                                            
-                            except (json.JSONDecodeError, AttributeError):
-                                pass
-                                
-                    # Final fallback: if built-in consensus enabled but no ports detected, use defaults
-                    if builtin_consensus_enabled and not consensus_ports_detected:
-                        consensus_ports_detected = [
-                            (9000, ['tcp', 'udp']),  # Standard beacon P2P
-                            (9001, ['tcp', 'udp']),  # QUIC  
-                        ]
-                        
-                except Exception as e:
-                    click.echo(f"⚠️ {name}: Could not inspect {container} ({str(e)[:50]}...)")
-                    continue
-            
-            # Add detected/inferred built-in consensus ports
-            for port_num, protocols in consensus_ports_detected:
-                # Only add if this port isn't already detected as published
-                if port_num not in all_p2p_ports:
-                    all_p2p_ports[port_num] = {}
-                
-                if name not in all_p2p_ports[port_num]:
-                    # Determine if this was inspected or assumed
-                    source_type = 'erigon_caplin_inspected' if consensus_ports_detected else 'erigon_caplin_assumed'
-                    
-                    all_p2p_ports[port_num][name] = {
-                        'service': 'consensus',
-                        'source': source_type,
-                        'protocols': protocols,
-                        'container': execution_containers[0] if execution_containers else 'execution',
-                        'published': False  # These are inferred, not actually published
-                    }
-                    if verbose:
-                        click.echo(f"🔍 Detected built-in consensus on {name}: inferred P2P port {port_num}")
-    
-    # Build P2P matrix from only published ports
-    for port_num in sorted(all_p2p_ports.keys()):
-        nodes_using_port = all_p2p_ports[port_num]
-        if len(nodes_using_port) == 0:
-            continue
-            
-        # Create rows for each protocol used by this port
-        protocols_used = set()
-        for node_info in nodes_using_port.values():
-            protocols_used.update(node_info['protocols'])
-        
-        for protocol in sorted(protocols_used):
-            port_key = f"{port_num}/{protocol}"
-            row = [port_key]
-            
-            for node_name in node_names:
-                if node_name in nodes_using_port:
-                    node_info = nodes_using_port[node_name]
-                    if protocol in node_info['protocols']:
-                        # Different symbols for different sources
-                        source = node_info.get('source', '')
-                        if source == 'erigon_caplin_inspected':
-                            cell = "C✓"  # Built-in Consensus ports
-                        elif source == 'erigon_caplin_assumed':
-                            cell = "🔒✓"  # Assumed Caplin ports
-                        else:
-                            cell = "✓"
-                    else:
-                        cell = "-"
-                else:
-                    cell = "-"
-                row.append(cell)
-            
-            p2p_ports.append(row)
-    
-    # Real conflict detection - includes published AND inferred built-in consensus ports on same public IP
-    real_conflicts = []
-    for port_num in sorted(all_p2p_ports.keys()):
-        nodes_using_port = all_p2p_ports[port_num]
-        
-        if len(nodes_using_port) < 2:
-            continue
-            
-        # Group nodes by public IP to find real router conflicts
-        ip_groups = {}
-        for name, rows, headers, errors, hint, ncfg in per_node_tables:
-            if name in nodes_using_port:
-                # Use detected public IP from individual node phase
-                public_ip = ncfg.get('detected_public_ip', ncfg.get('public_ip', ncfg.get('external_ip', 'unknown')))
-                
-                if public_ip not in ip_groups:
-                    ip_groups[public_ip] = []
-                ip_groups[public_ip].append(name)
-        
-        # Only flag conflicts within same public IP groups (ignore N/A and unknown)
-        for public_ip, conflicting_nodes in ip_groups.items():
-            if len(conflicting_nodes) > 1 and public_ip not in ['unknown', 'N/A']:
-                # Check each protocol for this port
-                for node_name in conflicting_nodes:
-                    node_info = nodes_using_port[node_name]
-                    for protocol in node_info['protocols']:
-                        # Create conflict entry - include source info for debugging
-                        conflict_key = f"{port_num}/{protocol}/{public_ip}"
-                        existing_conflict = next((c for c in real_conflicts if c['port'] == port_num and c['protocol'] == protocol and c['public_ip'] == public_ip), None)
-                        
-                        if existing_conflict:
-                            if node_name not in existing_conflict['nodes']:
-                                existing_conflict['nodes'].append(node_name)
-                        else:
-                            real_conflicts.append({
-                                'port': port_num,
-                                'protocol': protocol,
-                                'public_ip': public_ip,
-                                'nodes': [node_name],
-                                'has_erigon_caplin': any(nodes_using_port[n].get('source', '').startswith('erigon_caplin') for n in conflicting_nodes),
-                                'caplin_detection_method': 'mixed'  # Will be updated with actual methods
-                            })
-    
-    # Filter to only conflicts with multiple nodes
-    real_conflicts = [c for c in real_conflicts if len(c['nodes']) > 1]
-    
-    click.echo("\n" + "="*70)
-    click.echo("🌐 P2P Port Usage Matrix")
-    click.echo("="*70)
-    if p2p_ports:
-        # First, detect all public IPs once to avoid repeated SSH calls
-        node_public_ips = {}
-        for name, rows, headers, errors, hint, ncfg in per_node_tables:
-            # Use detected public IP first (from individual node phase), then configured public IP
-            public_ip = ncfg.get('detected_public_ip', ncfg.get('public_ip', ncfg.get('external_ip', 'N/A')))
-            node_public_ips[name] = public_ip
-        
-        # Group nodes by public IP
-        public_ips = {}
-        for node_name, public_ip in node_public_ips.items():
-            if public_ip not in public_ips:
-                public_ips[public_ip] = []
-            public_ips[public_ip].append(node_name)
-        
-        # Define color codes for different public IPs
-        colors = [
-            '\033[91m',  # Red
-            '\033[92m',  # Green  
-            '\033[94m',  # Blue
-            '\033[95m',  # Magenta
-            '\033[96m',  # Cyan
-            '\033[93m',  # Yellow
-        ]
-        reset = '\033[0m'
-        
-        # Assign colors to public IPs
-        ip_colors = {}
-        color_idx = 0
-        for public_ip in sorted(public_ips.keys()):
-            if public_ip != 'N/A':
-                ip_colors[public_ip] = colors[color_idx % len(colors)]
-                color_idx += 1
-            else:
-                ip_colors[public_ip] = ''  # No color for N/A
-        
-        # Build headers with visual indicators for IP groups
-        headers = ['P2P Port']
-        
-        # Define symbols for different public IPs
-        symbols = ['●', '▲', '■', '◆', '★', '♦']
-        ip_symbols = {}
-        symbol_idx = 0
-        for public_ip in sorted(public_ips.keys()):
-            if public_ip != 'N/A' and len(public_ips[public_ip]) > 1:  # Only mark shared IPs
-                ip_symbols[public_ip] = symbols[symbol_idx % len(symbols)]
-                symbol_idx += 1
-        
-        for node_name in node_names:
-            public_ip = node_public_ips[node_name]
-            symbol = ip_symbols.get(public_ip, '')
-            
-            if symbol:
-                # Use both color and symbol for shared IPs
-                color = ip_colors.get(public_ip, '')
-                header_name = f"{color}{symbol}{node_name}{reset}" if color else f"{symbol}{node_name}"
-            else:
-                header_name = node_name
-            
-            headers.append(header_name)
-        
-        # Color-code and symbolize the checkmarks in the matrix with CONFLICT DETECTION
-        colored_matrix = []
-        for row in sorted(p2p_ports, key=lambda r: (int(r[0].split('/')[0]), r[0].split('/')[1])):
-            colored_row = [row[0]]  # Port column (no color)
-            
-            # First pass: detect if this port has conflicts (only within same public IP groups)
-            port_conflicts = {}  # public_ip -> [node_names using this port]
-            
-            for i, cell in enumerate(row[1:]):  # Skip port column
-                if cell == "✓":
-                    node_name = node_names[i]
-                    public_ip = node_public_ips[node_name]
-                    
-                    if public_ip not in port_conflicts:
-                        port_conflicts[public_ip] = []
-                    port_conflicts[public_ip].append(node_name)
-            
-            # Only detect conflicts within the same public IP group
-            # Nodes with different public IPs can safely use the same ports
-            enhanced_conflicts = port_conflicts
-            
-            # Check if any group has multiple nodes using this port (= CONFLICT!)
-            has_conflict = any(len(nodes) > 1 for nodes in enhanced_conflicts.values())
-            
-            # Second pass: render cells with conflict indicators
-            for i, cell in enumerate(row[1:]):  # Skip port column
-                if cell == "✓":
-                    node_name = node_names[i]
-                    public_ip = node_public_ips[node_name]
-                    symbol = ip_symbols.get(public_ip, '')
-                    color = ip_colors.get(public_ip, '')
-                    
-                    # Check if THIS specific node is in a conflict
-                    is_in_conflict = False
-                    for conflict_group in enhanced_conflicts.values():
-                        if node_name in conflict_group and len(conflict_group) > 1:
-                            is_in_conflict = True
-                            break
-                    
-                    if is_in_conflict:
-                        # 🚨 BIG RED CONFLICT WARNING! 🚨
-                        conflict_indicator = f"\033[91m\033[1m🔴⚠️\033[0m"  # Bold red circle + warning
-                        if symbol:
-                            colored_checkmark = f"{color}{symbol}{conflict_indicator}{reset}" if color else f"{symbol}{conflict_indicator}"
-                        else:
-                            colored_checkmark = f"{conflict_indicator}"
-                    elif symbol:
-                        # Regular colored symbol for shared IPs without conflicts
-                        colored_checkmark = f"{color}{symbol}✓{reset}" if color else f"{symbol}✓"
-                    else:
-                        # Regular checkmark for unique IPs
-                        colored_checkmark = "✓"
-                    
-                    colored_row.append(colored_checkmark)
-                else:
-                    colored_row.append(cell)  # "-" stays uncolored
-            
-            colored_matrix.append(colored_row)
-        
-        # Print matrix with colored nodes and CONFLICT INDICATORS
-        click.echo(tabulate(colored_matrix, headers=headers,
-                           tablefmt='fancy_grid', stralign='center', numalign='center'))
-        
-        # Add legend for symbols
-        click.echo(f"\n📋 \033[94mPort Legend:\033[0m")
-        click.echo(f"   ✓ = Published docker port (externally accessible)")
-        click.echo(f"   C✓ = Built-in consensus port (detected from container)")
-        click.echo(f"   ● = Node symbol for shared public IP")
-        
-    # Display the real conflicts we calculated earlier
-    conflict_count = len(real_conflicts)
-    detected_conflicts = real_conflicts  # Use the correctly calculated conflicts
-    
-    # Check for system-level network issues that could cause instability
-    system_issues = _detect_system_network_issues()
-    if system_issues:
-        click.echo(f"\n⚠️  \033[93mSystem Network Issues Detected:\033[0m")
-        for issue in system_issues:
-            click.echo(f"   {issue}")        # Show detailed conflict information
-        for conflict in real_conflicts:
-            click.echo(f"\n🚨 \033[91m\033[1mCRITICAL PORT CONFLICT\033[0m 🚨")
-            click.echo(f"   Port: \033[93m{conflict['port']}/{conflict['protocol']}\033[0m")
-            click.echo(f"   Public IP: \033[94m{conflict['public_ip']}\033[0m")
-            click.echo(f"   Conflicting Nodes: \033[91m{', '.join(conflict['nodes'])}\033[0m")
-            if conflict.get('has_erigon_caplin'):
-                click.echo(f"   ⚠️  \033[93mBuilt-in consensus conflict detected!\033[0m")
-                click.echo(f"   💡 These Erigon nodes likely have internal Caplin consensus clients using the same ports")
-            click.echo(f"   💥 These nodes are fighting for the same router port!")
-        
-        if conflict_count == 0:
-            click.echo(f"\n✅ \033[92mNo router port conflicts detected!\033[0m")
-        elif detected_conflicts:
-            # Interactive conflict resolution
-            click.echo(f"\n🔧 \033[96m\033[1mINTERACTIVE CONFLICT RESOLUTION\033[0m")
-            click.echo("=" * 50)
-            
-            if click.confirm(f"Would you like to resolve these {conflict_count} port conflicts automatically?", default=True):
-                _resolve_port_conflicts_interactive(detected_conflicts, node_configs)
-        
-        # Print IP information below matrix with color legend
-        click.echo(f"\n📍 Node Network Information (Color & Symbol-coded by Public IP):")
-        
-        # Group nodes by public IP and show with colors and symbols
-        for public_ip, nodes_list in sorted(public_ips.items()):
-            if len(nodes_list) > 1:  # Only show groups with multiple nodes (potential conflicts)
-                color = ip_colors.get(public_ip, '')
-                symbol = ip_symbols.get(public_ip, '')
-                colored_ip = f"{color}{public_ip}{reset}" if color else public_ip
-                node_list = f"{color}{symbol}{', '.join(nodes_list)}{reset}" if color else f"{symbol}{', '.join(nodes_list)}"
-                click.echo(f"   🔴 SHARED PUBLIC IP {colored_ip}: {node_list}")
-                # Only show router conflict warning for actual public IPs (not N/A)
-                if public_ip != 'N/A':
-                    click.echo(f"      ⚠️  These nodes compete for the same router ports! (Symbol: {symbol})")
-                else:
-                    click.echo(f"      ℹ️  No public IP detected - no router conflicts possible")
-            else:
-                # Single node per IP
-                node_name = nodes_list[0]
-        # Show detailed conflict information and resolution
-        if conflict_count > 0:
-            if click.confirm(f"\n❓ Found {conflict_count} P2P port conflicts. Resolve them interactively?", default=True):
-                _resolve_port_conflicts_interactive(detected_conflicts, node_configs)
-
-        click.echo("\nℹ️  Only P2P ports that require router forwarding are shown")
-        
-        # Show public IP summary and detailed node information
-        if public_ips:
-            click.echo(f"\n📍 \033[94mNode Network Information (Color & Symbol-coded by Public IP):\033[0m")
-            
-            for public_ip in sorted(public_ips.keys()):
-                nodes = public_ips[public_ip]
-                if public_ip == 'N/A':
-                    continue
-                    
-                color = ip_colors.get(public_ip, '')
-                symbol = ip_symbols.get(public_ip, '')
-                reset = '\033[0m' if color else ''
-                
-                if len(nodes) == 1:
-                    click.echo(f"   ✅ UNIQUE PUBLIC IP {public_ip}: {nodes[0]}")
-                else:
-                    colored_ip = f"{color}{public_ip}{reset}" if color else public_ip
-                    symbol_prefix = f"{symbol}" if symbol else ""
-                    node_list = ', '.join([f"{symbol_prefix}{name}" for name in nodes])
-                    click.echo(f"   🔴 SHARED PUBLIC IP {colored_ip}: {node_list}")
-                    click.echo(f"      ⚠️  These nodes compete for the same router ports! (Symbol: {symbol})")
-            
-            click.echo(f"\n📋 \033[94mDetailed Node Information:\033[0m")
-            for node_name in node_names:
-                node_cfg = node_configs.get(node_name, {})
-                tailscale_ip = node_cfg.get('tailscale_domain', 'N/A')
-                public_ip = node_public_ips.get(node_name, 'unknown')
-                
-                color = ip_colors.get(public_ip, '')
-                symbol = ip_symbols.get(public_ip, '')
-                reset = '\033[0m' if color else ''
-                prefix = f"{symbol} " if symbol else ""
-                colored_name = f"{color}{prefix}{node_name}{reset}" if color else f"{prefix}{node_name}"
-                click.echo(f"   • {colored_name}: Tailscale={tailscale_ip}, Public={public_ip}")
-    else:
-        click.echo("✅ No P2P port conflicts detected")
 
 
 def _manual_stack_selection():
@@ -3103,63 +1856,456 @@ def _manual_stack_selection():
     return selected_stacks if selected_stacks else ["eth-docker"]
 
 
+@node_group.command(name='ports')
+@click.argument('node', required=False)
+@click.option('--all', is_flag=True, help='Show port mappings for all configured nodes')
+@click.option('--source', type=click.Choice(['docker','env','both']), default='both', show_default=True,
+              help='Data source: docker (live), env (.env files), or both')
+@click.option('--p2p-only', is_flag=True, help='Show only P2P ports (EL/CL: 30303,30304,9000,12000,13000)')
+@click.option('--published-only', is_flag=True, help='Show only Docker-published ports (ignore .env entries)')
+@click.option('--csv', is_flag=True, help='Output in CSV format')
+def node_ports(node, all, source, p2p_only, published_only, csv):
+    """List open/forwarded ports per node and detect conflicts across nodes on the same network."""
+    config = yaml.safe_load(get_config_path().read_text())
+
+    if all and node:
+        click.echo("❌ Cannot specify both --all and a node name")
+        return
+    if not all and not node:
+        click.echo("❌ Must specify either --all or a node name")
+        return
+
+    nodes = config.get('nodes', [])
+    if not nodes:
+        click.echo("❌ No nodes configured. Please check your config.yaml file.")
+        return
+
+    if not all:
+        node_cfg = next((n for n in nodes if n.get('tailscale_domain') == node or n.get('name') == node), None)
+        if not node_cfg:
+            click.echo(f"❌ Node {node} not found")
+            return
+        nodes = [node_cfg]
+
+    click.echo("🔎 Gathering port mappings...")
+
+    per_node_tables = []
+    conflicts = {}
+    entries_all = []
+
+    # For CSV output, collect all rows first
+    csv_rows = []
+    csv_headers = ['Node', 'Service', 'Container', 'Host Port', 'Container Port', 'Protocol', 'Source', 'Network', 'Exposure', 'Public IP']
+
+    for i, ncfg in enumerate(nodes):
+        name = ncfg.get('name', ncfg.get('tailscale_domain', f"node{i+1}"))
+        stack = ncfg.get('stack', ['eth-docker'])
+        if isinstance(stack, str):
+            stack = [stack]
+
+        # Skip disabled stacks, but still allow env-based ports if desired
+        if 'disabled' in [s.lower() for s in stack]:
+            click.echo(f"⚪ Skipping disabled node {name}")
+            continue
+
+        res = get_node_port_mappings(ncfg, source=source)
+        entries = res.get('entries', [])
+        errors = res.get('errors', [])
+
+        # Apply filters
+        if published_only:
+            entries = [e for e in entries if e.get('source') == 'docker' and e.get('published')]
+        if p2p_only:
+            def _is_p2p_port_entry(e):
+                hp = e.get('host_port')
+                proto = e.get('proto', 'tcp')
+                if hp is None:
+                    return False
+                try:
+                    p = int(hp)
+                except (ValueError, TypeError):
+                    return False
+                proto = str(proto).lower()
+
+                # EL P2P ports (standard and custom forwarding range)
+                if 30300 <= p <= 30400 and proto in ('tcp', 'udp'):
+                    return True
+                # CL P2P ports (standard and custom forwarding range)
+                if 9000 <= p <= 9100 and proto in ('tcp', 'udp'):
+                    return True
+                # Charon DV ports (typically forwarded)
+                if 3600 <= p <= 3700 and proto == 'tcp':
+                    return True
+                # Other common P2P ports
+                if p in (12000, 13000) and proto in ('tcp', 'udp'):
+                    return True
+
+                return False
+            entries = [e for e in entries if _is_p2p_port_entry(e)]
+
+        # Build table rows for this node
+        rows = []
+        for e in entries:
+            # Determine exposure type
+            exposure = '🔒 Internal'
+            host_port = e.get('host_port')
+            if host_port is not None:
+                # Check if this is a P2P port that requires router forwarding
+                port_num = int(host_port) if str(host_port).isdigit() else 0
+                proto = e.get('proto', 'tcp')
+                
+                # P2P ports that typically require public exposure
+                if ((30300 <= port_num <= 30400 and proto in ('tcp', 'udp')) or  # EL P2P
+                    (9000 <= port_num <= 9100 and proto in ('tcp', 'udp')) or    # CL P2P  
+                    (3600 <= port_num <= 3700 and proto == 'tcp') or             # Charon DV
+                    (12000 <= port_num <= 13000 and proto in ('tcp', 'udp'))):  # Other P2P
+                    exposure = '🌐 Public P2P'
+                else:
+                    exposure = '🌐 Public Service'
+            
+            row = [
+                e.get('service','-'),
+                e.get('container','-'),
+                e.get('host_port') if e.get('host_port') is not None else '-',
+                e.get('container_port') if e.get('container_port') is not None else '-',
+                e.get('proto','tcp'),
+                e.get('source','-'),
+                e.get('network','-'),
+                exposure
+            ]
+            rows.append(row)
+
+            # Track conflicts by host_port+proto within same network scope
+            hp = e.get('host_port')
+            proto = e.get('proto', 'tcp')
+            net = e.get('network', '-')
+            if hp is not None:
+                key = (hp, proto, net)
+                conflicts.setdefault(key, []).append({
+                    'node': name,
+                    'service': e.get('service','-'),
+                    'container': e.get('container','-'),
+                    'source': e.get('source','-')
+                })
+                entries_all.append({ 'node': name, **e })
+
+        # Add to per_node_tables for rendering
+        headers = ['Service', 'Container', 'Host Port', 'Container Port', 'Proto', 'Source', 'Network', 'Exposure']
+        per_node_tables.append((name, rows, headers, errors, None, ncfg))
+
+        # Add to CSV if requested
+        if csv:
+            for e in entries:
+                # Determine exposure type for CSV
+                exposure = 'Internal'
+                host_port = e.get('host_port')
+                if host_port is not None:
+                    port_num = int(host_port) if str(host_port).isdigit() else 0
+                    proto = e.get('proto', 'tcp')
+                    
+                    # P2P ports that typically require public exposure
+                    if ((30300 <= port_num <= 30400 and proto in ('tcp', 'udp')) or  # EL P2P
+                        (9000 <= port_num <= 9100 and proto in ('tcp', 'udp')) or    # CL P2P  
+                        (3600 <= port_num <= 3700 and proto == 'tcp') or             # Charon DV
+                        (12000 <= port_num <= 13000 and proto in ('tcp', 'udp'))):  # Other P2P
+                        exposure = 'Public P2P'
+                    else:
+                        exposure = 'Public Service'
+                
+                csv_rows.append([
+                    name,
+                    e.get('service','-'),
+                    e.get('container','-'),
+                    e.get('host_port') if e.get('host_port') is not None else '-',
+                    e.get('container_port') if e.get('container_port') is not None else '-',
+                    e.get('proto','tcp'),
+                    e.get('source','-'),
+                    e.get('network','-'),
+                    exposure,
+                    'N/A'  # Public IP placeholder, will be filled later
+                ])
+
+    # Detect public IPs for each node
+    public_ips = {}
+    for i, ncfg in enumerate(nodes):
+        name = ncfg.get('name', ncfg.get('tailscale_domain', f"node{i+1}"))
+        try:
+            result = run_command_on_node(name, "curl -s https://api.ipify.org", ncfg)
+            if result and result.strip():
+                public_ips[name] = result.strip()
+            else:
+                public_ips[name] = "unknown"
+        except Exception as e:
+            public_ips[name] = "unknown"
+
+    # Update CSV rows with actual public IPs
+    if csv:
+        for i, row in enumerate(csv_rows):
+            node_name = row[0]  # First column is node name
+            row[9] = public_ips.get(node_name, "unknown")  # Update public IP column
+
+    # CSV output mode
+    if csv:
+        import sys
+        import csv as csv_module
+        writer = csv_module.writer(sys.stdout)
+        writer.writerow(csv_headers)
+        for row in csv_rows:
+            writer.writerow(row)
+        return
+
+    # Build P2P port usage matrix - get rows for each node
+    p2p_ports = {}
+    node_rows = {}  # Store rows for each node
+    for name, rows_data, headers, errors, hint, ncfg in per_node_tables:
+        node_rows[name] = rows_data
+        p2p_ports[name] = set()
+        for service, container, host_port, container_port, proto, source, network, exposure in rows_data:
+            if host_port:
+                try:
+                    port_num = int(host_port)
+                    # Check if this is a P2P port by service name OR port range
+                    is_p2p_by_name = ('p2p' in service.lower() or 'discovery' in service.lower())
+                    is_p2p_by_port = (
+                        (30300 <= port_num <= 30400 and proto.lower() in ('tcp', 'udp')) or  # EL P2P
+                        (9000 <= port_num <= 9100 and proto.lower() in ('tcp', 'udp')) or    # CL P2P
+                        (3600 <= port_num <= 3700 and proto.lower() == 'tcp') or             # Charon P2P
+                        (12000 <= port_num <= 13000 and proto.lower() in ('tcp', 'udp'))    # Other P2P
+                    )
+                    
+                    if is_p2p_by_name or is_p2p_by_port:
+                        p2p_ports[name].add(port_num)
+                except (ValueError, TypeError):
+                    pass
+
+    # Group nodes by public IP
+    ip_groups = {}
+    for name, ip in public_ips.items():
+        if ip not in ip_groups:
+            ip_groups[ip] = []
+        ip_groups[ip].append(name)
+
+    # Color codes and symbols for visual indicators
+    colors = ['\033[91m', '\033[92m', '\033[93m', '\033[94m', '\033[95m', '\033[96m']  # Red, Green, Yellow, Blue, Magenta, Cyan
+    symbols = ['●', '▲', '■', '◆', '★', '♦']
+    reset_color = '\033[0m'
+
+    # Render per-node tables
+    for name, rows, headers, errors, hint, ncfg in per_node_tables:
+        # Add visual indicator for shared IP groups
+        ip = public_ips.get(name, "unknown")
+        group_nodes = ip_groups.get(ip, [])
+        if len(group_nodes) > 1:
+            group_index = list(ip_groups.keys()).index(ip) % len(symbols)
+            color = colors[group_index % len(colors)]
+            visual_indicator = f"{color}{symbols[group_index]}{reset_color}"
+        else:
+            visual_indicator = ""
+
+        click.echo("\n" + "="*70)
+        click.echo(f"🖥️  {name} {visual_indicator}- Port Mappings")
+        click.echo("="*70)
+        if ip != "unknown":
+            click.echo(f"🌐 Public IP: {ip}")
+        if len(group_nodes) > 1:
+            other_nodes = [n for n in group_nodes if n != name]
+            click.echo(f"🔗 Shared IP with: {', '.join(other_nodes)}")
+
+        if rows:
+            click.echo(tabulate(rows, headers=headers, tablefmt='fancy_grid', stralign='left', numalign='center'))
+        else:
+            click.echo("(no mappings found)")
+        if errors:
+            for err in errors:
+                click.echo(f"⚠️  {err}")
+
+    # Display P2P port usage matrix
+    if p2p_only or not published_only:
+        click.echo(f"\n{click.style('P2P Port Usage Matrix:', fg='cyan', bold=True)}")
+        all_p2p_ports = sorted(set.union(*p2p_ports.values()) if p2p_ports.values() else set())
+
+        if all_p2p_ports:
+            # Build node config mapping for IP info
+            node_configs = {ncfg.get('name', f"node{i+1}"): ncfg for i, ncfg in enumerate(nodes)}
+            node_names = sorted(set(entry['node'] for entry in entries_all))
+
+            # First, detect all public IPs once to avoid repeated SSH calls
+            node_public_ips = {}
+            for node_name in node_names:
+                node_cfg = node_configs.get(node_name, {})
+                public_ip = node_cfg.get('public_ip', node_cfg.get('external_ip', 'N/A'))
+
+                # Auto-detect public IP if not configured
+                if public_ip == 'N/A':
+                    try:
+                        from eth_validators.node_manager import run_command_on_node
+                        result = run_command_on_node(node_name, "curl -s ifconfig.me || curl -s ipinfo.io/ip || curl -s icanhazip.com")
+                        if result and result.strip():
+                            public_ip = result.strip()
+                    except Exception:
+                        public_ip = 'N/A'
+
+                node_public_ips[node_name] = public_ip
+
+            # Group nodes by public IP
+            public_ips = {}
+            for node_name, public_ip in node_public_ips.items():
+                if public_ip not in public_ips:
+                    public_ips[public_ip] = []
+                public_ips[public_ip].append(node_name)
+
+            # Define color codes and symbols for visual indicators
+            colors = ['\033[91m', '\033[92m', '\033[93m', '\033[94m', '\033[95m', '\033[96m']  # Red, Green, Yellow, Blue, Magenta, Cyan
+            symbols = ['●', '▲', '■', '◆', '★', '♦']
+            reset_color = '\033[0m'
+
+            # Assign colors and symbols to public IPs
+            ip_colors = {}
+            ip_symbols = {}
+            color_idx = 0
+            symbol_idx = 0
+            for public_ip in sorted(public_ips.keys()):
+                if public_ip != 'N/A':
+                    ip_colors[public_ip] = colors[color_idx % len(colors)]
+                    if len(public_ips[public_ip]) > 1:  # Only mark shared IPs
+                        ip_symbols[public_ip] = symbols[symbol_idx % len(symbols)]
+                        symbol_idx += 1
+                    color_idx += 1
+                else:
+                    ip_colors[public_ip] = ''  # No color for N/A
+
+            # Build headers with visual indicators for IP groups
+            matrix_headers = ['P2P Port']
+            for node_name in node_names:
+                public_ip = node_public_ips[node_name]
+                symbol = ip_symbols.get(public_ip, '')
+
+                if symbol:
+                    # Use both color and symbol for shared IPs
+                    color = ip_colors.get(public_ip, '')
+                    header_name = f"{color}{symbol}{node_name}{reset_color}" if color else f"{symbol}{node_name}"
+                else:
+                    header_name = node_name
+
+                matrix_headers.append(header_name)
+
+            # Build matrix rows with color-coded checkmarks
+            matrix_rows = []
+            for port in all_p2p_ports:
+                row = [str(port)]
+                for node in node_names:
+                    if port in p2p_ports[node]:
+                        # Color code based on IP group
+                        public_ip = node_public_ips.get(node, "unknown")
+                        symbol = ip_symbols.get(public_ip, '')
+                        color = ip_colors.get(public_ip, '')
+
+                        if symbol:
+                            # Use colored symbol for shared IPs to highlight conflicts
+                            colored_checkmark = f"{color}{symbol}✓{reset_color}" if color else f"{symbol}✓"
+                        else:
+                            colored_checkmark = "✓"
+
+                        row.append(colored_checkmark)
+                    else:
+                        row.append("")
+                matrix_rows.append(row)
+
+            # Print matrix with fancy formatting
+            click.echo(tabulate(matrix_rows, headers=matrix_headers,
+                               tablefmt='fancy_grid', stralign='center', numalign='center'))
+
+            # Print IP information below matrix with color legend
+            click.echo(f"\n📍 Node Network Information (Color & Symbol-coded by Public IP):")
+
+            # Group nodes by public IP and show with colors and symbols
+            for public_ip, nodes_list in sorted(public_ips.items()):
+                if len(nodes_list) > 1:  # Only show groups with multiple nodes (potential conflicts)
+                    color = ip_colors.get(public_ip, '')
+                    symbol = ip_symbols.get(public_ip, '')
+                    colored_ip = f"{color}{public_ip}{reset_color}" if color else public_ip
+                    node_list = f"{color}{symbol}{', '.join(nodes_list)}{reset_color}" if color else f"{symbol}{', '.join(nodes_list)}"
+                    click.echo(f"   🔴 SHARED PUBLIC IP {colored_ip}: {node_list}")
+                    if public_ip != 'N/A':
+                        click.echo(f"      ⚠️  These nodes compete for the same router ports! (Symbol: {symbol})")
+                else:
+                    # Single node per IP
+                    node_name = nodes_list[0]
+                    color = ip_colors.get(public_ip, '')
+                    colored_ip = f"{color}{public_ip}{reset_color}" if color else public_ip
+                    colored_node = f"{color}{node_name}{reset_color}" if color else node_name
+                    click.echo(f"   ✅ UNIQUE PUBLIC IP {colored_ip}: {colored_node}")
+
+            # Show detailed info for each node
+            click.echo(f"\n📋 Detailed Node Information:")
+            for node_name in node_names:
+                node_cfg = node_configs.get(node_name, {})
+                tailscale_ip = node_cfg.get('tailscale_domain', 'N/A')
+                public_ip = node_public_ips[node_name]
+
+                color = ip_colors.get(public_ip, '')
+                symbol = ip_symbols.get(public_ip, '')
+                prefix = f"{symbol} " if symbol else ""
+                colored_name = f"{color}{prefix}{node_name}{reset_color}" if color else f"{prefix}{node_name}"
+                click.echo(f"   • {colored_name}: Tailscale={tailscale_ip}, Public={public_ip}")
+
+            click.echo("\nℹ️  Only P2P ports that require router forwarding are shown")
+        else:
+            click.echo("No P2P ports found")
+
+    # Detect and show conflicts
+    conflict_rows = []
+    for (hp, proto, net), uses in conflicts.items():
+        if len(uses) > 1:
+            nodes_str = ", ".join(sorted({u['node'] for u in uses}))
+            services_str = "; ".join([f"{u['node']}:{u['service']} ({u['source']})" for u in uses])
+            conflict_rows.append([hp, proto, net, len(uses), nodes_str, services_str])
+
+    click.echo("\n" + "="*70)
+    click.echo("🚨 Port Conflicts Across Nodes")
+    click.echo("="*70)
+    if conflict_rows:
+        click.echo(tabulate(conflict_rows, headers=['Host Port','Proto','Network','Count','Nodes','Details'],
+                           tablefmt='fancy_grid', stralign='left', numalign='center'))
+        click.echo(f"\n💡 To resolve conflicts, you can:")
+        click.echo(f"   • Run 'python3 -m eth_validators node ports --all' to see all conflicts")
+        click.echo(f"   • Manually edit .env files to change conflicting ports")
+        click.echo(f"   • Use different port ranges for different nodes")
+    else:
+        click.echo("✅ No port conflicts detected!")
+
+    # Summary table showing all nodes with their public IPs
+    click.echo("\n" + "="*70)
+    click.echo("🌐 Node Public IP Summary")
+    click.echo("="*70)
+
+    summary_rows = []
+    for name, rows, headers, errors, hint, ncfg in per_node_tables:
+        tailscale_ip = ncfg.get('tailscale_domain', 'N/A')
+        public_ip = ncfg.get('public_ip', ncfg.get('external_ip', 'N/A'))
+
+        # Auto-detect public IP if not configured
+        if public_ip == 'N/A':
+            try:
+                from eth_validators.node_manager import run_command_on_node
+                result = run_command_on_node(name, "curl -s ifconfig.me || curl -s ipinfo.io/ip || curl -s icanhazip.com")
+                if result and result.strip():
+                    public_ip = result.strip()
+            except Exception:
+                public_ip = 'N/A'
+
+        summary_rows.append([name, tailscale_ip, public_ip])
+
+    if summary_rows:
+        click.echo(tabulate(summary_rows, headers=['Node','Tailscale Domain','Public IP'],
+                           tablefmt='fancy_grid', stralign='left', numalign='center'))
+    else:
+        click.echo("No node information available")
+
+
 # ====================================
 # Configuration Automation Commands  
 # ====================================
-
-@config_group.command(name='discover')
-@click.option('--node', '-n', help='Discover specific node (default: all)')
-@click.option('--save', '-s', is_flag=True, help='Save discovered configuration to config file')
-@click.option('--output', '-o', help='Output file for discovered configuration')
-def config_discover(node, save, output):
-    """🔍 Discover current node configurations automatically"""
-    from .config_automation import ConfigAutomationSystem
-    
-    click.echo("🔍 Starting automated configuration discovery...")
-    
-    automation = ConfigAutomationSystem(str(get_config_path()))
-    
-    try:
-        if node:
-            # Discover single node - need to implement this method
-            click.echo(f"❌ Single node discovery not implemented yet. Use --all flag.")
-            return
-        else:
-            # Discover all nodes
-            results = automation.sync_all_nodes()
-            click.echo(f"\n📋 Discovery results for {results['total_nodes']} nodes:")
-        
-        # Display results
-        if 'results' in results:
-            for node_name, result in results['results'].items():
-                click.echo(f"\n🖥️  {node_name}:")
-                click.echo(f"   Status: {'✅ Success' if result.get('status') == 'success' else '❌ ' + result.get('reason', 'Unknown error')}")
-                
-                if result.get('discovery_data'):
-                    data = result['discovery_data']
-                    click.echo(f"   Stack: {', '.join(data.get('detected_stacks', ['Unknown']))}")
-                    
-                    if 'active_networks' in data:
-                        networks = list(data['active_networks'].keys())
-                        click.echo(f"   Networks: {', '.join(networks) if networks else 'None detected'}")
-                    
-                    if 'api_ports' in data:
-                        ports = data['api_ports']
-                        click.echo(f"   API Ports: {dict(ports)}")
-        
-        # Summary
-        if results.get('updated_nodes', 0) > 0:
-            click.echo(f"\n🔄 Updated {results['updated_nodes']} nodes: {', '.join(results.get('updated_node_names', []))}")
-        
-        # Save if requested
-        if save or output:
-            output_file = output or str(get_config_path())
-            # Save functionality needs to be implemented
-            click.echo(f"\n💾 Save functionality not yet implemented")
-    
-    except Exception as e:
-        click.echo(f"❌ Discovery failed: {e}")
-        raise click.Abort()
 
 @config_group.command(name='validate')
 @click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
@@ -3230,231 +2376,6 @@ def config_validate(config, fix, report):
     
     except Exception as e:
         click.echo(f"❌ Validation failed: {e}")
-        raise click.Abort()
-
-@config_group.command(name='sync-all')
-@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
-@click.option('--dry-run', '-d', is_flag=True, help='Show what would be changed without making changes')
-def config_sync_all(config, dry_run):
-    """🔄 Synchronize all node configurations with live state"""
-    from .config_monitor import ConfigMonitor
-    
-    action = "Checking" if dry_run else "Synchronizing"
-    click.echo(f"🔄 {action} all node configurations...")
-    
-    monitor = ConfigMonitor()
-    
-    try:
-        if dry_run:
-            # Use drift detection for dry run
-            drift = monitor.detect_drift(config)
-            
-            if not drift:
-                click.echo("✅ All configurations are in sync!")
-                return
-            
-            click.echo(f"\n📋 Would update {len(set(d.node for d in drift))} nodes:")
-            
-            for drift_item in drift:
-                click.echo(f"\n🖥️  {drift_item.node}:")
-                click.echo(f"   Type: {drift_item.drift_type}")
-                click.echo(f"   Current: {drift_item.config_state}")
-                click.echo(f"   Live: {drift_item.live_state}")
-                click.echo(f"   Auto-correctable: {'✅' if drift_item.auto_correctable else '❌'}")
-        else:
-            # Perform actual sync
-            results = monitor.sync_all_nodes(config)
-            
-            click.echo(f"\n📊 Sync Results:")
-            click.echo(f"   Total nodes: {results['total_nodes']}")
-            click.echo(f"   Updated nodes: {results['updated_nodes']}")
-            click.echo(f"   Updated node names: {', '.join(results['updated_node_names'])}")
-            
-            if results['updated_nodes'] > 0:
-                click.echo(f"\n🎉 Successfully synchronized {results['updated_nodes']} nodes!")
-            else:
-                click.echo(f"\n✅ All nodes were already in sync!")
-    
-    except Exception as e:
-        click.echo(f"❌ Sync failed: {e}")
-        raise click.Abort()
-
-@config_group.command(name='monitor')
-@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
-@click.option('--interval', '-i', default=300, help='Check interval in seconds (default: 300)')
-@click.option('--auto-fix', is_flag=True, help='Automatically fix detected drift')
-def config_monitor(config, interval, auto_fix):
-    """📡 Start continuous configuration monitoring"""
-    from .config_monitor import ConfigMonitor
-    
-    click.echo(f"📡 Starting continuous configuration monitoring...")
-    click.echo(f"   Check interval: {interval} seconds")
-    click.echo(f"   Auto-fix enabled: {'✅' if auto_fix else '❌'}")
-    click.echo(f"   Press Ctrl+C to stop")
-    
-    monitor = ConfigMonitor()
-    
-    try:
-        monitor.monitor_continuous(config, interval, auto_fix)
-    except KeyboardInterrupt:
-        click.echo(f"\n⏹️  Monitoring stopped by user")
-    except Exception as e:
-        click.echo(f"❌ Monitoring failed: {e}")
-        raise click.Abort()
-
-@config_group.command(name='template')
-@click.argument('action', type=click.Choice(['list', 'create', 'generate', 'export', 'import']))
-@click.option('--name', '-n', help='Template name')
-@click.option('--description', '-d', help='Template description')
-@click.option('--stack', '-s', multiple=True, help='Supported stacks')
-@click.option('--network', multiple=True, help='Supported networks')
-@click.option('--file', '-f', help='File path for import/export/generation')
-@click.option('--variables', help='Variables for template generation (JSON format)')
-def config_template(action, name, description, stack, network, file, variables):
-    """📝 Manage configuration templates"""
-    from .config_templates import ConfigTemplateManager
-    
-    template_manager = ConfigTemplateManager()
-    
-    try:
-        if action == 'list':
-            templates = template_manager.list_templates()
-            
-            if not templates:
-                click.echo("📝 No templates available")
-                return
-            
-            click.echo(f"📝 Available templates ({len(templates)}):")
-            
-            for template_name, template in templates.items():
-                click.echo(f"\n🔧 {template_name}")
-                click.echo(f"   Description: {template.description}")
-                click.echo(f"   Stacks: {', '.join(template.supported_stacks)}")
-                click.echo(f"   Networks: {', '.join(template.supported_networks)}")
-                click.echo(f"   Version: {template.version}")
-        
-        elif action == 'create':
-            if not name:
-                click.echo("❌ Template name is required for creation")
-                raise click.Abort()
-            
-            # For demo, create a basic template
-            basic_config = {
-                "name": "{{node_name}}",
-                "tailscale_domain": "{{node_name}}.ts.net",
-                "ssh_user": "root",
-                "ethereum_clients_enabled": True,
-                "stack": list(stack) if stack else ["eth-docker"],
-                "beacon_api_port": 5052
-            }
-            
-            template = template_manager.create_template(
-                name=name,
-                description=description or "Custom template",
-                base_config=basic_config,
-                supported_stacks=list(stack) if stack else ["eth-docker"],
-                supported_networks=list(network) if network else ["mainnet"]
-            )
-            
-            click.echo(f"✅ Created template: {template.name}")
-        
-        elif action == 'generate':
-            if not name:
-                click.echo("❌ Template name is required for generation")
-                raise click.Abort()
-            
-            # Parse variables
-            var_dict = {}
-            if variables:
-                var_dict = json.loads(variables)
-            
-            # Generate configuration
-            config = template_manager.generate_config_from_template(name, var_dict)
-            
-            if file:
-                with open(file, 'w') as f:
-                    yaml.dump(config, f, default_flow_style=False, indent=2)
-                click.echo(f"💾 Generated configuration saved to: {file}")
-            else:
-                click.echo("🔧 Generated configuration:")
-                click.echo(yaml.dump(config, default_flow_style=False, indent=2))
-        
-        elif action == 'export':
-            if not name or not file:
-                click.echo("❌ Template name and file path are required for export")
-                raise click.Abort()
-            
-            template_manager.export_template(name, file)
-            click.echo(f"📤 Template {name} exported to {file}")
-        
-        elif action == 'import':
-            if not file:
-                click.echo("❌ File path is required for import")
-                raise click.Abort()
-            
-            template = template_manager.import_template(file)
-            click.echo(f"📥 Template {template.name} imported successfully")
-    
-    except Exception as e:
-        click.echo(f"❌ Template operation failed: {e}")
-        raise click.Abort()
-
-@config_group.command(name='summary')
-@click.option('--config', '-c', default=str(get_config_path()), help='Configuration file path')
-def config_summary(config):
-    """📊 Show configuration automation summary and statistics"""
-    from .config_automation import ConfigAutomationSystem
-    from .config_monitor import ConfigMonitor
-    from .config_templates import ConfigTemplateManager
-    
-    click.echo("📊 Configuration Automation Summary\n")
-    
-    try:
-        # Configuration status
-        automation = ConfigAutomationSystem(config)
-        validation_results = automation.validate_current_config(auto_repair=False)
-        
-        issues = validation_results[0]
-        total_issues = len(issues)
-        critical_issues = len([i for i in issues if i.severity == 'critical'])
-        
-        click.echo("🔧 Configuration Status:")
-        click.echo(f"   Total issues: {total_issues}")
-        click.echo(f"   Critical issues: {critical_issues}")
-        click.echo(f"   Status: {'✅ Healthy' if total_issues == 0 else '⚠️ Needs attention'}")
-        
-        # Drift monitoring summary
-        monitor = ConfigMonitor()
-        monitor_summary = monitor.get_monitoring_summary()
-        
-        click.echo(f"\n📡 Drift Monitoring (24h):")
-        click.echo(f"   Total drift events: {monitor_summary['total_drift_events_24h']}")
-        click.echo(f"   Critical drift: {monitor_summary['critical_drift_24h']}")
-        click.echo(f"   Nodes affected: {monitor_summary['nodes_with_drift_24h']}")
-        click.echo(f"   Auto-correctable: {monitor_summary['auto_correctable_24h']}")
-        
-        # Template summary
-        template_manager = ConfigTemplateManager()
-        template_summary = template_manager.get_template_summary()
-        
-        click.echo(f"\n📝 Templates:")
-        click.echo(f"   Total templates: {template_summary['total_templates']}")
-        click.echo(f"   Available stacks: {', '.join(template_summary['templates_by_stack'].keys())}")
-        
-        # Node count from config
-        with open(config, 'r') as f:
-            config_data = yaml.safe_load(f)
-        
-        total_nodes = len(config_data.get('nodes', []))
-        enabled_nodes = len([n for n in config_data.get('nodes', []) if n.get('ethereum_clients_enabled', True)])
-        
-        click.echo(f"\n🖥️  Cluster Overview:")
-        click.echo(f"   Total nodes: {total_nodes}")
-        click.echo(f"   Enabled nodes: {enabled_nodes}")
-        click.echo(f"   Disabled nodes: {total_nodes - enabled_nodes}")
-        
-    except Exception as e:
-        click.echo(f"❌ Failed to generate summary: {e}")
         raise click.Abort()
 
 
@@ -3639,7 +2560,7 @@ def _find_available_port(base_port, used_ports, protocol):
         search_range = range(32300, 32400)
     elif 42000 <= base_port <= 42100:  # Erigon discovery range
         search_range = range(42000, 42100)
-    elif 9000 <= base_port <= 9100:  # Consensus client range
+    elif 9000 <= base_port <= 9100:  # Consensus client
         search_range = range(9000, 9100)
     elif 3600 <= base_port <= 3700:  # Charon range
         search_range = range(3600, 3700)
@@ -3968,3 +2889,183 @@ def _restart_eth_docker(node_config, eth_docker_path, is_local):
     except Exception as e:
         click.echo(f"   ❌ Error restarting services: {e}")
         return False
+
+# New comprehensive node status command
+@node_group.command(name='status')
+@click.option('--all', is_flag=True, help='Show status for all configured nodes')
+@click.option('--csv', is_flag=True, help='Output in CSV format')
+def node_status(all, csv):
+    """📊 Show comprehensive node status with ports, IPs, and peer counts"""
+    config = yaml.safe_load(get_config_path().read_text())
+    nodes = config.get('nodes', [])
+    
+    if not nodes:
+        click.echo("❌ No nodes found in configuration")
+        return
+    
+    if not all:
+        click.echo("❌ Use --all flag to show status for all nodes")
+        click.echo("Usage: python3 -m eth_validators node status --all")
+        return
+    
+    click.echo("📊 ETHEREUM NODE COMPREHENSIVE STATUS")
+    click.echo("=" * 120)
+    click.echo("🔄 Fetching live data from all nodes... (this may take a moment)")
+    
+    table_data = []
+    
+    for i, node in enumerate(nodes):
+        name = node['name']
+        hostname = node['tailscale_domain']
+        
+        click.echo(f"📡 Processing {name}... ({i+1}/{len(nodes)})", nl=False, err=True)
+        
+        # Get local IP (router IP, not Tailscale)
+        try:
+            # Try multiple methods to get the local IP
+            ip_methods = [
+                "ip route get 8.8.8.8 | awk '{print $7}' | head -1",  # Get IP for external route
+                "hostname -I | awk '{print $1}'",  # Get first IP from hostname
+                "ip addr show | grep 'inet ' | grep -v '127.0.0.1' | grep -v '::1' | awk '{print $2}' | cut -d/ -f1 | head -1"  # Get first non-loopback IP
+            ]
+            
+            local_ip = "❓ Unknown"
+            for method in ip_methods:
+                ip_result = _run_command(node, method)
+                if ip_result.returncode == 0 and ip_result.stdout.strip():
+                    candidate_ip = ip_result.stdout.strip()
+                    # Validate it's a proper IP (not default route)
+                    if candidate_ip and not candidate_ip.startswith("1.0.0.0") and len(candidate_ip.split('.')) == 4:
+                        local_ip = candidate_ip
+                        break
+        except:
+            local_ip = "❓ Unknown"
+        
+        # Get P2P ports from consensus client
+        p2p_ports = "❓ Unknown"
+        try:
+            # Try to get just the port numbers, not the full mapping
+            p2p_result = _run_command(node, "docker port eth-docker-consensus-1 2>/dev/null | grep -E '900[0-9]|9200|9300|9401' | sed 's/.*://' | sort -n | uniq | tr '\n' ' ' | sed 's/ $//'")
+            if p2p_result.returncode == 0 and p2p_result.stdout.strip():
+                ports = p2p_result.stdout.strip().split()
+                if ports:
+                    p2p_ports = ', '.join(ports)
+            else:
+                # Try alternative container names
+                for container in ['consensus-1', 'beacon-1', 'lighthouse-beacon-1', 'prysm-beacon-1', 'teku-1']:
+                    alt_result = _run_command(node, f"docker port eth-docker-{container} 2>/dev/null | grep -E '900[0-9]|9200|9300|9401' | sed 's/.*://' | sort -n | uniq | tr '\n' ' ' | sed 's/ $//'")
+                    if alt_result.returncode == 0 and alt_result.stdout.strip():
+                        ports = alt_result.stdout.strip().split()
+                        if ports:
+                            p2p_ports = ', '.join(ports)
+                        break
+        except:
+            pass
+        
+        # Get execution ports
+        exec_ports = "❓ Unknown"
+        try:
+            exec_result = _run_command(node, "docker port eth-docker-execution-1 2>/dev/null | grep -E '303[0-9][0-9]|8545|8546' | sed 's/.*://' | sort -n | uniq | tr '\n' ' ' | sed 's/ $//'")
+            if exec_result.returncode == 0 and exec_result.stdout.strip():
+                ports = exec_result.stdout.strip().split()
+                if ports:
+                    exec_ports = ', '.join(ports)
+            else:
+                # Try alternative container names
+                for container in ['execution-1', 'geth-1', 'nethermind-1', 'besu-1', 'reth-1']:
+                    alt_result = _run_command(node, f"docker port eth-docker-{container} 2>/dev/null | grep -E '303[0-9][0-9]|8545|8546' | sed 's/.*://' | sort -n | uniq | tr '\n' ' ' | sed 's/ $//'")
+                    if alt_result.returncode == 0 and alt_result.stdout.strip():
+                        ports = alt_result.stdout.strip().split()
+                        if ports:
+                            exec_ports = ', '.join(ports)
+                        break
+        except:
+            pass
+        
+        # Get peer count from consensus logs
+        peer_count = "❓ Unknown"
+        try:
+            # Try different log patterns for different clients
+            log_commands = [
+                # Lighthouse
+                "docker logs eth-docker-consensus-1 --tail 20 2>/dev/null | grep -i 'connected peers' | tail -1 | grep -o '[0-9]\\+' | tail -1",
+                # Prysm
+                "docker logs eth-docker-consensus-1 --tail 20 2>/dev/null | grep -i 'peer' | grep -o '[0-9]\\+/[0-9]\\+' | tail -1",
+                # Teku
+                "docker logs eth-docker-consensus-1 --tail 20 2>/dev/null | grep -i 'peer' | grep -o '[0-9]\\+' | tail -1",
+                # Lodestar
+                "docker logs eth-docker-consensus-1 --tail 20 2>/dev/null | grep -i 'connected' | grep -o '[0-9]\\+' | tail -1",
+                # Nimbus
+                "docker logs eth-docker-consensus-1 --tail 20 2>/dev/null | grep -i 'peers' | grep -o '[0-9]\\+' | tail -1",
+                # Try alternative container names
+                "docker logs eth-docker-beacon-1 --tail 20 2>/dev/null | grep -i 'peer' | tail -1 | grep -o '[0-9]\\+/[0-9]\\+' | tail -1",
+                "docker logs eth-docker-lighthouse-beacon-1 --tail 20 2>/dev/null | grep -i 'connected peers' | tail -1 | grep -o '[0-9]\\+' | tail -1",
+                "docker logs eth-docker-teku-1 --tail 20 2>/dev/null | grep -i 'peer' | tail -1 | grep -o '[0-9]\\+' | tail -1"
+            ]
+            
+            for cmd in log_commands:
+                peer_result = _run_command(node, cmd)
+                if peer_result.returncode == 0 and peer_result.stdout.strip():
+                    peer_info = peer_result.stdout.strip()
+                    if peer_info and peer_info != "0":
+                        # If it's already in format like "50/100", use it
+                        if '/' in peer_info:
+                            peer_count = peer_info
+                        else:
+                            # Try to get max peers from config or use default
+                            try:
+                                max_peers_result = _run_command(node, "docker logs eth-docker-consensus-1 --tail 50 2>/dev/null | grep -i 'max.*peer' | tail -1 | grep -o '[0-9]\\+' | tail -1")
+                                if max_peers_result.returncode == 0 and max_peers_result.stdout.strip():
+                                    max_peers = max_peers_result.stdout.strip()
+                                    peer_count = f"{peer_info}/{max_peers}"
+                                else:
+                                    peer_count = peer_info
+                            except:
+                                peer_count = peer_info
+                        break
+        except:
+            pass
+        
+        # Determine status based on data availability
+        if local_ip != "❓ Unknown" and p2p_ports != "❓ Unknown":
+            status = "✅ Active"
+        elif local_ip != "❓ Unknown":
+            status = "⚠️ Limited"
+        else:
+            status = "❌ Offline"
+        
+        table_data.append([
+            name,
+            hostname,
+            local_ip,
+            p2p_ports,
+            exec_ports,
+            peer_count,
+            status
+        ])
+        
+        click.echo(" ✓", err=True)
+    
+    # Output in requested format
+    if csv:
+        import csv
+        click.echo("Node,Hostname,Local IP,P2P Ports,Execution Ports,Peer Count,Status")
+        for row in table_data:
+            click.echo(",".join(str(cell) for cell in row))
+    else:
+        click.echo("\nRendering comprehensive status table...")
+        headers = ['Node Name', 'Hostname', 'Local IP', 'P2P Ports', 'Execution Ports', 'Peers', 'Status']
+        click.echo(tabulate(table_data, headers=headers, tablefmt='fancy_grid'))
+    
+    click.echo(f"\n📊 SUMMARY:")
+    active_count = sum(1 for row in table_data if "✅" in row[-1])
+    limited_count = sum(1 for row in table_data if "⚠️" in row[-1])
+    offline_count = sum(1 for row in table_data if "❌" in row[-1])
+    
+    click.echo(f"  ✅ Active nodes: {active_count}")
+    click.echo(f"  ⚠️ Limited nodes: {limited_count}")
+    click.echo(f"  ❌ Offline nodes: {offline_count}")
+    click.echo(f"  📈 Total nodes: {len(nodes)}")
+    
+    click.echo(f"\n💡 Use 'node status --csv' for CSV output")
+    click.echo("=" * 120)

@@ -381,13 +381,13 @@ def show_next_steps():
     
     click.echo("📊 Check your setup:")
     click.echo("   python3 -m eth_validators node list")
-    click.echo("   python3 -m eth_validators validator list")
+    click.echo("   python3 -m eth_validators node versions --all")
     
     click.echo("\n🔍 Discover validators:")
     click.echo("   python3 -m eth_validators validator discover")
     
     click.echo("\n📈 Monitor performance:")
-    click.echo("   python3 -m eth_validators performance summary")
+    click.echo("   python3 -m eth_validators node ports --all")
     
     click.echo("\n🧠 AI analysis:")
     click.echo("   python3 -m eth_validators ai health")
