@@ -9,18 +9,7 @@ import logging
 import csv
 import json
 import shutil
-from datetime import date            {
-                'step': 3,
-                'title': 'Review Migration Results',
-                'command': f'python3 -m eth_validators node list',
-                'description': 'Review cluster overview after migration'
-            },
-            {
-                'step': 4,
-                'title': 'Validate New CSV',
-                'command': f'python3 -m eth_validators validator discover --output {target_csv_path}',
-                'description': 'Re-run discovery to verify new CSV format'
-            },lta
+from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import subprocess
