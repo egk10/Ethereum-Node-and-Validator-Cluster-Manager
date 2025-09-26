@@ -4,6 +4,7 @@ import subprocess
 import time
 import csv
 import json
+import random
 import os
 from pathlib import Path
 from tabulate import tabulate
@@ -168,14 +169,14 @@ def _get_charon_version(ssh_target, tailscale_domain, node_cfg=None):
     """Get Charon version if it's running on the node"""
     try:
         # First try to get the actual running version by executing charon version
-        command = "docker ps --format 'table {{.Names}}' | grep charon | head -1"
+        command = "docker ps --format 'table {{.Names}}' | grep charon | grep -v lodestar | head -1"
         result = _run_command(node_cfg, command) if node_cfg else subprocess.run(f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{command}\"", shell=True, capture_output=True, text=True, timeout=15)
         
         if result.returncode == 0 and result.stdout.strip():
             container_name = result.stdout.strip()
             
             # Try to get actual version from the running container
-            version_command = f"docker exec {container_name} charon version 2>/dev/null | head -1 | awk '{{print $NF}}' || echo 'exec_failed'"
+            version_command = f"docker exec {container_name} charon version 2>/dev/null | head -1 | awk '{{print $1}}' || echo 'exec_failed'"
             version_result = _run_command(node_cfg, version_command) if node_cfg else subprocess.run(f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} \"{version_command}\"", shell=True, capture_output=True, text=True, timeout=10)
             
             if version_result.returncode == 0 and version_result.stdout.strip() and version_result.stdout.strip() != "exec_failed":
@@ -395,6 +396,8 @@ def system_update(node, all, reboot):
     
     table_data = []
     nodes_needing_update = []
+    nodes_needing_reboot = []
+    processed_reboot_nodes = set()
     
     for i, node_cfg in enumerate(nodes_to_check):
         name = node_cfg['name']
@@ -423,6 +426,8 @@ def system_update(node, all, reboot):
             
             if needs_update:
                 nodes_needing_update.append(node_cfg)
+            if isinstance(reboot_needed_before, str) and "Yes" in reboot_needed_before:
+                nodes_needing_reboot.append(node_cfg)
 
             if all:
                 if isinstance(updates_available, int):
@@ -516,15 +521,41 @@ def system_update(node, all, reboot):
                         if "Yes" in reboot_status:
                             if reboot:
                                 click.echo(f"🔄 Rebooting {name}...")
-                                if is_local:
-                                    reboot_cmd = 'sudo reboot'
+                                if _initiate_reboot(node_cfg):
+                                    click.echo(f"🔄 {name} reboot initiated")
                                 else:
-                                    ssh_target = f"{node_cfg.get('ssh_user', 'root')}@{node_cfg['tailscale_domain']}"
-                                    reboot_cmd = f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} 'sudo reboot'"
-                                subprocess.run(reboot_cmd, shell=True, timeout=15)
-                                click.echo(f"🔄 {name} reboot initiated")
+                                    click.echo(f"❌ Failed to initiate reboot for {name}. Please reboot manually.")
+                                processed_reboot_nodes.add(name)
                             else:
-                                click.echo(f"⚠️  {name} needs a reboot (use --reboot flag to auto-reboot)")
+                                if sys.stdin.isatty():
+                                    while True:
+                                        try:
+                                            resp = input(f"🔄 {name} needs a reboot. Reboot now? [y/N]: ").strip().lower()
+                                            if resp in ['y', 'yes']:
+                                                click.echo(f"🔄 Rebooting {name}...")
+                                                if _initiate_reboot(node_cfg):
+                                                    click.echo(f"🔄 {name} reboot initiated")
+                                                else:
+                                                    click.echo(f"❌ Failed to initiate reboot for {name}. Please reboot manually.")
+                                                processed_reboot_nodes.add(name)
+                                                break
+                                            elif resp in ['n', 'no', '']:
+                                                click.echo(f"ℹ️  Skipping reboot for {name}. Reboot later if needed.")
+                                                processed_reboot_nodes.add(name)
+                                                break
+                                            else:
+                                                click.echo("❌ Please enter 'y' for yes or 'n' for no.")
+                                        except (EOFError, KeyboardInterrupt):
+                                            click.echo("\nℹ️  Reboot prompt cancelled. Skipping reboot.")
+                                            processed_reboot_nodes.add(name)
+                                            break
+                                        except Exception as e:
+                                            click.echo(f"❌ Input error: {e}. Skipping reboot.")
+                                            processed_reboot_nodes.add(name)
+                                            break
+                                else:
+                                    click.echo(f"⚠️  {name} needs a reboot. Re-run with --reboot or reboot manually.")
+                                    processed_reboot_nodes.add(name)
                     else:
                         click.echo(f"❌ {name} system upgrade failed")
                         if result.get('upgrade_error'):
@@ -544,6 +575,41 @@ def system_update(node, all, reboot):
             click.echo(f"🎉 System upgrade process completed!")
         else:
             click.echo("ℹ️  System upgrade cancelled by user.")
+
+    remaining_reboot_nodes = [n for n in nodes_needing_reboot if n['name'] not in processed_reboot_nodes]
+    if remaining_reboot_nodes:
+        import sys
+        if sys.stdin.isatty():
+            for node_cfg in remaining_reboot_nodes:
+                name = node_cfg['name']
+                while True:
+                    try:
+                        resp = input(f"🔄 {name} needs a reboot. Reboot now? [y/N]: ").strip().lower()
+                        if resp in ['y', 'yes']:
+                            click.echo(f"🔄 Rebooting {name}...")
+                            if _initiate_reboot(node_cfg):
+                                click.echo(f"🔄 {name} reboot initiated")
+                            else:
+                                click.echo(f"❌ Failed to initiate reboot for {name}. Please reboot manually.")
+                            processed_reboot_nodes.add(name)
+                            break
+                        elif resp in ['n', 'no', '']:
+                            click.echo(f"ℹ️  Skipping reboot for {name}. Reboot later if needed.")
+                            processed_reboot_nodes.add(name)
+                            break
+                        else:
+                            click.echo("❌ Please enter 'y' for yes or 'n' for no.")
+                    except (EOFError, KeyboardInterrupt):
+                        click.echo("\nℹ️  Reboot prompt cancelled. Skipping reboot.")
+                        processed_reboot_nodes.add(name)
+                        break
+                    except Exception as e:
+                        click.echo(f"❌ Input error: {e}. Skipping reboot.")
+                        processed_reboot_nodes.add(name)
+                        break
+        else:
+            node_list = ', '.join(n['name'] for n in remaining_reboot_nodes)
+            click.echo(f"\n⚠️  The following node(s) require a reboot: {node_list}. Re-run with --reboot or reboot manually.")
 
 # Validator Management Group
 @cli.group(name='validator')
@@ -682,6 +748,26 @@ def _check_reboot_needed(ssh_user, tailscale_domain, is_local=False):
             return "❓ Unknown"
     except (subprocess.TimeoutExpired, Exception):
         return "❓ Unknown"
+
+def _initiate_reboot(node_cfg):
+    """Trigger a reboot for the given node configuration."""
+    try:
+        is_local = node_cfg.get('is_local', False)
+        ssh_user = node_cfg.get('ssh_user', 'root')
+
+        if is_local:
+            reboot_cmd = 'reboot' if ssh_user == 'root' else 'sudo reboot'
+        else:
+            ssh_target = f"{ssh_user}@{node_cfg['tailscale_domain']}"
+            if ssh_user == 'root':
+                reboot_cmd = f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} 'reboot'"
+            else:
+                reboot_cmd = f"ssh -o ConnectTimeout=10 -o BatchMode=yes {ssh_target} 'sudo reboot'"
+
+        result = subprocess.run(reboot_cmd, shell=True, timeout=20)
+        return result.returncode == 0
+    except Exception:
+        return False
 
 @node_group.command(name='list')
 def list_cmd():

@@ -316,10 +316,20 @@ def perform_system_upgrade(node_config):
     is_local = node_config.get('is_local', False)
     
     # Determine if we need sudo or not
+    noninteractive_opts = ('-yq '
+                           '-o Dpkg::Options::="--force-confdef" '
+                           '-o Dpkg::Options::="--force-confold"')
+
     if ssh_user == 'root':
-        apt_cmd = 'apt update && apt upgrade -y'
+        apt_cmd = (
+            'DEBIAN_FRONTEND=noninteractive apt-get update -y && '
+            f'DEBIAN_FRONTEND=noninteractive apt-get upgrade {noninteractive_opts}'
+        )
     else:
-        apt_cmd = 'sudo apt update && sudo apt upgrade -y'
+        apt_cmd = (
+            'sudo env DEBIAN_FRONTEND=noninteractive apt-get update -y && '
+            f'sudo env DEBIAN_FRONTEND=noninteractive apt-get upgrade {noninteractive_opts}'
+        )
     
     # Add APT lock handling - wait for other apt processes to finish
     if ssh_user == 'root':

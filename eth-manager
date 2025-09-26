@@ -32,6 +32,51 @@ print_error() {
     echo -e "${RED}❌ $1${NC}"
 }
 
+# Helper to display configured node names from config.yaml
+show_node_list() {
+    local config_path="$PROJECT_ROOT/config.yaml"
+
+    if [[ ! -f "$config_path" ]]; then
+        print_warning "config.yaml not found. Unable to show node list."
+        return
+    fi
+
+    local node_output
+    if ! node_output=$(python3 - "$config_path" 2>/dev/null <<'PY'
+from pathlib import Path
+import sys
+
+import yaml
+
+config_path = Path(sys.argv[1])
+try:
+    data = yaml.safe_load(config_path.read_text()) or {}
+except Exception as exc:
+    print(f"⚠️  Error parsing config.yaml: {exc}")
+    sys.exit(1)
+
+nodes = data.get("nodes") or []
+if not nodes:
+    sys.exit(0)
+
+for node in nodes:
+    name = node.get("name") or node.get("tailscale_domain") or "<unknown>"
+    print(f"  • {name}")
+PY
+    ); then
+        print_warning "Could not read node list from config.yaml"
+        return
+    fi
+
+    if [[ -n "$node_output" ]]; then
+        print_info "Configured nodes:"
+        echo "$node_output"
+        print_info "Pass '--all' to target every node."
+    else
+        print_warning "No nodes found in config.yaml"
+    fi
+}
+
 # Function to check if we're in the right directory
 check_setup() {
     if [[ ! -f "$PROJECT_ROOT/eth_validators/__main__.py" ]]; then
@@ -74,6 +119,16 @@ run_command() {
         # No arguments - show help
         python3 -m eth_validators --help
         return
+    fi
+
+    if [[ "$1" == "system" && "$2" == "update" ]]; then
+        show_node_list
+        if [[ $# -lt 3 ]]; then
+            print_info "Command options:"
+            python3 -m eth_validators system update --help
+            print_warning "Specify a node name or use --all, then rerun the command."
+            return 0
+        fi
     fi
 
     # Run the actual command
