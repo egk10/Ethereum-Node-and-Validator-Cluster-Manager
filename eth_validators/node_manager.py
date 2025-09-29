@@ -1273,7 +1273,7 @@ def _get_latest_github_release(client_name):
 def _version_needs_update(current_version, latest_version):
     """
     Compares current and latest versions to determine if an update is needed.
-    Handles semantic versioning comparison.
+    Handles semantic versioning comparison with pre-release handling.
     """
     error_states = ["Unknown", "Error", "SSH Error", "Log Error", "Log Parse Error", 
                    "Empty Logs", "No Version Found"]
@@ -1286,11 +1286,79 @@ def _version_needs_update(current_version, latest_version):
     if current_version in ["local", "latest", "main", "master"]:
         return False
     
-    # Simple string comparison for now - could be enhanced with proper semver
-    if current_version != latest_version:
-        return True
+    # Use semantic version comparison
+    return _compare_versions(current_version, latest_version) < 0
+
+def _compare_versions(version1, version2):
+    """
+    Compare two version strings using semantic versioning rules.
+    Returns:
+        -1 if version1 < version2 (version1 needs update)
+         0 if version1 == version2 (versions are equal)
+         1 if version1 > version2 (version1 is newer)
     
-    return False
+    Handles pre-release versions like 8.0.0-rc.0, 8.0.0-alpha.1, etc.
+    """
+    import re
+    
+    def parse_version(version_str):
+        """Parse version string into components for comparison"""
+        # Clean version string
+        version_str = version_str.strip().lstrip('v')
+        
+        # Split version and pre-release parts
+        if '-' in version_str:
+            base_version, pre_release = version_str.split('-', 1)
+        else:
+            base_version, pre_release = version_str, None
+        
+        # Parse base version (major.minor.patch)
+        version_parts = base_version.split('.')
+        try:
+            major = int(version_parts[0]) if len(version_parts) > 0 else 0
+            minor = int(version_parts[1]) if len(version_parts) > 1 else 0
+            patch = int(version_parts[2]) if len(version_parts) > 2 else 0
+        except (ValueError, IndexError):
+            # Fallback for malformed versions
+            major = minor = patch = 0
+        
+        return (major, minor, patch, pre_release)
+    
+    v1_parts = parse_version(version1)
+    v2_parts = parse_version(version2)
+    
+    # Compare base version (major.minor.patch)
+    v1_base = v1_parts[:3]
+    v2_base = v2_parts[:3]
+    
+    if v1_base < v2_base:
+        return -1
+    elif v1_base > v2_base:
+        return 1
+    
+    # Base versions are equal, check pre-release
+    v1_pre = v1_parts[3]
+    v2_pre = v2_parts[3]
+    
+    # If one has pre-release and other doesn't
+    if v1_pre is None and v2_pre is not None:
+        # 8.0.0 > 8.0.0-rc.0 (stable is newer than pre-release)
+        return 1
+    elif v1_pre is not None and v2_pre is None:
+        # 8.0.0-rc.0 < 8.0.0 (pre-release is older than stable)
+        return -1
+    elif v1_pre is None and v2_pre is None:
+        # Both are stable versions and base versions are equal
+        return 0
+    
+    # Both have pre-release identifiers - compare them
+    # This is a simple comparison - could be enhanced for better pre-release ordering
+    if v1_pre == v2_pre:
+        return 0
+    elif v1_pre < v2_pre:
+        return -1
+    else:
+        return 1
 
 def _extract_version_number(version_string):
     """
