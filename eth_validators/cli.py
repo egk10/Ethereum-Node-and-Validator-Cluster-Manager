@@ -11,7 +11,7 @@ from tabulate import tabulate
 import re
 from datetime import datetime
 from . import performance
-from .config import get_node_config, get_all_node_configs
+from .config import get_node_config, get_all_node_configs, get_config_path
 from .performance import get_performance_summary
 from .node_manager import (
     get_node_status,
@@ -30,16 +30,8 @@ from .validator_editor import InteractiveValidatorEditor
 from .validator_auto_discovery import ValidatorAutoDiscovery, auto_generate_validators_csv
 from .simple_setup import SimpleSetupWizard, quick_start_new_user, show_next_steps
 
-def get_config_path():
-    """Find config.yaml in current directory first, then in eth_validators directory"""
-    # First check current working directory (where user runs the command)
-    current_dir_config = Path.cwd() / 'config.yaml'
-    if current_dir_config.exists():
-        return current_dir_config
-    
-    # Fallback to the default location (for backward compatibility)
-    default_config = Path(__file__).parent / 'config.yaml'
-    return default_config
+# Note: get_config_path is now imported from .config module (see import section above)
+# and supports multiple search locations including PROJECT_ROOT environment variable
 
 def _run_command(node_cfg, command):
     """Run a command on a node, handling both local and remote execution"""

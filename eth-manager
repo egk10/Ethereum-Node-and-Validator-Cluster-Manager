@@ -4,8 +4,15 @@
 
 set -e  # Exit on any error
 
-# Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Get the directory where this script is located (follow symlinks)
+if [[ -L "${BASH_SOURCE[0]}" ]]; then
+    # Script is a symlink - resolve it
+    REAL_SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
+    SCRIPT_DIR="$(cd "$(dirname "$REAL_SCRIPT")" && pwd)"
+else
+    # Script is not a symlink
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 PROJECT_ROOT="$(cd "$SCRIPT_DIR" && pwd)"
 
 # Colors for output
@@ -96,6 +103,12 @@ setup_venv() {
 
     # Activate virtual environment
     source "$PROJECT_ROOT/venv/bin/activate"
+    
+    # Export PROJECT_ROOT so Python code can find config.yaml
+    export PROJECT_ROOT="$PROJECT_ROOT"
+    
+    # Add PROJECT_ROOT to PYTHONPATH so eth_validators module can be found
+    export PYTHONPATH="$PROJECT_ROOT:$PYTHONPATH"
 
     # Install/update requirements if needed
     if [[ ! -f "$PROJECT_ROOT/.venv_setup_complete" ]] || [[ "$PROJECT_ROOT/requirements.txt" -nt "$PROJECT_ROOT/.venv_setup_complete" ]]; then
