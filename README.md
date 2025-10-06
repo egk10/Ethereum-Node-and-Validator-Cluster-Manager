@@ -29,9 +29,12 @@ unzip -o manager.zip
 ./run.sh --help                         # Script local simples
 python3 -m eth_validators --help        # Execução direta Python
 
-# 5) Para instalação global (opcional - usar em qualquer lugar)
+# 5) 🌟 Para instalação global (RECOMENDADO - usar em qualquer lugar):
 ./install-global.sh
-eth-manager --help                      # Agora funciona de qualquer lugar!
+# Agora você pode usar eth-manager de qualquer diretório!
+cd /tmp && eth-manager --help           # ✅ Funciona!
+cd ~ && eth-manager node list           # ✅ Funciona!
+eth-manager node versions --all         # ✅ Funciona de qualquer lugar!
 
 # 6) Gere seu config.yaml
 ./eth-manager quickstart
@@ -53,21 +56,35 @@ python3 -m eth_validators quickstart
 
 ## 🎯 Como Usar (3 Opções)
 
-### 1️⃣ Wrapper Script (Recomendado - Sem Python!)
+### 1️⃣ Wrapper Script Global (🌟 RECOMENDADO - Funciona de QUALQUER lugar!)
+```bash
+# Primeiro faça a instalação global (apenas uma vez)
+./install-global.sh
+
+# Agora use eth-manager de qualquer diretório do sistema!
+cd /tmp && eth-manager --help          # ✅ Funciona!
+cd ~ && eth-manager node list          # ✅ Funciona!
+eth-manager node versions --all        # ✅ Funciona em qualquer lugar!
+eth-manager validator discover         # ✅ Funciona em qualquer lugar!
+eth-manager system update lido102      # ✅ Funciona em qualquer lugar!
+
+# Benefícios da instalação global:
+# ✅ Não precisa estar no diretório do projeto
+# ✅ Não precisa ativar venv manualmente
+# ✅ Não precisa lembrar caminhos
+# ✅ Funciona como qualquer comando do sistema (git, docker, etc)
+```
+
+### 2️⃣ Wrapper Script Local (Do diretório do projeto)
 ```bash
 # Do diretório do projeto
 ./eth-manager --help
 ./eth-manager quickstart
 ./eth-manager node status
 ./eth-manager validator discover
-
-# Ou instale globalmente para usar de qualquer lugar
-./install-global.sh
-eth-manager --help                    # Funciona de qualquer lugar!
-eth-manager node status --all
 ```
 
-### 2️⃣ Script Local Simples
+### 3️⃣ Script Local Simples
 ```bash
 # Do diretório do projeto
 ./run.sh --help
@@ -75,7 +92,7 @@ eth-manager node status --all
 ./run.sh node status
 ```
 
-### 3️⃣ Execução Direta Python (Avançado)
+### 4️⃣ Execução Direta Python (Avançado)
 ```bash
 # Ative o ambiente virtual
 source venv/bin/activate
