@@ -216,6 +216,72 @@ def _upgrade_multi_network_node(node_config):
     results['overall_success'] = overall_success
     return results
 
+def _cleanup_stuck_apt_processes(node_config):
+    """
+    Clean up stuck APT processes that have been running too long.
+    This prevents the accumulation of zombie apt processes that hold locks.
+    """
+    ssh_user = node_config.get('ssh_user', 'root')
+    is_local = node_config.get('is_local', False)
+    
+    # Command to find and kill apt processes older than 10 minutes
+    if ssh_user == 'root':
+        cleanup_cmd = """
+        # Find apt processes older than 10 minutes and kill them
+        for pid in $(ps -eo pid,etime,comm | awk '/apt/ {
+            split($2, time, ":")
+            if (length(time) == 3) { # Format: HH:MM:SS
+                total_minutes = time[1] * 60 + time[2]
+            } else if (length(time) == 2) { # Format: MM:SS
+                total_minutes = time[1]
+            } else {
+                total_minutes = 0
+            }
+            if (total_minutes > 10) print $1
+        }'); do
+            if [ -n "$pid" ]; then
+                echo "Killing stuck apt process: $pid"
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+        done
+        # Clean up any remaining lock files from killed processes
+        rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null || true
+        """
+    else:
+        cleanup_cmd = """
+        # Find apt processes older than 10 minutes and kill them
+        for pid in $(ps -eo pid,etime,comm | awk '/apt/ {
+            split($2, time, ":")
+            if (length(time) == 3) { # Format: HH:MM:SS
+                total_minutes = time[1] * 60 + time[2]
+            } else if (length(time) == 2) { # Format: MM:SS
+                total_minutes = time[1]
+            } else {
+                total_minutes = 0
+            }
+            if (total_minutes > 10) print $1
+        }'); do
+            if [ -n "$pid" ]; then
+                echo "Killing stuck apt process: $pid"
+                sudo kill -9 "$pid" 2>/dev/null || true
+            fi
+        done
+        # Clean up any remaining lock files from killed processes
+        sudo rm -f /var/lib/apt/lists/lock /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null || true
+        """
+    
+    if is_local:
+        cmd = cleanup_cmd
+    else:
+        ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
+        cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{cleanup_cmd}'"
+    
+    try:
+        subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+    except:
+        pass  # Don't fail if cleanup fails
+
+
 def get_system_update_status(node_config):
     """
     Checks if Ubuntu system updates are available (does not install them).
@@ -224,21 +290,26 @@ def get_system_update_status(node_config):
     
     Fallback strategy: If APT is locked/busy, uses apt-check as alternative.
     Supports both local and remote nodes.
+    
+    Includes automatic cleanup of stuck APT processes to prevent lock issues.
     """
+    # Clean up any stuck APT processes first
+    _cleanup_stuck_apt_processes(node_config)
+    
     results = {'fallback_used': False}
     ssh_user = node_config.get('ssh_user', 'root')
     is_local = node_config.get('is_local', False)
     
-    # Primary method: Wait for APT locks to be released, then check updates
+    # Primary method: Wait for APT locks to be released, then check updates with proper timeout
     if ssh_user == 'root':
-        # Wait for locks (max 30 seconds), then check updates
+        # Wait for locks (max 30 seconds), then run apt commands with timeout protection
         apt_wait_cmd = 'timeout=30; while [ $timeout -gt 0 ] && (fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1); do sleep 2; timeout=$((timeout-2)); done'
-        apt_check_cmd = 'if [ $timeout -gt 0 ]; then apt update >/dev/null 2>&1 && apt upgrade -s 2>/dev/null | grep "^Inst " | wc -l; else echo "FALLBACK"; fi'
+        apt_check_cmd = 'if [ $timeout -gt 0 ]; then timeout 45 apt update >/dev/null 2>&1 && timeout 15 apt upgrade -s 2>/dev/null | grep "^Inst " | wc -l; else echo "FALLBACK"; fi'
         full_cmd = f'{apt_wait_cmd}; {apt_check_cmd}'
     else:
-        # Wait for locks (max 30 seconds), then check updates  
+        # Wait for locks (max 30 seconds), then run apt commands with timeout protection
         apt_wait_cmd = 'timeout=30; while [ $timeout -gt 0 ] && (sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1); do sleep 2; timeout=$((timeout-2)); done'
-        apt_check_cmd = 'if [ $timeout -gt 0 ]; then sudo apt update >/dev/null 2>&1 && sudo apt upgrade -s 2>/dev/null | grep "^Inst " | wc -l; else echo "FALLBACK"; fi'
+        apt_check_cmd = 'if [ $timeout -gt 0 ]; then timeout 45 sudo apt update >/dev/null 2>&1 && timeout 15 sudo apt upgrade -s 2>/dev/null | grep "^Inst " | wc -l; else echo "FALLBACK"; fi'
         full_cmd = f'{apt_wait_cmd}; {apt_check_cmd}'
     
     # Execute command locally or via SSH
@@ -249,7 +320,8 @@ def get_system_update_status(node_config):
         check_cmd = f"ssh -o BatchMode=yes -o ConnectTimeout=10 {ssh_target} '{full_cmd}'"
     
     try:
-        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=60)
+        # Increase timeout to accommodate the new timeout commands (45s apt update + 15s upgrade check + 30s wait)
+        process = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=120)
         if process.returncode == 0:
             output = process.stdout.strip()
             
@@ -331,11 +403,11 @@ def perform_system_upgrade(node_config):
             f'sudo env DEBIAN_FRONTEND=noninteractive apt-get upgrade {noninteractive_opts}'
         )
     
-    # Add APT lock handling - wait for other apt processes to finish
+    # Add APT lock handling with timeout - wait for other apt processes to finish (max 2 minutes)
     if ssh_user == 'root':
-        full_cmd = f'while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do echo "Waiting for other apt process to finish..."; sleep 5; done; {apt_cmd}'
+        full_cmd = f'timeout=120; while [ $timeout -gt 0 ] && (fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1); do echo "Waiting for other apt process to finish... ($timeout seconds left)"; sleep 5; timeout=$((timeout-5)); done; if [ $timeout -le 0 ]; then echo "ERROR: Timed out waiting for apt locks to be released"; exit 1; fi; {apt_cmd}'
     else:
-        full_cmd = f'while sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do echo "Waiting for other apt process to finish..."; sleep 5; done; {apt_cmd}'
+        full_cmd = f'timeout=120; while [ $timeout -gt 0 ] && (sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1); do echo "Waiting for other apt process to finish... ($timeout seconds left)"; sleep 5; timeout=$((timeout-5)); done; if [ $timeout -le 0 ]; then echo "ERROR: Timed out waiting for apt locks to be released"; exit 1; fi; {apt_cmd}'
     
     # Execute locally or via SSH
     if is_local:
