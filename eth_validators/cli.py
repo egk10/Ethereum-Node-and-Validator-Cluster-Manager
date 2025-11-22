@@ -492,9 +492,13 @@ def system_update(node, all, reboot):
                     should_upgrade = False
                     break
         else:
-            # Non-interactive mode, default to no
-            click.echo(f"\n⚠️  Non-interactive terminal detected. Skipping upgrade prompt (use --reboot to auto-upgrade).")
-            should_upgrade = False
+            # Non-interactive mode, use --reboot flag to decide
+            if reboot:
+                click.echo(f"\n🔄 Non-interactive terminal detected. Proceeding with upgrade (--reboot flag set).")
+                should_upgrade = True
+            else:
+                click.echo(f"\n⚠️  Non-interactive terminal detected. Skipping upgrade prompt (use --reboot to auto-upgrade).")
+                should_upgrade = False
 
         if should_upgrade:
             click.echo("🔄 Upgrading system packages...")
