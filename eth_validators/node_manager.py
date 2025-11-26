@@ -98,7 +98,7 @@ def get_node_status(node_config):
 
 def upgrade_node_docker_clients(node_config):
     """Upgrade docker clients for a node - supports single and multi-network nodes"""
-    
+
     # Check if this is a multi-network node
     networks = node_config.get('networks')
     if networks:
@@ -106,11 +106,42 @@ def upgrade_node_docker_clients(node_config):
     else:
         return _upgrade_single_network_node(node_config)
 
+def _validate_ethd_exists(eth_docker_path, is_local=False, ssh_target=None):
+    """
+    Validates that ethd script exists and is executable.
+
+    Args:
+        eth_docker_path: Path to eth-docker directory
+        is_local: Whether execution is local or remote
+        ssh_target: SSH target (user@host) for remote execution
+
+    Returns:
+        Tuple of (exists: bool, error_message: str or None)
+    """
+    import os
+
+    if is_local:
+        ethd_path = os.path.join(eth_docker_path, 'ethd')
+        if not os.path.exists(ethd_path):
+            return False, f"ethd not found at {ethd_path}"
+        if not os.access(ethd_path, os.X_OK):
+            return False, f"ethd not executable at {ethd_path}"
+        return True, None
+    else:
+        check_cmd = f'ssh {ssh_target} "test -x {eth_docker_path}/ethd"'
+        result = subprocess.run(check_cmd, shell=True, capture_output=True)
+        if result.returncode != 0:
+            return False, f"ethd not found or not executable at {eth_docker_path}/ethd"
+        return True, None
+
 def _upgrade_single_network_node(node_config):
     """
-    Upgrades Docker-based Ethereum clients (execution, consensus, mev-boost) 
-    on a single network node using eth-docker. This does NOT upgrade the Ubuntu system.
-    
+    Upgrades Docker-based Ethereum clients using ethd's update command.
+
+    This leverages ethd's built-in owner detection and permission management
+    to prevent file ownership issues. ethd automatically detects the directory
+    owner and runs git operations as that user (not as root).
+
     For Ubuntu system updates, use: sudo apt update && sudo apt upgrade -y
     """
     results = {}
@@ -118,29 +149,40 @@ def _upgrade_single_network_node(node_config):
     ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
     eth_docker_path = node_config.get('eth_docker_path', '/home/egk/eth-docker')
     is_local = node_config.get('is_local', False)
-    
+
+    # Validate ethd exists before attempting upgrade
+    ethd_exists, error_msg = _validate_ethd_exists(eth_docker_path, is_local, ssh_target if not is_local else None)
+    if not ethd_exists:
+        return {
+            'upgrade_success': False,
+            'upgrade_error': f"{error_msg}\n\nThis indicates eth-docker is not properly installed or configured.",
+            'upgrade_output': ''
+        }
+
     if is_local:
-        # Execute locally without SSH
-        upgrade_cmd = f'cd {eth_docker_path} && git config --global --add safe.directory {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d'
+        # Execute locally without SSH - use ethd update
+        upgrade_cmd = f'cd {eth_docker_path} && ./ethd update --non-interactive'
     else:
-        # Execute via SSH  
-        upgrade_cmd = f'ssh {ssh_target} "git config --global --add safe.directory {eth_docker_path} && cd {eth_docker_path} && git checkout main && git pull && docker compose pull && docker compose build --pull && docker compose up -d"'
-    
+        # Execute via SSH - use ethd update
+        upgrade_cmd = f'ssh {ssh_target} "cd {eth_docker_path} && ./ethd update --non-interactive"'
+
     try:
-        process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=300)
+        process = subprocess.run(upgrade_cmd, shell=True, capture_output=True, text=True, timeout=600)
         results['upgrade_output'] = process.stdout
         results['upgrade_error'] = process.stderr
         results['upgrade_success'] = process.returncode == 0
     except subprocess.TimeoutExpired:
-        results['upgrade_error'] = "Upgrade timeout after 5 minutes"
+        results['upgrade_error'] = "Upgrade timeout after 10 minutes"
         results['upgrade_success'] = False
-    
+
     return results
 
 def _upgrade_multi_network_node(node_config):
     """
-    Upgrades Docker-based Ethereum clients on a multi-network node.
+    Upgrades Docker-based Ethereum clients on a multi-network node using ethd update.
+
     Each network (mainnet, testnet) has its own eth-docker directory.
+    Leverages ethd's built-in owner detection and permission management.
     """
     networks = node_config['networks']
     results = {}
@@ -148,71 +190,56 @@ def _upgrade_multi_network_node(node_config):
     is_local = node_config.get('is_local', False)
     ssh_user = node_config.get('ssh_user', 'root')
     ssh_target = f"{ssh_user}@{node_config['tailscale_domain']}"
-    
+
     for network_key, network_config in networks.items():
         eth_docker_path = network_config['eth_docker_path']
         network_name = network_config.get('network_name', network_key)
-        
+
         network_result = {
             'upgrade_output': '',
             'upgrade_error': '',
             'upgrade_success': True
         }
-        
-        # Execute commands step by step for better error handling
-        commands = [
-            f"git config --global --add safe.directory {eth_docker_path}",
-            f"cd {eth_docker_path}",
-            "git checkout main",
-            "git pull",
-            "docker compose pull",
-            "docker compose build --pull",
-            "docker compose up -d"
-        ]
-        
-        for i, cmd in enumerate(commands, 1):
+
+        # Validate ethd exists before attempting upgrade
+        ethd_exists, error_msg = _validate_ethd_exists(eth_docker_path, is_local, ssh_target if not is_local else None)
+        if not ethd_exists:
+            network_result['upgrade_error'] = f"{error_msg}\n\nThis indicates eth-docker is not properly installed."
+            network_result['upgrade_success'] = False
+            results[network_name] = network_result
+            overall_success = False
+            continue
+
+        # Use ethd update for this network
+        ethd_update_cmd = "./ethd update --non-interactive"
+
+        try:
             if is_local:
-                if cmd.startswith('cd '):
-                    # Skip cd command for local execution, we'll use cwd parameter
-                    continue
-                    
                 # Execute locally without SSH
-                try:
-                    process = subprocess.run(cmd, shell=True, capture_output=True, text=True, 
-                                           timeout=120, cwd=eth_docker_path)
-                    
-                    if process.returncode != 0:
-                        network_result['upgrade_error'] += f"Command '{cmd}' failed: {process.stderr}\n"
-                        network_result['upgrade_success'] = False
-                        break
-                    else:
-                        network_result['upgrade_output'] += f"✓ {cmd}: {process.stdout}\n"
-                        
-                except subprocess.TimeoutExpired:
-                    network_result['upgrade_error'] += f"Command '{cmd}' timeout after 2 minutes\n"
-                    network_result['upgrade_success'] = False
-                    break
-                except Exception as e:
-                    network_result['upgrade_error'] += f"Command '{cmd}' exception: {str(e)}\n"
-                    network_result['upgrade_success'] = False
-                    break
+                process = subprocess.run(ethd_update_cmd, shell=True, capture_output=True, text=True,
+                                       timeout=600, cwd=eth_docker_path)
+                network_result['upgrade_output'] = process.stdout
+                network_result['upgrade_error'] = process.stderr
+                network_result['upgrade_success'] = process.returncode == 0
             else:
-                # Execute via SSH - combine all commands
-                full_cmd = f'ssh {ssh_target} "cd {eth_docker_path} && {" && ".join(commands[2:])}"'
-                try:
-                    process = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=300)
-                    network_result['upgrade_output'] = process.stdout
-                    network_result['upgrade_error'] = process.stderr
-                    network_result['upgrade_success'] = process.returncode == 0
-                except subprocess.TimeoutExpired:
-                    network_result['upgrade_error'] = "Upgrade timeout after 5 minutes"
-                    network_result['upgrade_success'] = False
-                break  # Exit the command loop for SSH mode
-        
+                # Execute via SSH
+                full_cmd = f'ssh {ssh_target} "cd {eth_docker_path} && {ethd_update_cmd}"'
+                process = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=600)
+                network_result['upgrade_output'] = process.stdout
+                network_result['upgrade_error'] = process.stderr
+                network_result['upgrade_success'] = process.returncode == 0
+
+        except subprocess.TimeoutExpired:
+            network_result['upgrade_error'] = "ethd update timeout after 10 minutes"
+            network_result['upgrade_success'] = False
+        except Exception as e:
+            network_result['upgrade_error'] = f"ethd update exception: {str(e)}"
+            network_result['upgrade_success'] = False
+
         results[network_name] = network_result
         if not network_result['upgrade_success']:
             overall_success = False
-    
+
     results['overall_success'] = overall_success
     return results
 

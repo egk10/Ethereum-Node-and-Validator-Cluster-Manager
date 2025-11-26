@@ -226,7 +226,8 @@ Isso mostrará a lista de comandos e instruções de uso do toolkit.
 ## 🧑‍💻 O que este projeto faz?
 
 - 🎯 Gerencia múltiplos nodes e clientes (Nethermind, Reth, Lighthouse, Nimbus, Grandine, etc)
-- 🔄 Facilita upgrades de **clientes Ethereum** (Docker containers)
+- 🔄 Facilita upgrades de **clientes Ethereum** (Docker containers) via ethd
+- ✅ **Integração ethd**: Upgrades previnem problemas de ownership de arquivo automaticamente
 - 🛡️ Automatiza **atualizações do sistema Ubuntu** com verificação inteligente
 - 📊 Monitora performance, sync status e troubleshooting
 - 🌐 Usa domínios Tailscale para acesso remoto seguro e estável
