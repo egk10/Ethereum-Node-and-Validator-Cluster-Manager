@@ -134,11 +134,13 @@ backend execution_clients
 
 ```yaml
 fallback:
-    bnHttpUrl: http://localhost:15052
-    ecHttpUrl: http://localhost:18545
+    bnHttpUrl: http://172.17.0.1:15052
+    ecHttpUrl: http://172.17.0.1:18545
     prysmRpcUrl: ""
     useFallbackClients: "true"
 ```
+
+**Important**: Use `172.17.0.1` (Docker bridge gateway) instead of `localhost` because the Hyperdrive containers need to reach HAProxy running on the host. `localhost` inside a container refers to the container itself, not the host.
 
 ## Health Check Settings
 
