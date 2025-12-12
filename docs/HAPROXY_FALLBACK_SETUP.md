@@ -96,7 +96,7 @@ frontend beacon_node_fallback
 backend beacon_nodes
     balance first
     option httpchk GET /eth/v1/node/health
-    http-check expect status 200-206
+    http-check expect status 200
     
     # Ordered by latency from cloudvero (US East)
     # Canada nodes (~18ms) - lowest latency first
@@ -149,7 +149,7 @@ fallback:
 | `inter` | 5s | Check every 5 seconds |
 | `fall` | 3 | Mark unhealthy after 3 failures (~15s) |
 | `rise` | 2 | Mark healthy after 2 successes (~10s) |
-| `status` | 200-206 | Accept both synced (200) and syncing (206) nodes |
+| `status` | 200 | Only accept fully synced nodes (reject syncing nodes returning 206) |
 
 ## Ports
 
