@@ -1,0 +1,19 @@
+[Unit]
+Description=Vero Container Monitor - Auto-restart on ConflictingIdError
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/monitor-vero-containers.sh --daemon
+Restart=always
+RestartSec=10
+User=root
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vero-monitor
+
+[Install]
+WantedBy=multi-user.target
