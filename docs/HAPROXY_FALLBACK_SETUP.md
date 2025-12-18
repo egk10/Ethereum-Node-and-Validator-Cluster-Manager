@@ -40,13 +40,12 @@ Ordered by latency from cloudvero (US East). `balance first` mode uses the first
 
 | Priority | Node | Tailscale Domain | Latency | Consensus | Execution |
 |----------|------|------------------|---------|-----------|-----------|
-| 1 | ryzen7 | minipcamd4.velociraptor-scylla.ts.net | ~18ms | Nimbus :5052 | Erigon :8545 |
-| 2 | lido188 | minipcamd2.velociraptor-scylla.ts.net | ~18ms | Teku :5052 | Geth :8545 |
-| 3 | lido102 | minipcamd.velociraptor-scylla.ts.net | ~19ms | Lighthouse :5052 | Nethermind :8545 |
-| 4 | rocketpool | minitx.velociraptor-scylla.ts.net | ~124ms | Teku :5052 | Geth :8545 |
-| 5 | bropi | orangepi5-plus.velociraptor-scylla.ts.net | ~148ms | Grandine :5052 | Nethermind :8545 |
-
-**Note**: `nodeset` is excluded from the fallback pool because it's the primary node. If nodeset fails, we don't want the fallback to try it too.
+| 1 | ryzen7 | minipcamd4.velociraptor-scylla.ts.net | ~18ms | Grandine :5052 | Erigon :8545 |
+| 2 | lido188 | minipcamd2.velociraptor-scylla.ts.net | ~18ms | Lighthouse :5052 | Geth :8545 |
+| 3 | lido102 | minipcamd.velociraptor-scylla.ts.net | ~19ms | Prysm :5052 | Nethermind :8545 |
+| 4 | nodeset | minipcamd3.velociraptor-scylla.ts.net | ~19ms | Lodestar :5052 | Reth :8545 |
+| 5 | rocketpool | minitx.velociraptor-scylla.ts.net | ~124ms | Teku :5052 | Besu :8545 |
+| 6 | bropi | orangepi5-plus.velociraptor-scylla.ts.net | ~148ms | Nimbus :5052 | Geth :8545 |
 
 ## Configuration Files
 
@@ -62,6 +61,18 @@ global
     user haproxy
     group haproxy
     daemon
+
+# Runtime DNS resolution for Tailscale MagicDNS
+# IMPORTANT: Required for HAProxy to resolve *.ts.net hostnames at runtime
+# Without this, HAProxy fails to start if DNS isn't available at boot time
+resolvers tailscale
+    nameserver dns1 127.0.0.53:53
+    resolve_retries 3
+    timeout resolve 1s
+    timeout retry 1s
+    hold valid 10s
+    hold nx 5s
+    hold timeout 5s
 
 defaults
     log     global
@@ -89,27 +100,33 @@ listen stats
 # =============================================
 # BEACON NODE (Consensus Client) LOAD BALANCER
 # =============================================
+# Health check: Verify node is synced AND not in optimistic mode
+# Optimistic nodes return 503 for attestations, so we exclude them
 frontend beacon_node_fallback
     bind *:15052
     default_backend beacon_nodes
 
 backend beacon_nodes
     balance first
-    option httpchk GET /eth/v1/node/health
-    http-check expect status 200
-    
+    option httpchk GET /eth/v1/node/syncing
+    # Match response body: node must have is_optimistic:false AND is_syncing:false
+    http-check expect rstring \"is_optimistic\":false.*\"is_syncing\":false|\"is_syncing\":false.*\"is_optimistic\":false
+
     # Ordered by latency from cloudvero (US East)
     # Canada nodes (~18ms) - lowest latency first
-    server ryzen7      minipcamd4.velociraptor-scylla.ts.net:5052     check inter 5s fall 3 rise 2
-    server lido188     minipcamd2.velociraptor-scylla.ts.net:5052     check inter 5s fall 3 rise 2
-    server lido102     minipcamd.velociraptor-scylla.ts.net:5052      check inter 5s fall 3 rise 2
+    # Note: 'resolvers tailscale init-addr none' enables runtime DNS resolution
+    server ryzen7      minipcamd4.velociraptor-scylla.ts.net:5052     check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
+    server lido188     minipcamd2.velociraptor-scylla.ts.net:5052     check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
+    server lido102     minipcamd.velociraptor-scylla.ts.net:5052      check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
+    server nodeset     minipcamd3.velociraptor-scylla.ts.net:5052     check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
     # Brazil nodes (~124-148ms) - higher latency last
-    server rocketpool  minitx.velociraptor-scylla.ts.net:5052         check inter 5s fall 3 rise 2
-    server bropi       orangepi5-plus.velociraptor-scylla.ts.net:5052 check inter 5s fall 3 rise 2
+    server rocketpool  minitx.velociraptor-scylla.ts.net:5052         check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
+    server bropi       orangepi5-plus.velociraptor-scylla.ts.net:5052 check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
 
 # =============================================
 # EXECUTION CLIENT LOAD BALANCER
 # =============================================
+# Health check: Verify node is fully synced (eth_syncing returns false)
 frontend execution_client_fallback
     bind *:18545
     default_backend execution_clients
@@ -118,19 +135,33 @@ backend execution_clients
     balance first
     option httpchk POST /
     http-check send hdr Content-Type application/json body "{\"jsonrpc\":\"2.0\",\"method\":\"eth_syncing\",\"params\":[],\"id\":1}"
-    http-check expect status 200
-    
+    # Match: result must be false (not an object with sync status)
+    http-check expect rstring \"result\":false
+
     # Ordered by latency from cloudvero (US East)
     # Canada nodes (~18ms) - lowest latency first
-    server ryzen7      minipcamd4.velociraptor-scylla.ts.net:8545     check inter 5s fall 3 rise 2
-    server lido188     minipcamd2.velociraptor-scylla.ts.net:8545     check inter 5s fall 3 rise 2
-    server lido102     minipcamd.velociraptor-scylla.ts.net:8545      check inter 5s fall 3 rise 2
+    server ryzen7      minipcamd4.velociraptor-scylla.ts.net:8545     check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
+    server lido188     minipcamd2.velociraptor-scylla.ts.net:8545     check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
+    server lido102     minipcamd.velociraptor-scylla.ts.net:8545      check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
+    server nodeset     minipcamd3.velociraptor-scylla.ts.net:8545     check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
     # Brazil nodes (~124-148ms) - higher latency last
-    server rocketpool  minitx.velociraptor-scylla.ts.net:8545         check inter 5s fall 3 rise 2
-    server bropi       orangepi5-plus.velociraptor-scylla.ts.net:8545 check inter 5s fall 3 rise 2
+    server rocketpool  minitx.velociraptor-scylla.ts.net:8545         check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
+    server bropi       orangepi5-plus.velociraptor-scylla.ts.net:8545 check inter 5s fall 2 rise 2 resolvers tailscale init-addr none
 ```
 
 ### Hyperdrive Fallback Config: `~/.hyperdrive/user-settings.yml`
+
+**Option 1: HTTPS via tsdproxy (Recommended)**
+
+```yaml
+fallback:
+    bnHttpUrl: https://beaconapi.velociraptor-scylla.ts.net
+    ecHttpUrl: https://ethereum-rpc.velociraptor-scylla.ts.net
+    prysmRpcUrl: ""
+    useFallbackClients: "true"
+```
+
+**Option 2: HTTP via local Docker gateway**
 
 ```yaml
 fallback:
@@ -140,16 +171,39 @@ fallback:
     useFallbackClients: "true"
 ```
 
-**Important**: Use `172.17.0.1` (Docker bridge gateway) instead of `localhost` because the Hyperdrive containers need to reach HAProxy running on the host. `localhost` inside a container refers to the container itself, not the host.
+### Which option to use?
+
+| Factor | Local HTTP (`172.17.0.1`) | HTTPS via tsdproxy |
+|--------|---------------------------|-------------------|
+| VM upgrade resilience | ⚠️ Could break if Docker changes | ✅ Stable hostname |
+| Docker reinstall | ⚠️ Could break | ✅ Stable hostname |
+| Multi-machine access | ❌ Only local | ✅ Any Tailscale device |
+| Performance | ✅ Slightly faster | ✅ Fast enough |
+
+**Recommendation**: Use **HTTPS via tsdproxy** for better resilience. The stable Tailscale hostnames survive VM upgrades and Docker changes.
+
+### Important notes:
+- **Always use HTTPS** for tsdproxy endpoints (HTTP redirects to HTTPS with 301)
+- If using local HTTP, use `172.17.0.1` (Docker bridge gateway), not `localhost`
+- `localhost` inside a container refers to the container itself, not the host
 
 ## Health Check Settings
 
 | Setting | Value | Description |
 |---------|-------|-------------|
 | `inter` | 5s | Check every 5 seconds |
-| `fall` | 3 | Mark unhealthy after 3 failures (~15s) |
+| `fall` | 2 | Mark unhealthy after 2 failures (~10s) - faster failover |
 | `rise` | 2 | Mark healthy after 2 successes (~10s) |
-| `status` | 200 | Only accept fully synced nodes (reject syncing nodes returning 206) |
+
+### Beacon Node Health Check
+- **Endpoint**: `GET /eth/v1/node/syncing`
+- **Validation**: Response body must contain `"is_optimistic":false` AND `"is_syncing":false`
+- **Why**: Optimistic nodes return HTTP 503 for attestation requests, causing validator failures
+
+### Execution Client Health Check
+- **Endpoint**: `POST /` with `eth_syncing` JSON-RPC call
+- **Validation**: Response must contain `"result":false` (fully synced)
+- **Why**: Syncing nodes return a sync status object instead of `false`
 
 ## Ports
 
@@ -239,6 +293,31 @@ sudo haproxy -c -f /etc/haproxy/haproxy.cfg
 sudo journalctl -u haproxy --no-pager -n 50
 ```
 
+### HAProxy fails with "could not resolve address"
+If you see errors like:
+```
+[ALERT] : 'server beacon_nodes/ryzen7' : could not resolve address 'minipcamd4.velociraptor-scylla.ts.net'
+```
+
+**Cause**: HAProxy by default resolves DNS only at startup. If Tailscale MagicDNS isn't fully ready when HAProxy starts, resolution fails.
+
+**Solution**: Ensure the config has:
+1. A `resolvers` section pointing to the local DNS stub (127.0.0.53)
+2. `resolvers tailscale init-addr none` on each server line
+
+This allows HAProxy to:
+- Start even if DNS isn't immediately available (`init-addr none`)
+- Resolve DNS at runtime using the system resolver
+- Automatically update IPs when they change
+
+```bash
+# Verify DNS resolution works
+nslookup minipcamd4.velociraptor-scylla.ts.net
+
+# If it fails, check Tailscale status
+tailscale status
+```
+
 ### All backends showing DOWN
 - Check if nodes are reachable: `ping minipcamd4.velociraptor-scylla.ts.net`
 - Check if beacon API is responding: `curl http://minipcamd4.velociraptor-scylla.ts.net:5052/eth/v1/node/health`
@@ -247,6 +326,36 @@ sudo journalctl -u haproxy --no-pager -n 50
 ### Hyperdrive not using fallback
 - Verify Hyperdrive config: `grep -A3 'fallback:' ~/.hyperdrive/user-settings.yml`
 - Restart Hyperdrive: `hyperdrive service stop && hyperdrive service start`
+
+## Boot Order Configuration
+
+To prevent HAProxy failures after VM reboots/upgrades, a systemd override ensures HAProxy waits for Tailscale:
+
+### Systemd Override: `/etc/systemd/system/haproxy.service.d/tailscale.conf`
+
+```ini
+[Unit]
+# Wait for Tailscale to be up before starting HAProxy
+After=tailscaled.service
+Wants=tailscaled.service
+
+# Add extra delay to ensure MagicDNS is ready
+ExecStartPre=/bin/sleep 5
+```
+
+### Create the override:
+```bash
+sudo mkdir -p /etc/systemd/system/haproxy.service.d
+sudo tee /etc/systemd/system/haproxy.service.d/tailscale.conf > /dev/null << 'EOF'
+[Unit]
+After=tailscaled.service
+Wants=tailscaled.service
+ExecStartPre=/bin/sleep 5
+EOF
+sudo systemctl daemon-reload
+```
+
+This combined with the `resolvers` config and `init-addr none` provides robust protection against boot timing issues.
 
 ## Adding/Removing Backend Nodes
 
