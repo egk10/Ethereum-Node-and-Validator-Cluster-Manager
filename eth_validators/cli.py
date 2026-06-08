@@ -2692,8 +2692,8 @@ def _apply_port_change_no_restart_with_path(node_name, node_config, old_port, ne
                     network_folder = eth_docker_path.replace('eth-docker', 'eth-hoodi')
                     env_file = f"{network_folder}/.env"
                     click.echo(f"   🔍 Targeting built-in consensus port in holesky network: {env_file}")
-            elif node_name == 'ryzen7':
-                # ryzen7 runs mainnet with port 9014
+            elif node_name == 'minipcamd4':
+                # minipcamd4 (formerly 'ryzen7') runs mainnet with port 9014
                 if old_port == 9014:
                     network_folder = eth_docker_path  # Mainnet uses default eth-docker
                     env_file = f"{network_folder}/.env"
@@ -2755,8 +2755,8 @@ def _apply_port_change_no_restart(node_name, node_config, old_port, new_port, pr
                 elif old_port == 9014:  # If we later detect holesky
                     env_file = f"{eth_docker_path.replace('eth-docker', 'eth-hoodi')}/.env"
                     click.echo(f"   🔍 Targeting built-in consensus port in holesky network: {env_file}")
-            elif node_name == 'ryzen7':
-                # ryzen7 runs mainnet with port 9014
+            elif node_name == 'minipcamd4':
+                # minipcamd4 (formerly 'ryzen7') runs mainnet with port 9014
                 if old_port == 9014:
                     env_file = f"{eth_docker_path}/.env"  # Mainnet uses default eth-docker
                     click.echo(f"   🔍 Targeting built-in consensus port in mainnet: {env_file}")
