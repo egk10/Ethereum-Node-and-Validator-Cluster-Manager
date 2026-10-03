@@ -3,12 +3,13 @@
 
 Roda a cada 3 min (systemd timer) no cloudvero. Duas perguntas por validador:
 
-1. Erros de atestação no log (últimos 7 min): "Failed to produce attestation",
+1. Erros de atestação no log (últimos 15 min): "Failed to produce attestation",
    "missed", timeouts. HTTP 500 de beacon execution-optimistic
    (HeadBlockNotFullyVerified) é ruído se houver atestação publicada na mesma
-   janela — o Vero tenta o próximo beacon e publica.
-2. Silêncio anormal: validadores atestam 1x/época (6,4 min); 7 min sem NENHUMA
-   linha de atestação com o container Up é alerta.
+   duty — o Vero tenta o próximo beacon e publica.
+2. Silêncio anormal: a posição da duty muda entre épocas (6,4 min cada),
+   portanto o intervalo entre publicações pode alcançar quase duas épocas.
+   Quinze minutos sem publicação com o container Up é alerta.
 
 Alerta passa pelo GestãoBot local; o monitor não lê credenciais Meta. Dedupe de 30 min por (VC, tipo) — não pela linha
 de log, que muda a cada slot e furava o dedupe. Estado em
@@ -27,7 +28,7 @@ from pathlib import Path
 from gestaobot_client import Client, BotError
 
 ESTADO = Path("/opt/egkcluster/state/attest-alerts.json")
-JANELA_MIN = 7
+JANELA_MIN = 15
 DEDUPE_MIN = 30
 
 VCS = [
@@ -36,7 +37,6 @@ VCS = [
 ]
 RE_ERRO = re.compile(
     r"(?i)(failed|missed|timeout)[^\n]{0,80}attest|attest[^\n]{0,80}(failed|missed|timeout)")
-RE_ATIVIDADE = re.compile(r"(?i)attest")
 RE_PUBLICADA = re.compile(r"(?i)published attest")
 RE_SLOT = re.compile(r"(?i)\bslot[\s=:]+[\"']?([0-9]+)")
 # 500 do Lighthouse/outros quando o EL está em resync — não é miss.
