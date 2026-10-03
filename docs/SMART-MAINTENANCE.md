@@ -37,4 +37,18 @@ Se `/var/run/reboot-required` aparecer após uma ação, o executor abre pedido 
 
 `/opt/egkcluster/state/maintenance.json` é gravado por substituição atômica, sob `flock` exclusivo no caminho `maintenance.lock`. O estado inclui inventário, ações concluídas, ação corrente, erro e códigos pendentes. Evitar copiar o estado para canais públicos. `journalctl -u egkcluster-maintenance.service` mostra a falha local; o alerta GestãoBot é adicional e seu próprio erro fica no estado.
 
-Fontes: [Eth Docker update](https://ethdocker.com/Support/Update), [Eth Docker GitHub](https://github.com/ethstaker/eth-docker), [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/), [DeepSeek thinking](https://api-docs.deepseek.com/guides/thinking_mode/).
+## Ativação verificada em 3 de outubro de 2026 (UTC)
+
+Código do executor e monitores publicado em `000fc4d`; ponte GestãoBot publicada e aplicada pelo autodeploy em `4f159a1` no repo Integratech. Os checkouts locais foram integrados por fast-forward, preservando os documentos já alterados e os três scripts originais em `/home/egk/ethereum-maintenance-backup-20261002/`.
+
+No cloudvero, `/opt/egkcluster/maintenance.json` tem a rotina e as ações comuns habilitadas; `/opt/egkcluster/maintenance.env` pertence a `egk`, modo `0600`, com a última chave fornecida pelo usuário. A chamada real ao `deepseek-flash`, esforço baixo e teto 4096, terminou com `finish_reason=stop` e JSON estrito válido em português. O teto anterior de 1500 interrompia a resposta antes de fechar o JSON; respostas incompletas continuam sendo recusadas.
+
+Os três timers estão ativos e habilitados: saúde diária, atestações a cada três minutos e manutenção semanal. A primeira manutenção está agendada para **4 de outubro de 2026, 09:15 São Paulo / 12:15 UTC**. A validação desta implantação fez inventário e probes isoladas; as atualizações dos nós serão executadas pelo timer. A checagem do runtime encontrou seis hosts saudáveis; saúde diária terminou com código 0 e seu resumo recebeu recibo Meta `delivered`. O teste de WhatsApp recebeu `read`. Os hashes dos cinco scripts instalados coincidem com o código versionado e estão registrados em `/opt/egkcluster/smart-maintenance-release.json`.
+
+Passaram 42 testes locais de manutenção e monitores, os simuladores `simulate_cluster.py` e `simulate_bot_interno.py`, e probes de versão isoladas nas imagens atuais dos seis hosts. A regressão progressiva impede uma segunda ação quando o alvo ou outro source está otimista. A ponte do cluster foi configurada explicitamente no perfil interno e bloqueada no perfil Lead.
+
+Pendências observadas: Nethermind `1.39.3 → 2.1.0` exige revisão antes de atualizar o par de clientes; o worktree eth-docker do minipcamd3 está alterado e é pulado; código eth-docker e pacote/stack Hyperdrive seguem fora da receita comum. O cloudvero já tem indicação de reboot necessário; a rotina registra um pedido humano quando chegar a esse nó. Os serviços intencionalmente parados foram preservados.
+
+Para interromper futuras atualizações: `sudo systemctl disable --now egkcluster-maintenance.timer`; isso não cancela uma ação já em andamento. Antes de parar uma service ativa, conferir `state/maintenance.json`, saúde e logs. Backups dos monitores e configuração ficam em `/opt/egkcluster/backup-monitors-*` e `backup-maintenance-*`; a rotina não faz downgrade automático dos clientes.
+
+Fontes: [Eth Docker update](https://ethdocker.com/Support/Update), [Eth Docker GitHub](https://github.com/ethstaker/eth-docker), [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/), [DeepSeek thinking](https://api-docs.deepseek.com/guides/thinking_mode/), [NodeSet Hyperdrive update](https://docs.nodeset.io/node-operators/hyperdrive/updating).
