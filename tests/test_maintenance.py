@@ -415,7 +415,7 @@ class MaintenanceTests(unittest.TestCase):
         backend.probe = lambda node: self.backend.inventory[node['name']]
         result = backend.action(node, 'clients', expected_versions=expected)
         self.assertIn(' build --pull validator', calls[1])
-        self.assertIn(' up -d --no-build --pull never --no-deps validator', calls[3])
+        self.assertIn(' up -d --no-build --pull never --force-recreate --no-deps validator', calls[3])
         self.assertNotIn('web3signer', calls[1] + calls[3])
         self.assertNotIn('postgres', calls[1] + calls[3])
         self.assertEqual(result['source_update'], source)
@@ -434,7 +434,7 @@ class MaintenanceTests(unittest.TestCase):
         result = backend.action(node, 'clients', expected_versions=expected)
         self.assertEqual(len(calls), 3)
         self.assertIn(' pull --ignore-buildable validator', calls[0])
-        self.assertIn(' up -d --no-build --pull never --no-deps validator', calls[2])
+        self.assertIn(' up -d --no-build --pull never --force-recreate --no-deps validator', calls[2])
         self.assertNotIn('web3signer', calls[0]+calls[2])
         self.assertNotIn('postgres', calls[0]+calls[2])
         self.assertEqual(result['source_update']['status'], 'review_required')
@@ -466,9 +466,33 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertIn("image tag changed", calls[2])
         self.assertIn(" up -d --no-build --pull never", calls[2])
+        self.assertIn('--force-recreate',calls[2])
+        self.assertIn('running image differs from validated candidate after up',calls[2])
         self.assertNotIn('./ethd cmd', '\n'.join(calls))
         self.assertNotIn("--remove-orphans", calls[2])
         self.assertEqual(result["candidate_versions"]["prysm"]["candidate"], "7.2.0")
+
+    def test_successful_up_with_stale_running_clients_cannot_advance(self):
+        for name in m.SOURCES[:2]: self.c['nodes'][name]['clients']=True
+        original_action=self.backend.action
+        def action(*args,**kwargs):
+            original_action(*args,**kwargs)
+            return {'candidate_versions':{
+                'nethermind':{'candidate':'1.39.4','image_id':'sha256:new-el'},
+                'prysm':{'candidate':'7.2.0','image_id':'sha256:new-cl'}}}
+        self.backend.action=action
+        with self.assertRaisesRegex(m.MaintenanceError,'running image/version differs'):
+            self.engine().run()
+        self.assertEqual(self.backend.actions,[('minipcamd','clients')])
+        state=m.State(Path(self.c['state_file'])).value
+        self.assertEqual(state['status'],'blocked')
+        self.assertEqual(state['actions'],[])
+
+    def test_immediate_running_id_guard_rejects_compose_retaining_old_image(self):
+        with patch.object(sys,'argv',['probe',json.dumps({'nethermind':'sha256:new'}),'0']), patch.object(
+                m.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'sha256:old','')):
+            with self.assertRaisesRegex(RuntimeError,'running image differs'):
+                exec(m.RUNNING_ID_CHECK,{})
 
     def test_health_deteriorates_during_build_prevents_apply(self):
         node = self.c['nodes']['minipcamd']

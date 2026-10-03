@@ -207,6 +207,18 @@ for client, image_id in expected.items():
         raise RuntimeError(client + ': image tag changed after candidate version check; up blocked')
 '''
 
+RUNNING_ID_CHECK = r'''
+import json,subprocess,sys
+expected,use_sudo=json.loads(sys.argv[1]),sys.argv[2]=='1'
+docker=['sudo','-n','docker'] if use_sudo else ['docker']
+for client,image_id in expected.items():
+    role='execution' if client in ('geth','nethermind') else 'validator' if client=='vero' else 'consensus'
+    name='eth-docker-'+role+'-1'
+    actual=subprocess.run(docker+['inspect','--format','{{.Image}}',name],text=True,capture_output=True,check=True,timeout=30).stdout.strip()
+    if actual!=image_id:
+        raise RuntimeError(client+': running image differs from validated candidate after up')
+'''
+
 CLOUD_OS_UPGRADE = r'''
 import re, subprocess
 listing = subprocess.run(['apt','list','--upgradable'], text=True, capture_output=True, timeout=120)
@@ -391,8 +403,11 @@ class Backend:
             helper_commands = ''.join(compose + ' run --rm --no-deps --pull never '
                                       + shlex.quote(x) + '\n' for x in helpers)
             self._command(node,prefix+check_script+helper_commands
-                          + compose + " up -d --no-build --pull never"
-                          + (' --no-deps' if selected else '') + selected + "\n",7200)
+                          + compose + " up -d --no-build --pull never --force-recreate"
+                          + (' --no-deps' if selected else '') + selected + "\n"
+                          + "python3 - " + shlex.quote(json.dumps(expected_ids))
+                          + (" 1" if node['name']=='cloudvero' else " 0")
+                          + " <<'RUNNINGPY'\n" + RUNNING_ID_CHECK + "\nRUNNINGPY\n",7200)
             return {"candidate_versions": checked,"source_update":source}
         elif kind == "os":
             prefix = ""
@@ -894,6 +909,13 @@ class Engine:
                             old, new = semver(before["installed"]), semver(after_versions[client]["installed"])
                             if old is None or new is None or old[0] != new[0]:
                                 raise MaintenanceError(f"{name}: unexpected/unknown {client} major after update")
+                        for client,candidate in (action_result.get('candidate_versions',{})
+                                                 if isinstance(action_result,dict) else {}).items():
+                            role='execution' if client in ('geth','nethermind') else 'validator' if client=='vero' else 'consensus'
+                            actual_id=inventory[name]['containers']['eth-docker-'+role+'-1'].get('image_id')
+                            if (after_versions[client]['installed']!=candidate['candidate']
+                                    or actual_id!=candidate['image_id']):
+                                raise MaintenanceError(f'{name}: {client} running image/version differs from validated candidate; next node blocked')
                     st.value["actions"].append({"node": name, "kind": kind, "completed_at": now(),
                                                 "source_update":action_result.get('source_update') if isinstance(action_result,dict) else None,
                                                 "candidate_versions": action_result.get("candidate_versions")
