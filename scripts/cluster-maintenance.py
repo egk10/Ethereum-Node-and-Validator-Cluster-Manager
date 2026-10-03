@@ -435,7 +435,8 @@ class Backend:
                   + json.dumps({"inventory": inventory, "latest": releases}, ensure_ascii=False))
         req = urllib.request.Request(c["url"], method="POST",
              data=json.dumps({"model": c["model"], "temperature": 0,
-                              "reasoning_effort": "low", "max_tokens": 4096,
+                              "thinking": {"type": "disabled"},
+                              "reasoning_effort": "none", "max_tokens": 4096,
                               "response_format": {"type": "json_object"},
                               "messages": [{"role": "user", "content": prompt}]}).encode(),
              headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
