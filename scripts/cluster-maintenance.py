@@ -122,6 +122,69 @@ if sudo == '1':
 print(json.dumps(out))
 '''
 
+# Inspect only the freshly built local client images. This never inherits Compose
+# volumes, network, environment, entrypoints or commands from the running stack.
+CANDIDATE_PROBE = r'''
+import json, re, subprocess, sys
+clients, use_sudo = json.loads(sys.argv[1]), sys.argv[2] == '1'
+docker = ['sudo', '-n', 'docker'] if use_sudo else ['docker']
+specs = {
+    'geth': ('geth:local', 'geth', ['version']),
+    'nethermind': ('nethermind:local', '/nethermind/nethermind', ['--version']),
+    'prysm': ('prysm-consensus:local', 'beacon-chain', ['--version']),
+    'lighthouse': ('lighthouse:local', 'lighthouse', ['--version']),
+    'lodestar': ('lodestar:local', '/usr/app/node_modules/.bin/lodestar', ['--version']),
+    'nimbus': ('nimbus:local', 'nimbus_beacon_node', ['--version']),
+    'vero': ('vero:local', 'python', ['main.py', '--version']),
+}
+out = {}
+for client in clients:
+    if client not in specs:
+        raise RuntimeError('unsupported candidate client')
+    image, binary, args = specs[client]
+    p = subprocess.run(docker + ['image', 'inspect', '--format', '{{json .Config.Volumes}}', image],
+                       text=True, capture_output=True, timeout=30, check=True)
+    declared = json.loads(p.stdout.strip() or 'null') or {}
+    if not isinstance(declared, dict):
+        raise RuntimeError(client + ': malformed image volume declaration')
+    tmpfs = []
+    for path in declared:
+        if not isinstance(path, str) or not re.fullmatch(r'/[A-Za-z0-9_./-]+', path) or '..' in path:
+            raise RuntimeError(client + ': unsafe image volume declaration')
+        # Override image VOLUME declarations with small ephemeral tmpfs mounts;
+        # Docker must never attach the stack's named or host volumes here.
+        tmpfs += ['--tmpfs', path + ':rw,nosuid,nodev,noexec,size=1048576']
+    image_id = subprocess.run(docker + ['image', 'inspect', '--format', '{{.Id}}', image],
+                              text=True, capture_output=True, timeout=30, check=True).stdout.strip()
+    if not image_id.startswith('sha256:'):
+        raise RuntimeError(client + ': image id unavailable')
+    p = subprocess.run(docker + ['run', '--rm', '--network', 'none', '--read-only', *tmpfs,
+                                 '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                                 '--entrypoint', binary, image_id, *args],
+                       text=True, capture_output=True, timeout=90)
+    if p.returncode:
+        raise RuntimeError(client + ': candidate version exit ' + str(p.returncode)
+                           + ': ' + p.stderr[-300:])
+    out[client] = {'image_id': image_id, 'version_output': p.stdout + p.stderr}
+print(json.dumps(out))
+'''
+
+TAG_ID_CHECK = r'''
+import json, subprocess, sys
+expected, use_sudo = json.loads(sys.argv[1]), sys.argv[2] == '1'
+docker = ['sudo', '-n', 'docker'] if use_sudo else ['docker']
+images = {'geth': 'geth:local', 'nethermind': 'nethermind:local',
+          'prysm': 'prysm-consensus:local', 'lighthouse': 'lighthouse:local',
+          'lodestar': 'lodestar:local', 'nimbus': 'nimbus:local', 'vero': 'vero:local'}
+for client, image_id in expected.items():
+    if client not in images or not isinstance(image_id, str) or not image_id.startswith('sha256:'):
+        raise RuntimeError('invalid candidate image identity')
+    current = subprocess.run(docker + ['image', 'inspect', '--format', '{{.Id}}', images[client]],
+                             text=True, capture_output=True, check=True, timeout=30).stdout.strip()
+    if current != image_id:
+        raise RuntimeError(client + ': image tag changed after candidate version check; up blocked')
+'''
+
 CLOUD_OS_UPGRADE = r'''
 import re, subprocess
 listing = subprocess.run(['apt','list','--upgradable'], text=True, capture_output=True, timeout=120)
@@ -236,18 +299,37 @@ class Backend:
         except Exception as e:
             raise MaintenanceError(f"{node['name']}: malformed probe: {e}") from e
 
-    def action(self, node: dict, kind: str, source_build: bool = False) -> str:
+    def action(self, node: dict, kind: str, source_build: bool = False,
+               expected_versions: dict | None = None) -> dict:
         wd = shlex.quote(node["workdir"])
         prefix = f"cd {wd}\ntest -f .env\ntest -x ./ethd\n"
         if kind == "clients":
+            if not expected_versions:
+                raise MaintenanceError("client action requires prior installed/latest version inventory")
             # No ethd update: that command assumes YES for migrations in noninteractive mode.
             script = (
                 "test -z \"$(git status --porcelain)\"\n"
                 "cp -p .env \".env.bak.maintenance.$(date +%Y%m%dT%H%M%S)\"\n"
                 "ETHD_FRONTEND=noninteractive ./ethd cmd pull --ignore-buildable\n"
                 + "ETHD_FRONTEND=noninteractive ./ethd cmd build --pull"
-                + (" --no-cache" if source_build else "") + "\n"
-                "ETHD_FRONTEND=noninteractive ./ethd up\n")
+                + (" --no-cache" if source_build else "") + "\n")
+            self._command(node, prefix + script, 7200)
+            clients = list(expected_versions)
+            candidate_script = ("python3 - " + shlex.quote(json.dumps(clients))
+                                + (" 1" if node["name"] == "cloudvero" else " 0")
+                                + " <<'PY'\n" + CANDIDATE_PROBE + "\nPY\n")
+            try:
+                candidate = json.loads(self._command(node, candidate_script, 300).stdout)
+            except (ValueError, TypeError) as e:
+                raise MaintenanceError(f"{node['name']}: malformed candidate image probe") from e
+            checked = validate_candidate_versions(candidate, expected_versions)
+            expected_ids = {client: value["image_id"] for client, value in checked.items()}
+            check_script = ("python3 - " + shlex.quote(json.dumps(expected_ids))
+                            + (" 1" if node["name"] == "cloudvero" else " 0")
+                            + " <<'PY'\n" + TAG_ID_CHECK + "\nPY\n")
+            self._command(node, prefix + check_script
+                          + "ETHD_FRONTEND=noninteractive ./ethd cmd up -d --no-build --pull never\n", 7200)
+            return {"candidate_versions": checked}
         elif kind == "os":
             prefix = ""
             if node["name"] == "cloudvero":
@@ -259,7 +341,7 @@ class Backend:
                           "apt-get -y -o DPkg::Lock::Timeout=300 --no-remove upgrade\n")
         else:
             raise MaintenanceError("unknown action")
-        return self._command(node, prefix + script, 7200).stdout[-2000:]
+        return {"output_tail": self._command(node, prefix + script, 7200).stdout[-2000:]}
 
     def releases(self) -> dict:
         releases = {}
@@ -297,15 +379,18 @@ class Backend:
                   + json.dumps({"inventory": inventory, "latest": releases}, ensure_ascii=False))
         req = urllib.request.Request(c["url"], method="POST",
              data=json.dumps({"model": c["model"], "temperature": 0,
-                              "reasoning_effort": "low", "max_tokens": 1500,
+                              "reasoning_effort": "low", "max_tokens": 4096,
                               "response_format": {"type": "json_object"},
                               "messages": [{"role": "user", "content": prompt}]}).encode(),
              headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
         for attempt in range(3):
             try:
-                with urllib.request.urlopen(req, timeout=45) as resp:
+                with urllib.request.urlopen(req, timeout=90) as resp:
                     raw = json.loads(resp.read())
-                content = raw["choices"][0]["message"]["content"]
+                choice = raw["choices"][0]
+                if choice.get("finish_reason") != "stop":
+                    raise ValueError("LLM completion not finished: " + str(choice.get("finish_reason")))
+                content = choice["message"]["content"]
                 if not isinstance(content, str):
                     raise ValueError("LLM content is not text")
                 answer = json.loads(content, strict=True)
@@ -443,6 +528,36 @@ def client_update_blockers(probe: dict, node: dict, releases: dict) -> list[str]
     return [f"{client}: {entry['installed'] or 'unknown'} -> {entry['latest'] or 'unknown'} ({entry['status']})"
             for client, entry in comparison.items()
             if entry["status"] in ("unknown", "major_review", "ahead_of_release")]
+
+
+def validate_candidate_versions(candidate: dict, expected: dict) -> dict:
+    """Require a known safe local image before any Compose up can touch live data."""
+    if not isinstance(candidate, dict) or set(candidate) != set(expected):
+        raise MaintenanceError("candidate image inventory incomplete")
+    checked = {}
+    for client, prior in expected.items():
+        item = candidate[client]
+        if not isinstance(item, dict) or not isinstance(item.get("version_output"), str):
+            raise MaintenanceError(f"{client}: candidate version output missing")
+        raw = item["version_output"]
+        pattern = (r"(?m)^Version:\s*v?(\d+\.\d+\.\d+)" if client == "nethermind"
+                   else CLIENT_PATTERNS[client])
+        match = re.search(pattern, raw)
+        version = match.group(1) if match else None
+        old, latest, new = semver(prior.get("installed")), semver(prior.get("latest")), semver(version)
+        if old is None or latest is None or new is None:
+            raise MaintenanceError(f"{client}: candidate version unknown before up")
+        if new[0] != old[0]:
+            raise MaintenanceError(f"{client}: candidate major {version} differs from installed {prior['installed']}; up blocked")
+        if not prior.get("fixed_pins") and new != latest:
+            raise MaintenanceError(f"{client}: candidate {version} differs from latest {prior['latest']} without fixed pin; up blocked")
+        image_id = item.get("image_id")
+        if not isinstance(image_id, str) or not image_id.startswith("sha256:"):
+            raise MaintenanceError(f"{client}: candidate image id unavailable")
+        checked[client] = {"installed": prior["installed"], "candidate": version,
+                           "latest": prior["latest"], "image_id": image_id,
+                           "fixed_pins": prior.get("fixed_pins", {})}
+    return checked
 
 
 def inventory_report(inventory: dict, releases: dict, config: dict) -> dict:
@@ -662,10 +777,15 @@ class Engine:
                     st.save()  # unknown outcome remains blocked after interruption
                     source_build = any(k.endswith("DOCKERFILE") and v == "Dockerfile.source"
                                        for k, v in inventory[name].get("pins", {}).items())
-                    self.backend.action(node, kind, source_build=source_build)
+                    action_result = self.backend.action(node, kind, source_build=source_build,
+                                                        expected_versions=before_versions if kind == "clients" else None)
+                    postcheck_since = time.time()  # only publications after the applied action count
+                    if isinstance(action_result, dict) and action_result.get("candidate_versions"):
+                        st.value["current"]["candidate_versions"] = action_result["candidate_versions"]
+                        st.save()
                     st.value["phase"] = "postcheck"
                     st.save()
-                    inventory = self.postcheck(name, action_started_at)
+                    inventory = self.postcheck(name, postcheck_since)
                     if (not isinstance(inventory[name].get("ethd_version"), str)
                             or not inventory[name]["ethd_version"].strip()):
                         raise MaintenanceError(f"{name}: post-update client version inventory unavailable")
@@ -677,7 +797,9 @@ class Engine:
                             old, new = semver(before["installed"]), semver(after_versions[client]["installed"])
                             if old is None or new is None or old[0] != new[0]:
                                 raise MaintenanceError(f"{name}: unexpected/unknown {client} major after update")
-                    st.value["actions"].append({"node": name, "kind": kind, "completed_at": now()})
+                    st.value["actions"].append({"node": name, "kind": kind, "completed_at": now(),
+                                                "candidate_versions": action_result.get("candidate_versions")
+                                                if isinstance(action_result, dict) else None})
                     st.value.pop("current", None)
                     st.value["phase"] = "between-actions"
                     st.save()

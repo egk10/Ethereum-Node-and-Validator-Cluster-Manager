@@ -76,6 +76,8 @@ class FakeBackend:
         self.optimistic_other = False
         self.unexpected_major = False
         self.publish_after_action = True
+        self.publish_during_action = False
+        self.pending_publication = False
         self.probes = 0
         self.latest = {
             "eth-docker": {"tag": "v26.9.0"}, "geth": {"tag": "v1.17.7"},
@@ -86,6 +88,12 @@ class FakeBackend:
 
     def probe(self, node):
         self.probes += 1
+        if node["name"] == "cloudvero" and self.pending_publication:
+            stamp = datetime.now(timezone.utc).isoformat()
+            self.inventory["cloudvero"]["attest_logs"] = {
+                name: stamp + " Published attestation" for name in
+                ("eth-docker-validator-1", "hyperdrive_sw_vc")}
+            self.pending_publication = False
         return copy.deepcopy(self.inventory[node["name"]])
 
     def releases(self):
@@ -94,7 +102,7 @@ class FakeBackend:
     def llm(self, report, releases):
         return {"veto": False, "summary": "reviewed", "reason": ""}
 
-    def action(self, node, kind, source_build=False):
+    def action(self, node, kind, source_build=False, expected_versions=None):
         self.actions.append((node["name"], kind))
         self.source_build_flags.append(source_build)
         if self.fail_action:
@@ -108,11 +116,12 @@ class FakeBackend:
         if self.unexpected_major and node["name"] == "minipcamd" and kind == "clients":
             self.inventory["minipcamd"]["ethd_version"] = self.inventory["minipcamd"]["ethd_version"].replace(
                 "Version:     1.39.3+hash", "Version:     2.1.0+hash")
-        if self.publish_after_action:
+        if self.publish_during_action:
             stamp = datetime.now(timezone.utc).isoformat()
             self.inventory["cloudvero"]["attest_logs"] = {
                 name: stamp + " Published attestation" for name in
                 ("eth-docker-validator-1", "hyperdrive_sw_vc")}
+        self.pending_publication = self.publish_after_action
         return "done"
 
 
@@ -218,6 +227,21 @@ class MaintenanceTests(unittest.TestCase):
                 self.engine().run()
         self.assertEqual(self.backend.actions, [])
 
+    def test_truncated_llm_rejected_even_if_json_parses(self):
+        self.c["nodes"]["minipcamd"]["clients"] = True
+        self.backend.llm = lambda *_: m.Backend(self.c).llm({}, {})
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self):
+                return json.dumps({"choices": [{"finish_reason": "length", "message": {
+                    "content": '{"veto":false,"summary":"ok","reason":""}'}}]}).encode()
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "fake"}), patch.object(
+                m.urllib.request, "urlopen", return_value=Response()), patch.object(m.time, "sleep"):
+            with self.assertRaisesRegex(m.MaintenanceError, "LLM JSON/schema invalid after retry"):
+                self.engine().run()
+        self.assertEqual(self.backend.actions, [])
+
     def test_interrupted_state_never_repeats_unknown_action(self):
         state = m.State(Path(self.c["state_file"]))
         state.value = {"status": "running", "phase": "mutating", "current": {"node": "minipcamd", "kind": "clients"}}
@@ -237,6 +261,14 @@ class MaintenanceTests(unittest.TestCase):
     def test_cloud_postcheck_rejects_pre_action_publications(self):
         self.c["nodes"]["cloudvero"]["clients"] = True
         self.backend.publish_after_action = False
+        with self.assertRaisesRegex(m.MaintenanceError, "postcheck timed out"):
+            self.engine().run()
+        self.assertEqual(self.backend.actions, [("cloudvero", "clients")])
+
+    def test_publication_during_action_cannot_satisfy_postcheck(self):
+        self.c["nodes"]["cloudvero"]["clients"] = True
+        self.backend.publish_after_action = False
+        self.backend.publish_during_action = True
         with self.assertRaisesRegex(m.MaintenanceError, "postcheck timed out"):
             self.engine().run()
         self.assertEqual(self.backend.actions, [("cloudvero", "clients")])
@@ -330,6 +362,51 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(result["inventory"]["minipcamd"]["effective_plan"],
                          {"clients": False, "os": True})
         self.assertEqual(result["skipped"][0]["kind"], "clients")
+
+    def test_candidate_major_blocks_before_up(self):
+        node = self.c["nodes"]["minipcamd"]
+        expected = m.client_comparison(self.backend.inventory["minipcamd"], node, self.backend.latest)
+        candidate = {"nethermind": {"image_id": "sha256:abc", "version_output": "Version: 2.1.0"},
+                     "prysm": {"image_id": "sha256:def", "version_output": "beacon-chain version Prysm/v7.2.0/hash"}}
+        calls = []
+        def command(_node, script, _timeout):
+            calls.append(script)
+            return subprocess.CompletedProcess([], 0, json.dumps(candidate) if len(calls) == 2 else "", "")
+        backend = m.Backend(self.c)
+        backend._command = command
+        with self.assertRaisesRegex(m.MaintenanceError, "candidate major 2.1.0"):
+            backend.action(node, "clients", expected_versions=expected)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("./ethd up", "\n".join(calls))
+
+    def test_candidate_exact_release_or_fixed_pin(self):
+        node = self.c["nodes"]["minipcamd"]
+        expected = m.client_comparison(self.backend.inventory["minipcamd"], node, self.backend.latest)
+        candidate = {"nethermind": {"image_id": "sha256:abc", "version_output": "Version: 1.39.3"},
+                     "prysm": {"image_id": "sha256:def", "version_output": "beacon-chain version Prysm/v7.2.0/hash"}}
+        with self.assertRaisesRegex(m.MaintenanceError, "differs from latest"):
+            m.validate_candidate_versions(candidate, expected)
+        expected["nethermind"]["fixed_pins"] = {"NM_DOCKER_TAG": "1.39.3"}
+        checked = m.validate_candidate_versions(candidate, expected)
+        self.assertEqual(checked["nethermind"]["candidate"], "1.39.3")
+
+    def test_candidate_success_checks_tag_ids_and_compose_never_pulls(self):
+        node = self.c["nodes"]["minipcamd"]
+        expected = m.client_comparison(self.backend.inventory["minipcamd"], node, self.backend.latest)
+        candidate = {"nethermind": {"image_id": "sha256:abc", "version_output": "Version: 1.39.4"},
+                     "prysm": {"image_id": "sha256:def", "version_output": "beacon-chain version Prysm/v7.2.0/hash"}}
+        calls = []
+        def command(_node, script, _timeout):
+            calls.append(script)
+            return subprocess.CompletedProcess([], 0, json.dumps(candidate) if len(calls) == 2 else "", "")
+        backend = m.Backend(self.c)
+        backend._command = command
+        result = backend.action(node, "clients", expected_versions=expected)
+        self.assertEqual(len(calls), 3)
+        self.assertIn("image tag changed", calls[2])
+        self.assertIn("./ethd cmd up -d --no-build --pull never", calls[2])
+        self.assertNotIn("--remove-orphans", calls[2])
+        self.assertEqual(result["candidate_versions"]["prysm"]["candidate"], "7.2.0")
 
     def test_unexpected_post_action_major_blocks_next_node(self):
         self.c["nodes"]["minipcamd"]["clients"] = True
