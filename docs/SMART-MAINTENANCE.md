@@ -52,3 +52,30 @@ Pendências observadas: Nethermind `1.39.3 → 2.1.0` exige revisão antes de at
 Para interromper futuras atualizações: `sudo systemctl disable --now egkcluster-maintenance.timer`; isso não cancela uma ação já em andamento. Antes de parar uma service ativa, conferir `state/maintenance.json`, saúde e logs. Backups dos monitores e configuração ficam em `/opt/egkcluster/backup-monitors-*` e `backup-maintenance-*`; a rotina não faz downgrade automático dos clientes.
 
 Fontes: [Eth Docker update](https://ethdocker.com/Support/Update), [Eth Docker GitHub](https://github.com/ethstaker/eth-docker), [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/), [DeepSeek thinking](https://api-docs.deepseek.com/guides/thinking_mode/), [NodeSet Hyperdrive update](https://docs.nodeset.io/node-operators/hyperdrive/updating).
+
+## Piloto explícito Nethermind 1.39.3 → 2.1.0
+
+`scripts/nethermind-pilot.py` executa uma única atualização autorizada. A receita aceita apenas um source Nethermind com mainnet padrão, nó `pre-prague-expiry`, banco Patricia existente, imagem binária oficial, tag atual `latest`, worktree limpo e os parâmetros extras de saúde/índice de logs revisados. Uma configuração diferente é recusada. A receita não altera `.env`: faz backup restrito e usa `--build-arg DOCKER_TAG=2.1.0@sha256:...` somente na construção de `execution`. Mantém uma tag da imagem anterior; não faz downgrade automático.
+
+Antes de aplicar, valida o binário da imagem em container isolado, exige exatamente `2.1.0`, recoleta a saúde dos seis hosts e confirma que configuração, volumes e container vivo não mudaram. Aplica apenas `execution` com `--no-deps --no-build --pull never`. Nenhum `ethd update`, resync, limpeza, atualização de OS ou Git entra nesse piloto.
+
+O piloto usa o mesmo `maintenance.lock` e estado durável do executor semanal. Uma interrupção deixa o ciclo bloqueado para reconciliação, e não repete a mutação. Exige cinco sources sincronizados e não otimistas, publicações novas dos dois VCs, avanço do head e três amostras adicionais de saúde, separadas por um minuto. O log da nova execução deve confirmar `State backend: patricia (existing patricia state detected)`; as famílias flat vazias criadas na sondagem 2.x não são tratadas como migração. As imagens de todos os outros clientes e o estado dos serviços intencionalmente parados devem permanecer iguais.
+
+Instalar o script junto com os outros arquivos em `/opt/egkcluster/` e avaliar sem mutação:
+
+```bash
+python3 /opt/egkcluster/nethermind-pilot.py --config /opt/egkcluster/maintenance.json --node minipcamd
+```
+
+Para executar a autorização específica em serviço independente do terminal, no cloudvero:
+
+```bash
+sudo systemd-run --unit=egkcluster-nethermind-pilot --property=User=egk \
+  --property=TimeoutStartSec=3h --property=Type=oneshot \
+  python3 /opt/egkcluster/nethermind-pilot.py \
+  --config /opt/egkcluster/maintenance.json --node minipcamd --run
+```
+
+O relatório é `/opt/egkcluster/state/nethermind-pilot-minipcamd.json`; consultar também `journalctl -u egkcluster-nethermind-pilot`. Um piloto concluído não autoriza genericamente outras mudanças de major, migrações Hyperdrive ou atualização do código eth-docker. A rotina comum deixa de bloquear este source quando observa Nethermind 2.1.0 em execução. O minipcamd3 mantém a trava de worktree alterado e requer tratamento separado.
+
+Revisão de compatibilidade: [Nethermind 2.0.0, banco Patricia e configurações](https://github.com/NethermindEth/nethermind/releases/tag/2.0.0), [Nethermind 2.1.0](https://github.com/NethermindEth/nethermind/releases/tag/2.1.0), [seleção de backend na versão 2.1.0](https://github.com/NethermindEth/nethermind/blob/2.1.0/src/Nethermind/Nethermind.Init/FlatStateActivationPolicy.cs).
