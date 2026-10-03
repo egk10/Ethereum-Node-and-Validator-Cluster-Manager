@@ -1,7 +1,7 @@
 [Unit]
 Description=Guarded weekly Ethereum cluster maintenance
 Wants=network-online.target
-After=network-online.target
+After=network-online.target docker.service integra-botinterno.service
 
 [Service]
 Type=oneshot

@@ -7,6 +7,7 @@
   "min_other_healthy_sources": 2,
   "postcheck_timeout_minutes": 45,
   "postcheck_poll_seconds": 60,
+  "cloudvero_excluded_apt_packages": ["hyperdrive"],
   "required_vc_containers": [
     "eth-docker-validator-1",
     "eth-docker-web3signer-1",
