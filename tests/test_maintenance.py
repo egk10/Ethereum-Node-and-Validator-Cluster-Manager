@@ -273,6 +273,46 @@ class MaintenanceTests(unittest.TestCase):
                 self.engine().run()
         self.assertEqual(self.backend.actions, [])
 
+    def test_compatibility_review_expires_for_other_network_or_release(self):
+        node = self.c['nodes']['minipcamd2']
+        probe = self.backend.inventory['minipcamd2']
+        probe['runtime_context'] = {'NETWORK':'mainnet', 'CORE_FILES':'geth.yml:lighthouse-cl-only.yml'}
+        review = m.reviewed_compatibility(probe, node, self.backend.latest)
+        self.assertEqual(set(review), {'geth','lighthouse'})
+        self.backend.latest['geth']['tag'] = 'v1.17.8'
+        self.assertNotIn('geth', m.reviewed_compatibility(probe, node, self.backend.latest))
+        probe['runtime_context']['NETWORK'] = 'sepolia'
+        self.assertEqual(m.reviewed_compatibility(probe, node, self.backend.latest), {})
+
+    def test_nimbus_archive_or_validator_role_does_not_inherit_pruned_beacon_review(self):
+        node = self.c['nodes']['orangepi5-plus']
+        probe = self.backend.inventory['orangepi5-plus']
+        probe['runtime_context'] = {'NETWORK':'mainnet', 'CORE_FILES':'geth.yml:nimbus-cl-only.yml', 'CL_NODE_TYPE':'pruned'}
+        self.assertIn('nimbus', m.reviewed_compatibility(probe, node, self.backend.latest))
+        probe['runtime_context']['CL_NODE_TYPE'] = 'archive'
+        self.assertNotIn('nimbus', m.reviewed_compatibility(probe, node, self.backend.latest))
+        probe['runtime_context'].update(CL_NODE_TYPE='pruned', CORE_FILES='geth.yml:nimbus.yml')
+        self.assertNotIn('nimbus', m.reviewed_compatibility(probe, node, self.backend.latest))
+
+    def test_factual_review_is_sent_but_never_overrides_llm_veto(self):
+        self.c['nodes']['minipcamd2']['clients'] = True
+        self.backend.inventory['minipcamd2']['runtime_context'] = {
+            'NETWORK':'mainnet', 'CORE_FILES':'geth.yml:lighthouse-cl-only.yml'}
+        self.backend.llm = lambda *args: m.Backend(self.c).llm(*args)
+        answer = {'veto':True, 'summary':'Revisão recebida.', 'reason':'Risco adicional.'}
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self): return json.dumps({'choices':[{'finish_reason':'stop','message':{'content':json.dumps(answer)}}]}).encode()
+        with patch.dict(os.environ, {'DEEPSEEK_API_KEY':'fake'}), patch.object(
+                m.urllib.request, 'urlopen', return_value=Response()) as api:
+            with self.assertRaisesRegex(m.MaintenanceError, 'LLM veto: Risco adicional'):
+                self.engine().run()
+        prompt = json.loads(api.call_args.args[0].data)['messages'][0]['content']
+        self.assertIn('reviewed_compatibility', prompt)
+        self.assertIn('https://github.com/ethereum/go-ethereum/releases/tag/v1.17.7', prompt)
+        self.assertEqual(self.backend.actions, [])
+
     def test_interrupted_state_never_repeats_unknown_action(self):
         state = m.State(Path(self.c["state_file"]))
         state.value = {"status": "running", "phase": "mutating", "current": {"node": "minipcamd", "kind": "clients"}}

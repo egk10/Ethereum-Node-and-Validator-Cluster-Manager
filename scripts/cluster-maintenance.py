@@ -43,9 +43,34 @@ CLIENT_PIN_PREFIX = {"geth": "GETH", "nethermind": "NM", "prysm": "PRYSM",
 GIB = 1024 ** 3
 ATTEST_WINDOW_SECONDS = 15 * 60
 
+# Human review of these exact mainnet release transitions, not an execution
+# override. New targets or different runtime roles require fresh assessment.
+RELEASE_REVIEWS = {
+    'nethermind': ('2.1.0', ('2.1.0',),
+        'Already running 2.1.0 with the existing Patricia database. This action rebuilds/recreates the same version; it does not perform the 1.x-to-2.x transition, select flat state, or change PoA configuration.',
+        ['https://github.com/NethermindEth/nethermind/releases/tag/2.1.0']),
+    'geth': ('1.17.7', ('1.17.5', '1.17.7'),
+        '1.17.6/1.17.7 are maintenance releases. The new history.chain option applies to explicitly requested prune-history or initial snap sync. This recipe executes neither command and preserves existing EL_NODE_TYPE and the database.',
+        ['https://github.com/ethereum/go-ethereum/releases/tag/v1.17.6',
+         'https://github.com/ethereum/go-ethereum/releases/tag/v1.17.7']),
+    'prysm': ('7.2.0', ('7.1.8', '7.2.0'),
+        'Mainnet regular release. Strict proposer-settings validation concerns the Prysm validator client; this host runs only the beacon client. Vero/Hyperdrive handle validators, with their settings preserved. Sepolia Gloas changes do not apply to mainnet.',
+        ['https://github.com/OffchainLabs/prysm/releases/tag/v7.2.0']),
+    'lighthouse': ('8.2.3', ('8.2.2', '8.2.3'),
+        'Mainnet security maintenance release recommended by upstream. The column-backfill OOM warning also affected 8.2.2 and advises avoiding unnecessary resyncs; this recipe reuses the existing database and never starts resync.',
+        ['https://github.com/sigp/lighthouse/releases/tag/v8.2.3']),
+    'lodestar': ('1.49.0', ('1.47.0', '1.48.0', '1.49.0'),
+        'Upstream recommends this release for mainnet. dedupePayloads activates for Gloas, currently scheduled only on Sepolia, not mainnet. The archived-Gloas payload CPU warning is not a mainnet database migration. Only the beacon client runs here.',
+        ['https://github.com/ChainSafe/lodestar/releases/tag/v1.49.0']),
+    'nimbus': ('26.9.1', ('26.8.0', '26.9.1'),
+        'The 26.9.0 history change affects archive mode. This node has CL_NODE_TYPE=pruned and retains that setting. No archive-policy change is requested. 26.9.1 changes relative to 26.9.0 concern the validator client; this host runs only the beacon client.',
+        ['https://github.com/status-im/nimbus-eth2/releases/tag/v26.9.0',
+         'https://github.com/status-im/nimbus-eth2/releases/tag/v26.9.1']),
+}
+
 # This code runs on each host. It emits only selected .env values, never credentials.
 PROBE = r'''
-import json, os, re, subprocess, sys
+import hashlib, json, os, re, subprocess, sys
 root, workdir, sudo = sys.argv[1:4]
 mapping = json.loads(sys.argv[4])
 docker = ['sudo', '-n', 'docker'] if sudo == '1' else ['docker']
@@ -112,10 +137,15 @@ except Exception as e: out['ethd_version'] = {'error':str(e)}
 out['ethd_commit'] = optional(['git','rev-parse','HEAD']) if os.path.isdir(os.path.join(workdir,'.git')) else {'error':'git missing'}
 out['ethd_dirty'] = optional(['git','status','--porcelain']) if os.path.isdir(os.path.join(workdir,'.git')) else {'error':'git missing'}
 out['pins'] = {}
+out['runtime_context'] = {}
 try:
+    with open(os.path.join(workdir,'.env'),'rb') as f:
+        out['env_sha256'] = hashlib.sha256(f.read()).hexdigest()
     with open(os.path.join(workdir,'.env')) as f:
         for line in f:
             key, sep, value = line.partition('=')
+            if sep and key in ('NETWORK','CORE_FILES','CL_NODE_TYPE','EL_NODE_TYPE'):
+                out['runtime_context'][key] = value.strip().strip('"').strip("'")
             if sep and key in ('ETH_DOCKER_TAG','GETH_DOCKER_TAG','GETH_SRC_BUILD_TARGET',
                                'GETH_DOCKERFILE', 'MEV_DOCKERFILE',
                                'NM_DOCKER_TAG','NM_SRC_BUILD_TARGET',
@@ -473,6 +503,11 @@ class Backend:
                   "statuses block clients. Use effective_plan and source_update.requested to identify eligible "
                   "actions; do not claim they are blocked merely because release notes mention breaking changes. "
                   "All sources here use mainnet, not Sepolia. "
+                  "Evaluate each warning against the actual installed-to-target transition and runtime role/network. "
+                  "reviewed_compatibility contains a human factual review scoped to exact versions and live settings. "
+                  "It does not override your veto: assess residual risks. Do not treat an optional command we never "
+                  "execute, an inactive testnet fork, or a validator-only change on a beacon-only host as a required "
+                  "migration. A same-version rebuild is not an upgrade from an older major. "
                   "Veto if an otherwise eligible automatic action "
                   "may require a migration, resync, or incompatible change. Eth Docker source updates use an "
                   "isolated merge, supported env schemas 67..72, preservation of settings and local commits, "
@@ -685,6 +720,9 @@ def inventory_report(inventory: dict, releases: dict, config: dict) -> dict:
         images = {k: {"ref": v.get("image"), "id": v.get("image_id")} for k, v in cs.items() if isinstance(v, dict)
                   and (k.startswith("eth-docker-") or k.startswith("hyperdrive_"))}
         report[name] = {"disk": p.get("disk"), "sync": p.get("sync"), "images": images,
+                        "runtime_context": p.get('runtime_context', {}),
+                        "env_sha256": p.get('env_sha256'),
+                        "reviewed_compatibility": reviewed_compatibility(p, node, releases),
                         "ethd_commit": p.get("ethd_commit"), "ethd_version": p.get("ethd_version"),
                         "hyperdrive_version": p.get("hyperdrive_version") if name == "cloudvero" else None,
                         "hyperdrive_package": p.get("hyperdrive_package") if name == "cloudvero" else None,
@@ -713,6 +751,27 @@ def inventory_report(inventory: dict, releases: dict, config: dict) -> dict:
                     f"{client}: installed {entry['installed'] or 'unknown'}, latest {entry['latest'] or 'unknown'} ({entry['status']})")
         report[name]["release_reconciliation"] = "running client versions compared; image/pin applicability still requires review"
     return report
+
+
+def reviewed_compatibility(probe: dict, node: dict, releases: dict) -> dict:
+    context = probe.get('runtime_context', {})
+    if context.get('NETWORK') != 'mainnet' or node['name'] not in SOURCES:
+        return {}
+    comparison = client_comparison(probe, node, releases)
+    result = {}
+    for client, entry in comparison.items():
+        target, installed, note, urls = RELEASE_REVIEWS[client]
+        if entry['installed'] not in installed or semver(entry['latest']) != semver(target):
+            continue
+        # CL-specific reviews apply only to the actually configured beacon-only
+        # service. Nimbus archive operators must assess the new retention policy.
+        if client == node['cl'] and client + '-cl-only.yml' not in context.get('CORE_FILES','').split(':'):
+            continue
+        if client == 'nimbus' and context.get('CL_NODE_TYPE') != 'pruned':
+            continue
+        result[client] = {'installed':entry['installed'], 'target':target,
+                          'network':'mainnet', 'note':note, 'sources':urls}
+    return result
 
 
 def is_fixed_pin(key: str, value: str) -> bool:
