@@ -420,6 +420,25 @@ class MaintenanceTests(unittest.TestCase):
         self.assertNotIn('postgres', calls[1] + calls[3])
         self.assertEqual(result['source_update'], source)
 
+    def test_unsupported_source_retains_code_and_updates_only_live_validator(self):
+        node = {**self.c['nodes']['cloudvero'], 'clients': True, 'source': True}
+        backend = m.Backend(self.c)
+        expected = m.client_comparison(self.backend.inventory['cloudvero'], node, self.backend.latest)
+        candidate = {'vero': {'image_id': 'sha256:abc', 'version_output': 'Vero v1.4.1'}}
+        calls = []
+        def command(node, script, timeout):
+            calls.append(script)
+            return subprocess.CompletedProcess([], 0, json.dumps(candidate) if len(calls)==2 else '', '')
+        backend._command = command
+        backend.probe = lambda node: self.backend.inventory[node['name']]
+        result = backend.action(node, 'clients', expected_versions=expected)
+        self.assertEqual(len(calls), 3)
+        self.assertIn(' pull --ignore-buildable validator', calls[0])
+        self.assertIn(' up -d --no-build --pull never --no-deps validator', calls[2])
+        self.assertNotIn('web3signer', calls[0]+calls[2])
+        self.assertNotIn('postgres', calls[0]+calls[2])
+        self.assertEqual(result['source_update']['status'], 'review_required')
+
     def test_candidate_exact_release_or_fixed_pin(self):
         node = self.c["nodes"]["minipcamd"]
         expected = m.client_comparison(self.backend.inventory["minipcamd"], node, self.backend.latest)

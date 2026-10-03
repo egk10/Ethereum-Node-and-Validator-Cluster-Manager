@@ -347,7 +347,10 @@ class Backend:
                                                                          node['name']=='cloudvero'),900).stdout)
                 else:
                     source = {'status':'review_required','reason':'unsupported upstream source/schema; current checkout retained'}
-            services = source.get('apply_services',[]) if source else []
+            # Unknown/disabled source updates still touch only the required live clients.
+            # Never fall back to bringing up all services, signer or database helpers.
+            services = (source or {}).get('apply_services') or (
+                ['validator'] if node['name']=='cloudvero' else ['execution','consensus'])
             selected = (' ' + ' '.join(shlex.quote(x) for x in services)) if services else ''
             helpers = source.get('helpers',[]) if source else []
             pull_selected = selected + ''.join(' ' + shlex.quote(x) for x in helpers)
