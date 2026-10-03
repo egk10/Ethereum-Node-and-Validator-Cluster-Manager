@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cloudvero-only reboot after GestãoBot approval, with durable boot recovery."""
+"""Cloudvero-only human-authorized reboot, with durable boot recovery."""
 import argparse
 import fcntl
 import importlib.util
@@ -159,7 +159,12 @@ def execute(c,st,rp,engine):
     engine.alert('Reboot cloudvero: iniciando','cloudvero',
                  'Aprovação '+rp.value['code']+' confirmada. Cinco sources saudáveis; recovery persistente habilitado. '
                  'Vero/Hyperdrive e GestãoBot retornarão após a reinicialização.')
-    rp.value.update(status='running',phase='reboot-scheduled',approved_at=m.now(),scheduled_at=m.now())
+    rp.value['approved_at'] = m.now()
+    return schedule_reboot(st,rp)
+
+
+def schedule_reboot(st,rp):
+    rp.value.update(status='running',phase='reboot-scheduled',authorized_at=m.now(),scheduled_at=m.now())
     rp.save()
     st.value.update(status='running',phase='cloudvero-reboot/reboot-scheduled',
                     current={'node':'cloudvero','kind':'reboot','code':rp.value['code'],'report':str(rp.path)})
@@ -169,12 +174,66 @@ def execute(c,st,rp,engine):
     return {'status':'reboot-scheduled','code':rp.value['code']}
 
 
+def execute_session(c,st,rp,engine,instruction):
+    """A new explicit user instruction replaces an expired request, never bot approval."""
+    if instruction != 'Rebota o cloudvero':
+        raise m.MaintenanceError('This one-time session action requires the exact recorded user instruction')
+    if (st.value.get('status') in ('running','blocked')
+            or rp.value.get('phase') != 'approval-not-granted'
+            or rp.value.get('approval_status') != 'expirada'
+            or boot_id() != rp.value.get('boot_id_before')):
+        raise m.MaintenanceError('Session reboot requires an expired, unexecuted request on the original boot')
+    inv = engine.probe_all()
+    services = services_running()
+    issues = m.health(inv,c) + service_issues(services)
+    if issues or not m.source_quorum(inv,c,'cloudvero') or not inv['cloudvero'].get('reboot_required'):
+        raise m.MaintenanceError('Session reboot preflight: '+'; '.join(issues or ['reboot/quorum gate failed']))
+    if shell(['systemctl','is-enabled','egkcluster-reboot-recovery.service']) != 'enabled':
+        raise m.MaintenanceError('Persistent reboot recovery service is not enabled')
+    live = h.inspect_all()
+    for name in ('hyperdrive_sw_operator','eth-lido-validator-1','eth-lido-web3signer-1'):
+        if (live[name]['State']['Status'] == 'running'
+                or live[name]['HostConfig']['RestartPolicy']['Name'] != 'no'):
+            raise m.MaintenanceError('Intentionally stopped container must have restart=no: '+name)
+    authorization = {'channel':'user-session','node':'cloudvero','instruction':instruction,'recorded_at':m.now()}
+    archived = m.State(rp.path.with_name('cloudvero-reboot-request-expired-20261003.json'))
+    if archived.path.exists():
+        raise m.MaintenanceError('Expired request archive already exists; reconcile before another attempt')
+    archived.value = rp.value
+    archived.save()
+    rp.value = {'status':'authorized','phase':'session-authorized','authorization':authorization,'code':None,
+                'boot_id_before':boot_id(),'kernel_before':shell(['uname','-r']),'services':services,
+                'settings_hashes':h.settings_hashes(),'containers_before':{n:h.identity(v) for n,v in live.items()},
+                'signing_context_sha256':h.digest(h.signing_context(live[h.VC])),
+                'inventory_before':inv,'releases':archived.value['releases'],'expired_request_archive':str(archived.path)}
+    rp.save()
+    old = [x for x in st.value.get('pending_reboots',[]) if x['node']=='cloudvero']
+    st.value.setdefault('superseded_reboot_requests',[]).extend(old)
+    st.value['pending_reboots'] = [x for x in st.value.get('pending_reboots',[]) if x['node']!='cloudvero']
+    st.value['active_session_reboot'] = {'node':'cloudvero','authorization':authorization,
+        'boot_id':rp.value['boot_id_before'],'report':str(rp.path)}
+    st.value.update(status='running',phase='cloudvero-reboot/session-authorized')
+    st.save()
+    engine.alert('Reboot cloudvero: autorizado nesta sessão','cloudvero',
+        'Instrução humana explícita: "Rebota o cloudvero". Cinco sources saudáveis e recovery persistente habilitado. '
+        'Reinício único para ativar o kernel instalado. Vero/Hyperdrive e bots retornarão após o boot. '
+        'Pedido WhatsApp expirado preservado; autorização registrada nesta sessão.')
+    return schedule_reboot(st,rp)
+
+
 def recover(c,st,rp,engine):
     if rp.value.get('phase') not in ('reboot-scheduled','recovering'):
         return {'status':'no-recovery-needed'}
     if boot_id() == rp.value['boot_id_before']:
         raise m.MaintenanceError('Recovery requires a changed boot ID; never repeats a reboot')
-    if pending(st,rp.value['code']).get('approval_status') != 'aprovada':
+    direct = rp.value.get('authorization',{}).get('channel') == 'user-session'
+    if direct:
+        recorded = st.value.get('active_session_reboot',{})
+        if (recorded.get('authorization') != rp.value['authorization']
+                or recorded.get('boot_id') != rp.value['boot_id_before']
+                or rp.value['authorization'].get('instruction') != 'Rebota o cloudvero'):
+            raise m.MaintenanceError('Recovery requires the recorded explicit session authorization')
+    elif pending(st,rp.value['code']).get('approval_status') != 'aprovada':
         raise m.MaintenanceError('Recovery requires recorded GestãoBot approval')
     rp.value.update(phase='recovering',boot_id_after=boot_id(),recovery_started_at=m.now())
     rp.save()
@@ -201,15 +260,19 @@ def recover(c,st,rp,engine):
             raise m.MaintenanceError('Reboot recovery timeout: '+'; '.join(issues))
         time.sleep(30)
     # No pre-boot publication can pass m.health: it checks each VC's current StartedAt.
-    outcome = engine.bot.conclude(rp.value['code'],True,
-        'Cloudvero reiniciado; kernel '+shell(['uname','-r'])+'. Boot ID mudou e reboot-required ausente. '
+    detail = ('Cloudvero reiniciado; kernel '+shell(['uname','-r'])+'. Boot ID mudou e reboot-required ausente. '
         'Cinco sources synced/não otimistas/EL online; ambos VCs publicaram após iniciar. '
         'GestãoBot/Leadbot HTTP 200 e serviços/timers ativos. Operator/eth-lido seguem parados.')
+    outcome = (engine.alert('Reboot cloudvero: concluído','cloudvero',detail+' Autorização explícita nesta sessão.')
+               if direct else engine.bot.conclude(rp.value['code'],True,detail))
     report = m.inventory_report(inv,rp.value['releases'],c)
-    item = pending(st,rp.value['code'])
+    item = st.value['active_session_reboot'] if direct else pending(st,rp.value['code'])
     st.value.setdefault('reboot_history',[]).append({**item,'observed_boot_id':boot_id(),
                                                    'reconciled_at':m.now(),'report':str(rp.path)})
-    st.value['pending_reboots'].remove(item)
+    if direct:
+        st.value.pop('active_session_reboot')
+    else:
+        st.value['pending_reboots'].remove(item)
     st.value.update(inventory_after=report,gaps_summary={n:r['gaps'] for n,r in report.items() if r['gaps']},
                     phase='done',finished_at=m.now())
     st.value.update(status='partial' if st.value['pending_reboots'] or st.value['gaps_summary'] else 'complete')
@@ -227,8 +290,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config',type=Path,required=True)
     group = ap.add_mutually_exclusive_group(required=True)
-    for arg in ('prepare','execute','recover'):
+    for arg in ('prepare','execute','execute-session','recover'):
         group.add_argument('--'+arg,action='store_true')
+    ap.add_argument('--authorization-text')
     args = ap.parse_args()
     c = m.checked_config(args.config)
     if not c['enabled']:
@@ -237,7 +301,9 @@ def main():
         fcntl.flock(lock,fcntl.LOCK_EX | fcntl.LOCK_NB)
         st,rp = m.State(Path(c['state_file'])),m.State(Path(c['state_file']).parent/REPORT)
         engine = m.Engine(c,m.Backend(c),Client(),st)
-        result = prepare(c,st,rp,engine) if args.prepare else execute(c,st,rp,engine) if args.execute else recover(c,st,rp,engine)
+        result = (prepare(c,st,rp,engine) if args.prepare else execute(c,st,rp,engine) if args.execute
+                  else execute_session(c,st,rp,engine,args.authorization_text) if args.execute_session
+                  else recover(c,st,rp,engine))
         print(json.dumps(result),flush=True)
 
 
