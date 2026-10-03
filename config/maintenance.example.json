@@ -1,0 +1,54 @@
+{
+  "enabled": false,
+  "state_file": "/opt/egkcluster/state/maintenance.json",
+  "lock_file": "/opt/egkcluster/state/maintenance.lock",
+  "min_free_gib": 10,
+  "max_disk_used_pct": 80,
+  "min_other_healthy_sources": 2,
+  "postcheck_timeout_minutes": 45,
+  "postcheck_poll_seconds": 60,
+  "required_vc_containers": [
+    "eth-docker-validator-1",
+    "eth-docker-web3signer-1",
+    "hyperdrive_daemon",
+    "hyperdrive_sw_daemon",
+    "hyperdrive_sw_vc"
+  ],
+  "llm": {
+    "url": "https://api.deepseek.com/chat/completions",
+    "model": "deepseek-flash",
+    "api_key_env": "DEEPSEEK_API_KEY"
+  },
+  "nodes": {
+    "minipcamd": {
+      "name": "minipcamd", "ssh": {"target": "root@minipcamd.velociraptor-scylla.ts.net", "port": 2222},
+      "data_root": "/mnt/docker", "workdir": "/home/egk/eth-docker", "el": "nethermind", "cl": "prysm",
+      "clients": false, "os": false
+    },
+    "minipcamd2": {
+      "name": "minipcamd2", "ssh": {"target": "root@minipcamd2.velociraptor-scylla.ts.net", "port": 2222},
+      "data_root": "/mnt/ethereum", "workdir": "/home/egk/eth-docker", "el": "geth", "cl": "lighthouse",
+      "clients": false, "os": false
+    },
+    "minipcamd3": {
+      "name": "minipcamd3", "ssh": {"target": "root@minipcamd3.velociraptor-scylla.ts.net", "port": 2222},
+      "data_root": "/mnt/docker", "workdir": "/home/egk/eth-docker", "el": "nethermind", "cl": "lodestar",
+      "clients": false, "os": false
+    },
+    "minitx": {
+      "name": "minitx", "ssh": {"target": "root@minitx.velociraptor-scylla.ts.net", "port": 2222},
+      "data_root": "/var/lib/docker", "workdir": "/home/egk/eth-docker", "el": "geth", "cl": "lodestar",
+      "clients": false, "os": false
+    },
+    "orangepi5-plus": {
+      "name": "orangepi5-plus", "ssh": {"target": "root@orangepi5-plus.velociraptor-scylla.ts.net", "port": 2222},
+      "data_root": "/var/lib/docker", "workdir": "/home/egk/eth-docker", "el": "geth", "cl": "nimbus",
+      "clients": false, "os": false
+    },
+    "cloudvero": {
+      "name": "cloudvero", "ssh": {"local": true},
+      "data_root": "/var/lib/docker", "workdir": "/home/egk/eth-docker", "cl": "remote",
+      "clients": false, "os": false
+    }
+  }
+}
