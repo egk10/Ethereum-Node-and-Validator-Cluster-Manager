@@ -97,7 +97,7 @@ A checagem real da rotina semanal comparou o minipcamd com a release oficial `2.
 
 A receita reconhece esquemas `.env` 67 a 72 em mainnet: conserva todos os valores e pins existentes, acrescenta somente os defaults ausentes, atualiza `ENV_VERSION` e preserva a semântica antiga de `EPBS_BUILD_FACTOR=100` como `always` na passagem para 72. O sentinel `/dev/null` de `NODE_EXPORTER_COLLECTOR_MOUNT_PATH` vira vazio, conforme a migração upstream. FlatDB explícito, profiles de ferramentas, nomes Compose fora da receita, mudança em volumes, portas, redes, imagens ou parâmetros protegidos de EL/CL/VC/signer/PostgreSQL exigem revisão. Dumps completos do Compose ficam privados; o estado registra hashes e nomes das variáveis, sem seus valores.
 
-`source=true` em cada nó habilita essa preparação antes do build de clientes. A revisão vem de `eth_docker_revision` (SHA de 40 caracteres, para piloto revisado) ou do `main` oficial a cada ciclo. Um esquema upstream fora da faixa suportada conserva o código instalado e registra a pendência; as demais ações comuns continuam sujeitas aos gates. O preview e a comparação de Compose precisam passar em cada máquina. Seleciona apenas serviços já em execução, deixando web3signer e PostgreSQL com seus containers e binários atuais. Uma dependência nova `prom-init` pode preparar permissões do volume de métricas; não atua nos dados Ethereum ou de assinatura. Depois do build e da prova de versão isolada, coleta novamente a saúde de todos os hosts e aplica somente essa seleção, com `--no-deps --no-build --pull never`. Não ativa containers parados nem ferramentas de chaves.
+`source=true` em cada nó habilita essa preparação antes do build de clientes. A revisão vem de `eth_docker_revision` (SHA de 40 caracteres, para piloto revisado) ou do `main` oficial a cada ciclo. Um esquema upstream fora da faixa suportada conserva o código instalado e registra a pendência; as demais ações comuns continuam sujeitas aos gates. O preview e a comparação de Compose precisam passar em cada máquina. Seleciona apenas serviços já em execução, deixando web3signer e PostgreSQL com seus containers e binários atuais. Uma dependência nova `prom-init` pode preparar permissões do volume de métricas; não atua nos dados Ethereum ou de assinatura. Depois do build e da prova de versão isolada, coleta novamente a saúde de todos os hosts e aplica somente essa seleção, com `--no-deps --no-build --pull never --force-recreate`. Não ativa containers parados nem ferramentas de chaves.
 
 A aplicação de cada host precisa concluir a pós-checagem: cinco sources sincronizados, não otimistas, EL online e publicações dos dois validadores posteriores ao término da aplicação. O código Hyperdrive continua fora desta receita. Esquemas desconhecidos e mudanças de major não são liberados por esta autorização.
 
@@ -117,3 +117,60 @@ O primeiro preflight Eth Docker, às 04:51:45 UTC, terminou sem mutação porque
 No primeiro build preparado do minipcamd3, a comparação pré-aplicação detectou uma reescrita de `DOCKER_ROOT_MOUNTPOINT` feita pela inicialização do próprio `ethd cmd`. O estado ficou `blocked` antes de qualquer `up`, com os containers Ethereum originais ainda em execução. O código agora usa Docker Compose diretamente, com diretório, `.env`, project name e seleção de arquivos/serviços explícitos. As probes leem o banner público do README e chamam somente os binários `--version` dos containers ativos; nem `ethd version` é invocado, pois ele também executa essa inicialização e pode ajustar arquivos e permissões.
 
 A comparação de hash e a trava de retomada permanecem. Antes de retomar o piloto, a reconciliação precisa provar que apenas o campo de métricas foi reescrito, os IDs dos containers Ethereum são os mesmos do inventário anterior e os demais parâmetros são idênticos ao preview validado. Conserva-se o arquivo reescrito em backup privado e restaura-se apenas o `.env` do preview, com proprietário original e modo `0600`. Não se apaga estado desconhecido para repetir a ação.
+
+
+### Piloto Eth Docker concluído no minipcamd3
+
+O piloto serial em `egkcluster-eth-docker-pilot.service`, executado por `User=egk` no cloudvero e com a chave apenas no `EnvironmentFile`, terminou com código 0 às **05:09:59 UTC**, em 3 de outubro de 2026. O estado geral é `partial` porque o relatório conserva a pendência Hyperdrive; a única ação planejada foi concluída, sem erro ou ação pulada. A prova foi preservada em `/opt/egkcluster/state/maintenance-eth-docker-minipcamd3-complete-20261003.json`.
+
+O checkout do minipcamd3 passou a `5d2add7574bcbe2f374311620d4da497cc8c32d6`, `main` oficial revisado. O schema ficou 72; `.env` mantém o hash validado `adb9a98afe98da3575669b75fd7166170d407b404cd98fe94ff7093f720e4d7e`, proprietário `egk` e modo `0600`. A reconciliação documentada do campo de métricas está em `/opt/egkcluster/state/reconciliation-ethd-telemetry-minipcamd3-20261003.json`, sem perda do estado bloqueado anterior.
+
+Nethermind permaneceu `2.1.0` e Lodestar passou de `1.48.0` a `1.49.0`, ambos `current` frente às releases consultadas. As imagens aplicadas foram respectivamente `sha256:2f2622927e0766b5569732abe40ede1641ed48ce136a13259ca5aa43367d9f28` e `sha256:c157a150def314dbe8688e244aa5fb94dee73b8d2cd045a85fd51daee7d690d4`. Os containers iniciaram às 05:08:13 e 05:08:12 UTC; o Nethermind registrou `State backend: patricia (existing patricia state detected)` às 05:08:16. O beacon retornou distância zero, não sincronizando, não otimista e EL online. A pós-checagem confirmou publicações de Vero às **05:08:39 UTC** e Hyperdrive VC às **05:09:51 UTC**, após a aplicação. O resumo GestãoBot (registro 20) recebeu `delivered` às 05:10:02 UTC.
+
+O runtime usa o código `86123e0` e passou **66 testes locais**: inclui merges Git reais preservando commits locais, conflito sem alteração do checkout vivo, proteção de configuração/volumes, imagem/major antes de aplicar, ausência de mutação por probes e trava progressiva contra sync/optimistic em qualquer outro source. Os hashes instalados constam de `smart-maintenance-release.json`.
+
+
+### Conferência das imagens realmente em execução
+
+A auditoria posterior à primeira rodada encontrou os novos binários construídos, mas quatro hosts ainda executavam containers das imagens anteriores. A checagem antiga comparava apenas major após o retorno do script. O auxiliar `prom-init` mantinha stdin aberto por padrão e consumia as linhas seguintes do transporte SSH, incluindo `up`. Essa rodada confirmou a atualização de código/configuração, mas não a troca efetiva desses oito containers; o relatório original foi preservado.
+
+O executor agora recria explicitamente os serviços selecionados. Imediatamente após o comando, compara o `Image` de cada container EL/CL/Vero com o ID da candidata validada. A pós-checagem também exige igualdade da versão em execução e do ID, além da saúde e das atestações novas. Um comando com sucesso que conserve imagem antiga bloqueia a sequência. O teste de regressão simula esse caso e prova que nenhum segundo nó é iniciado.
+
+### Revisões de release com escopo definido
+
+A revisão DeepSeek recebe rede, arquivos Compose e tipos EL/CL selecionados, além do hash da configuração. `RELEASE_REVIEWS` documenta somente transições exatas já revistas nas fontes oficiais. Essas notas são enviadas apenas quando as versões e a configuração em uso correspondem ao escopo; outras versões, rede diferente, cliente validador e Nimbus em modo arquivo não herdam a revisão. Nenhum desses registros altera `veto`: um veto da API continua interrompendo antes de qualquer ação.
+
+Para a rodada de 3 de outubro, Nethermind já estava em 2.1.0; os avisos de flat/PoA relativos à passagem de 1.x não representam essa reconstrução da mesma versão. Geth 1.17.5 → 1.17.7 conserva banco e política de histórico e não executa o comando opcional `prune-history`. Lodestar 1.49 trata deduplicação de payloads Gloas, cuja ativação citada é Sepolia. Prysm roda como beacon apenas, sem mudar proposer settings dos validadores. Lighthouse 8.2.3 é a manutenção de segurança de 8.2.2, reutilizando o banco. O OrangePi tem `CL_NODE_TYPE=pruned`; a alteração de Nimbus 26.9 no modo `archive` não se aplica a esse modo.
+
+Fontes da revisão: [Geth 1.17.6](https://github.com/ethereum/go-ethereum/releases/tag/v1.17.6), [Geth 1.17.7](https://github.com/ethereum/go-ethereum/releases/tag/v1.17.7), [Prysm 7.2.0](https://github.com/OffchainLabs/prysm/releases/tag/v7.2.0), [Lighthouse 8.2.3](https://github.com/sigp/lighthouse/releases/tag/v8.2.3), [Lodestar 1.49.0](https://github.com/ChainSafe/lodestar/releases/tag/v1.49.0), [Nimbus 26.9.0](https://github.com/status-im/nimbus-eth2/releases/tag/v26.9.0) e [Nimbus 26.9.1](https://github.com/status-im/nimbus-eth2/releases/tag/v26.9.1).
+
+
+O transporte remoto passou a ler todo o script antes de iniciar Bash, deixando stdin dos comandos em `/dev/null`. O auxiliar também usa `--interactive=false --no-tty` e redirecionamento explícito de entrada. Um teste executa um processo que lê stdin até EOF e prova que o comando posterior ainda é executado. A documentação de [Docker Compose run](https://docs.docker.com/reference/cli/docker/compose/run/) confirma que stdin interativo permanece aberto por padrão.
+
+A tentativa com a conferência estrita detectou os binários antigos no primeiro nó e terminou `blocked` às **06:20:32 UTC**, sem concluir nenhuma ação ou iniciar o segundo nó. A reconciliação em `/opt/egkcluster/state/reconciliation-helper-stdin-20261003.json` confirmou as mesmas imagens EL/CL/VC em todos os hosts, hashes de configuração/HEAD preservados e todos os gates de saúde. O estado bloqueado original foi arquivado antes da retomada. O ajuste de transporte está no commit `357c4a6`, runtime SHA-256 `c509fd557d601ca37f70b024bd5f113b977ec573bc882d8ad4efb588db49cf64`, com **74 testes** aprovados.
+
+
+### Resultado final da rodada Eth Docker
+
+A preparação de código/configuração terminou em todos os seis hosts às **05:37:53 UTC**, em 3 de outubro de 2026, mantendo os commits locais e incluindo o upstream oficial `5d2add7574bcbe2f374311620d4da497cc8c32d6`. A correção das imagens realmente em execução terminou às **06:47:28 UTC** por `egkcluster-effective-client-images.service`, no cloudvero. A service retornou código 0, sem ações puladas ou erro. Os quatro nós foram concluídos em ordem: minipcamd **06:31:49**, minipcamd2 **06:35:54**, minitx **06:42:52**, OrangePi **06:47:28**, todos UTC. Cada avanço exigiu os cinco sources saudáveis, versões/IDs aplicados e publicações posteriores dos dois VCs.
+
+A auditoria independente de **06:51:07 UTC** consultou novamente as releases e confirmou os binários e imagens dos containers em execução:
+
+| Host | EL | CL / VC | HEAD Eth Docker |
+| --- | --- | --- | --- |
+| minipcamd | nethermind 2.1.0 | prysm 7.2.0 | `0fabdfcb2c4c` |
+| minipcamd2 | geth 1.17.7 | lighthouse 8.2.3 | `8392681d7cfa` |
+| minipcamd3 | nethermind 2.1.0 | lodestar 1.49.0 | `5d2add7574bc` |
+| minitx | geth 1.17.7 | lodestar 1.49.0 | `5d2add7574bc` |
+| orangepi5-plus | geth 1.17.7 | nimbus 26.9.1 | `5d2add7574bc` |
+| cloudvero | — | vero 1.4.1 | `562a49abec1d` |
+
+Os cinco pares EL/CL estavam com `is_syncing=false`, `is_optimistic=false` e `el_offline=false`; Vero e Hyperdrive VC tinham publicações novas. A distância pode variar em um slot durante a coleta: o gate usa as flags reais do beacon. Todos os checkouts estavam limpos e incluíam o upstream revisado. Os hashes de `.env` coincidiram com a migração validada, schema 72, proprietário original `egk` e modo `0600`.
+
+Os **11 containers protegidos** do cloudvero conservaram exatamente ID, imagem, estado e `StartedAt` da captura anterior: stack Hyperdrive, eth-lido, web3signer e PostgreSQL. Os serviços intencionalmente parados continuaram parados. Nenhum reboot ou comando de resync foi executado. Os hashes dos seis arquivos de runtime coincidiram com `smart-maintenance-release.json`. O código de execução é `357c4a6`, worker SHA-256 `c509fd557d601ca37f70b024bd5f113b977ec573bc882d8ad4efb588db49cf64` e módulo de source SHA-256 `d7793501f7dfd14789e6a848297b499968a24ec02bad9d75ff9e4e3e368394ed`; **74 testes** passaram.
+
+O início da retomada (GestãoBot 29) recebeu `delivered` às 06:23:32; o resumo final (31) recebeu `delivered` às **06:47:32 UTC**. O estado é `partial` porque conserva as pendências de Hyperdrive e reboot humano do cloudvero. O pedido antigo de reboot, registro 23/código 742082, está **expirado**; aprovação não executa reboot automaticamente.
+
+As provas privadas estão no cloudvero: `state/maintenance-effective-client-images-complete-20261003.json`, `state/ethereum-maintenance-final-audit-20261003.json` e `state/maintenance-effective-image-checkpoints-20261003.jsonl`, sob `/opt/egkcluster/`. Uma cópia local está em `/home/egk/ethereum-maintenance-reports-20261003/`, modo restrito. Os estados das tentativas interrompidas permanecem arquivados, incluindo a reconciliação do transporte SSH.
+
+Os três timers permanecem ativos e habilitados. A rotina comum tem `clients=true`, `source=true` e `os=true` nos seis hosts, usando a API DeepSeek Flash e o GestãoBot local. A próxima janela é **4 de outubro de 2026, 12:15 UTC / 09:15 São Paulo**, com o mesmo lock, regras de versão, preservação de dados e gates progressivos. O minipcamd4 continua fora do cluster Ethereum.
