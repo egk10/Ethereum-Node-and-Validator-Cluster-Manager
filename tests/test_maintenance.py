@@ -546,6 +546,15 @@ class MaintenanceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'running image differs'):
                 exec(m.RUNNING_ID_CHECK,{})
 
+    def test_child_reading_stdin_cannot_swallow_remaining_maintenance_commands(self):
+        marker = Path(self.tmp.name) / 'following-command-ran'
+        script = ("python3 -c 'import sys; sys.stdin.read()'\n"
+                  "python3 - <<'PY'\nfrom pathlib import Path\n"
+                  f"Path({str(marker)!r}).write_text('executed')\nPY\n")
+        result = m.Backend(self.c)._command(self.c['nodes']['cloudvero'], script, 10)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(marker.read_text(), 'executed')
+
     def test_health_deteriorates_during_build_prevents_apply(self):
         node = self.c['nodes']['minipcamd']
         expected = m.client_comparison(self.backend.inventory['minipcamd'],node,self.backend.latest)

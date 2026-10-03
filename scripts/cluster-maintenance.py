@@ -355,11 +355,15 @@ class Backend:
 
     def _command(self, node: dict, script: str, timeout: int) -> subprocess.CompletedProcess:
         ssh = node["ssh"]
+        # Read the complete transport before starting Bash. A child such as
+        # `compose run` must never consume the remaining SSH script from stdin.
+        driver = ("import subprocess,sys; script=sys.stdin.read(); "
+                  "sys.exit(subprocess.run(['bash','-ec',script],stdin=subprocess.DEVNULL).returncode)")
         if ssh.get("local"):
-            argv = ["bash", "-se"]
+            argv = ["python3", "-c", driver]
         else:
             argv = ["ssh", "-T", "-p", str(ssh["port"]), "-o", "BatchMode=yes",
-                    "-o", "ConnectTimeout=15", ssh["target"], "bash", "-se"]
+                    "-o", "ConnectTimeout=15", ssh["target"], "python3", "-c", shlex.quote(driver)]
         p = subprocess.run(argv, input=script, text=True, capture_output=True, timeout=timeout)
         if p.returncode:
             raise MaintenanceError(f"{node['name']}: remote exit {p.returncode}: {p.stderr[-500:]}")
@@ -430,8 +434,8 @@ class Backend:
                                  "assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==c['head']\n"
                                  "assert hashlib.sha256(pathlib.Path('.env').read_bytes()).hexdigest()==c['env_sha256']\n"
                                  "assert not subprocess.check_output(['git','status','--porcelain'],text=True).strip()\nCHECKPY\n")
-            helper_commands = ''.join(compose + ' run --rm --no-deps --pull never '
-                                      + shlex.quote(x) + '\n' for x in helpers)
+            helper_commands = ''.join(compose + ' run --rm --interactive=false --no-tty --no-deps --pull never '
+                                      + shlex.quote(x) + ' < /dev/null\n' for x in helpers)
             self._command(node,prefix+check_script+helper_commands
                           + compose + " up -d --no-build --pull never --force-recreate"
                           + (' --no-deps' if selected else '') + selected + "\n"
