@@ -246,6 +246,18 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(request['reasoning_effort'], 'none')
         self.assertEqual(request['response_format'], {'type': 'json_object'})
 
+    def test_long_display_text_keeps_veto_and_is_bounded(self):
+        answer={'veto':True,'summary':'s'*900,'reason':'r'*901}
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def read(self):return json.dumps({'choices':[{'finish_reason':'stop','message':{'content':json.dumps(answer)}}]}).encode()
+        with patch.dict(os.environ,{'DEEPSEEK_API_KEY':'fake'}),patch.object(m.urllib.request,'urlopen',return_value=Response()):
+            result=m.Backend(self.c).llm({}, {})
+        self.assertIs(result['veto'],True)
+        self.assertEqual(len(result['summary']),600)
+        self.assertEqual(len(result['reason']),600)
+
     def test_truncated_llm_rejected_even_if_json_parses(self):
         self.c["nodes"]["minipcamd"]["clients"] = True
         self.backend.llm = lambda *_: m.Backend(self.c).llm({}, {})

@@ -479,18 +479,19 @@ class Backend:
                   "candidate-version and volume guards. They never call ethd update or database migrations; "
                   "signing/storage services stay running. Unsupported source schemas are skipped. Return ONLY a JSON object "
                   "with veto:boolean, summary:string, reason:string. Write summary and reason "
-                  "in concise Brazilian Portuguese (pt-BR), each at most 600 characters. You may veto. Never propose "
+                  "in concise Brazilian Portuguese (pt-BR): summary at most 250 characters, reason at most 300. "
+                  "Use a brief reason, not a per-node inventory. You may veto. Never propose "
                   "commands or validator/key/fee/resync changes. Deterministic gates decide execution.\n"
                   + json.dumps({"inventory": inventory, "latest": releases}, ensure_ascii=False))
-        req = urllib.request.Request(c["url"], method="POST",
-             data=json.dumps({"model": c["model"], "temperature": 0,
+        body={"model": c["model"], "temperature": 0,
                               "thinking": {"type": "disabled"},
                               "reasoning_effort": "none", "max_tokens": 4096,
                               "response_format": {"type": "json_object"},
-                              "messages": [{"role": "user", "content": prompt}]}).encode(),
-             headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
+                              "messages": [{"role": "user", "content": prompt}]}
         for attempt in range(3):
             try:
+                req=urllib.request.Request(c['url'],method='POST',data=json.dumps(body).encode(),
+                    headers={'Content-Type':'application/json','Authorization':'Bearer '+key})
                 with urllib.request.urlopen(req, timeout=90) as resp:
                     raw = json.loads(resp.read())
                 choice = raw["choices"][0]
@@ -502,9 +503,12 @@ class Backend:
                 answer = json.loads(content, strict=True)
                 if (type(answer) is not dict or type(answer.get("veto")) is not bool
                         or type(answer.get("summary")) is not str or type(answer.get("reason")) is not str
-                        or set(answer) != {"veto", "summary", "reason"}
-                        or len(answer["summary"]) > 600 or len(answer["reason"]) > 600):
+                        or set(answer) != {"veto", "summary", "reason"}):
                     raise ValueError("LLM schema invalid")
+                # These fields are display text; only the strict boolean controls veto.
+                # Bound the notification without discarding a valid safety decision.
+                answer['summary']=answer['summary'][:600]
+                answer['reason']=answer['reason'][:600]
                 return answer
             except urllib.error.HTTPError as e:
                 if e.code in (429, 500, 502, 503, 504) and attempt < 2:
@@ -513,6 +517,10 @@ class Backend:
                 raise MaintenanceError(f"LLM HTTP {e.code}; maintenance stopped") from e
             except (ValueError, KeyError, IndexError, TypeError) as e:
                 if attempt < 1:
+                    body['messages'].append({'role':'user','content':
+                        'The previous response failed validation. Return ONLY a complete JSON object with exactly '
+                        'veto (boolean), summary (string under 250 characters), reason (string under 300 characters). '
+                        'Use Portuguese and no extra fields. Keep your safety veto decision.'})
                     time.sleep(1)
                     continue
                 raise MaintenanceError(f"LLM JSON/schema invalid after retry: {e}") from e
