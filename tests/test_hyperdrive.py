@@ -111,6 +111,12 @@ class HyperdriveRecipeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'Non-target container changed'):
             h.assert_preserved(before,after)
 
+    def test_unrelated_apps_do_not_enter_ethereum_identity_guard(self):
+        unrelated = copy.deepcopy(self.live)
+        unrelated['Name'] = '/immich_server'
+        with patch.object(h,'docker',side_effect=['vc app',json.dumps([self.live,unrelated])]):
+            self.assertEqual(set(h.inspect_all()),{h.VC})
+
     def test_health_recheck_after_pull_blocks_live_compose_up(self):
         calls = []
         def docker(*args,**kwargs):

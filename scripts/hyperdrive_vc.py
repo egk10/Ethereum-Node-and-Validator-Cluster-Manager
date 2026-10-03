@@ -48,7 +48,8 @@ def settings_hashes():
 
 def inspect_all():
     ids = docker("ps", "-a", "-q").split()
-    return {c["Name"].lstrip("/"): c for c in json.loads(docker("inspect", *ids))}
+    return {c["Name"].lstrip("/"): c for c in json.loads(docker("inspect", *ids))
+            if c['Name'].lstrip('/').startswith(('eth-docker-','eth-lido-','hyperdrive_'))}
 
 
 def identity(c):
