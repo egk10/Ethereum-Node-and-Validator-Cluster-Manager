@@ -379,6 +379,28 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertNotIn("./ethd up", "\n".join(calls))
 
+    def test_source_apply_selects_validator_and_preserves_signer_storage(self):
+        node = {**self.c['nodes']['cloudvero'], 'clients': True, 'source': True}
+        backend = m.Backend(self.c)
+        backend.source_revision = 'a' * 40
+        expected = m.client_comparison(self.backend.inventory['cloudvero'], node, self.backend.latest)
+        source = {'new_head': 'b' * 40, 'env_after_sha256': 'c' * 64,
+                  'apply_services': ['validator'], 'helpers': [], 'applied': True}
+        candidate = {'vero': {'image_id': 'sha256:abc', 'version_output': 'Vero v1.4.1'}}
+        calls = []
+        def command(node, script, timeout):
+            calls.append(script)
+            output = source if len(calls) == 1 else candidate if len(calls) == 3 else None
+            return subprocess.CompletedProcess([], 0, json.dumps(output) if output else '', '')
+        backend._command = command
+        backend.probe = lambda node: self.backend.inventory[node['name']]
+        result = backend.action(node, 'clients', expected_versions=expected)
+        self.assertIn('cmd build --pull validator', calls[1])
+        self.assertIn('cmd up -d --no-build --pull never --no-deps validator', calls[3])
+        self.assertNotIn('web3signer', calls[1] + calls[3])
+        self.assertNotIn('postgres', calls[1] + calls[3])
+        self.assertEqual(result['source_update'], source)
+
     def test_candidate_exact_release_or_fixed_pin(self):
         node = self.c["nodes"]["minipcamd"]
         expected = m.client_comparison(self.backend.inventory["minipcamd"], node, self.backend.latest)
@@ -401,12 +423,29 @@ class MaintenanceTests(unittest.TestCase):
             return subprocess.CompletedProcess([], 0, json.dumps(candidate) if len(calls) == 2 else "", "")
         backend = m.Backend(self.c)
         backend._command = command
+        backend.probe = self.backend.probe
         result = backend.action(node, "clients", expected_versions=expected)
         self.assertEqual(len(calls), 3)
         self.assertIn("image tag changed", calls[2])
         self.assertIn("./ethd cmd up -d --no-build --pull never", calls[2])
         self.assertNotIn("--remove-orphans", calls[2])
         self.assertEqual(result["candidate_versions"]["prysm"]["candidate"], "7.2.0")
+
+    def test_health_deteriorates_during_build_prevents_apply(self):
+        node = self.c['nodes']['minipcamd']
+        expected = m.client_comparison(self.backend.inventory['minipcamd'],node,self.backend.latest)
+        candidate={'nethermind':{'image_id':'sha256:abc','version_output':'Version: 1.39.4'},
+                   'prysm':{'image_id':'sha256:def','version_output':'Prysm/v7.2.0/hash'}}
+        calls=[]
+        def command(node,script,timeout):
+            calls.append(script)
+            if len(calls)==1:self.backend.inventory['minitx']['sync']['is_optimistic']=True
+            return subprocess.CompletedProcess([],0,json.dumps(candidate) if len(calls)==2 else '', '')
+        backend=m.Backend(self.c);backend._command=command;backend.probe=self.backend.probe
+        with self.assertRaisesRegex(m.MaintenanceError,'before apply'):
+            backend.action(node,'clients',expected_versions=expected)
+        self.assertEqual(len(calls),2)
+        self.assertFalse(any('cmd up' in call for call in calls))
 
     def test_unexpected_post_action_major_blocks_next_node(self):
         self.c["nodes"]["minipcamd"]["clients"] = True

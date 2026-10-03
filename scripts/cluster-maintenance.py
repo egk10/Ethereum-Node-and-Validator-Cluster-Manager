@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from gestaobot_client import Client
+from eth_docker_source import remote_script as source_script, MAX_ENV as SOURCE_MAX_ENV
 
 SOURCES = ("minipcamd", "minipcamd2", "minipcamd3", "minitx", "orangepi5-plus")
 NODES = SOURCES + ("cloudvero",)
@@ -241,6 +242,8 @@ def checked_config(path: Path) -> dict:
             raise MaintenanceError(f"invalid node {name}")
         if type(node.get("clients")) is not bool or type(node.get("os")) is not bool:
             raise MaintenanceError(f"{name}: explicit clients/os booleans required")
+        if type(node.get("source", False)) is not bool or (node.get("source") and not node["clients"]):
+            raise MaintenanceError(f"{name}: source updates require enabled client action")
         if not str(node.get("data_root", "")).startswith("/") or not str(node.get("workdir", "")).startswith("/"):
             raise MaintenanceError(f"{name}: absolute data_root/workdir required")
         if name in SOURCES and node.get("el") not in ("geth", "nethermind"):
@@ -257,6 +260,8 @@ def checked_config(path: Path) -> dict:
             raise MaintenanceError(f"{name}: SSH port must be 22 or 2222")
     if c.get("min_other_healthy_sources") != 2:
         raise MaintenanceError("quorum must be exactly at least two other sources")
+    if c.get('eth_docker_revision') is not None and not re.fullmatch(r'[0-9a-f]{40}',c['eth_docker_revision']):
+        raise MaintenanceError('invalid reviewed eth-docker revision')
     if c.get("cloudvero_excluded_apt_packages") != ["hyperdrive"]:
         raise MaintenanceError("cloudvero must exclude Hyperdrive apt package")
     if c.get("min_free_gib", 0) < 10 or c.get("max_disk_used_pct", 100) > 80:
@@ -277,6 +282,13 @@ def checked_config(path: Path) -> dict:
 class Backend:
     def __init__(self, config: dict):
         self.config = config
+        self.source_revision = None
+
+    def before_apply(self, target: str):
+        inventory = {n:self.probe(self.config['nodes'][n]) for n in NODES}
+        issues = health(inventory,self.config)
+        if issues or not source_quorum(inventory,self.config,target):
+            raise MaintenanceError('health after build/before apply: ' + '; '.join(issues))
 
     def _command(self, node: dict, script: str, timeout: int) -> subprocess.CompletedProcess:
         ssh = node["ssh"]
@@ -306,13 +318,24 @@ class Backend:
         if kind == "clients":
             if not expected_versions:
                 raise MaintenanceError("client action requires prior installed/latest version inventory")
+            source = None
+            if node.get('source'):
+                if self.source_revision:
+                    source = json.loads(self._command(node,source_script(node['workdir'],self.source_revision,
+                                                                         node['name']=='cloudvero'),900).stdout)
+                else:
+                    source = {'status':'review_required','reason':'unsupported upstream source/schema; current checkout retained'}
+            services = source.get('apply_services',[]) if source else []
+            selected = (' ' + ' '.join(shlex.quote(x) for x in services)) if services else ''
+            helpers = source.get('helpers',[]) if source else []
+            pull_selected = selected + ''.join(' ' + shlex.quote(x) for x in helpers)
             # No ethd update: that command assumes YES for migrations in noninteractive mode.
             script = (
                 "test -z \"$(git status --porcelain)\"\n"
                 "cp -p .env \".env.bak.maintenance.$(date +%Y%m%dT%H%M%S)\"\n"
-                "ETHD_FRONTEND=noninteractive ./ethd cmd pull --ignore-buildable\n"
+                "ETHD_FRONTEND=noninteractive ./ethd cmd pull --ignore-buildable" + pull_selected + "\n"
                 + "ETHD_FRONTEND=noninteractive ./ethd cmd build --pull"
-                + (" --no-cache" if source_build else "") + "\n")
+                + (" --no-cache" if source_build else "") + selected + "\n")
             self._command(node, prefix + script, 7200)
             clients = list(expected_versions)
             candidate_script = ("python3 - " + shlex.quote(json.dumps(clients))
@@ -324,12 +347,24 @@ class Backend:
                 raise MaintenanceError(f"{node['name']}: malformed candidate image probe") from e
             checked = validate_candidate_versions(candidate, expected_versions)
             expected_ids = {client: value["image_id"] for client, value in checked.items()}
+            self.before_apply(node['name'])
             check_script = ("python3 - " + shlex.quote(json.dumps(expected_ids))
                             + (" 1" if node["name"] == "cloudvero" else " 0")
                             + " <<'PY'\n" + TAG_ID_CHECK + "\nPY\n")
-            self._command(node, prefix + check_script
-                          + "ETHD_FRONTEND=noninteractive ./ethd cmd up -d --no-build --pull never\n", 7200)
-            return {"candidate_versions": checked}
+            if source and source.get('new_head'):
+                guards = {'head':source['new_head'],'env_sha256':source['env_after_sha256']}
+                check_script += ('python3 - ' + shlex.quote(json.dumps(guards)) + " <<'CHECKPY'\n"
+                                 "import sys,json,hashlib,pathlib,subprocess\n"
+                                 "c=json.loads(sys.argv[1])\n"
+                                 "assert subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()==c['head']\n"
+                                 "assert hashlib.sha256(pathlib.Path('.env').read_bytes()).hexdigest()==c['env_sha256']\n"
+                                 "assert not subprocess.check_output(['git','status','--porcelain'],text=True).strip()\nCHECKPY\n")
+            helper_commands = ''.join('ETHD_FRONTEND=noninteractive ./ethd cmd run --rm --no-deps --pull never '
+                                      + shlex.quote(x) + '\n' for x in helpers)
+            self._command(node,prefix+check_script+helper_commands
+                          + "ETHD_FRONTEND=noninteractive ./ethd cmd up -d --no-build --pull never"
+                          + (' --no-deps' if selected else '') + selected + "\n",7200)
+            return {"candidate_versions": checked,"source_update":source}
         elif kind == "os":
             prefix = ""
             if node["name"] == "cloudvero":
@@ -360,6 +395,24 @@ class Backend:
                                     "notes_excerpt": str(data.get("body") or "")[:1500]}
             except Exception as e:
                 raise MaintenanceError(f"GitHub release lookup {repo} failed: {e}") from e
+        if any(n.get('source') for n in self.config['nodes'].values()):
+            target=self.config.get('eth_docker_revision','main')
+            req=urllib.request.Request('https://api.github.com/repos/ethstaker/eth-docker/commits/'+target,
+                                       headers={'User-Agent':'egkcluster-maintenance'})
+            with urllib.request.urlopen(req,timeout=20) as resp: main=json.load(resp)
+            sha=main.get('sha')
+            if not isinstance(sha,str) or not re.fullmatch(r'[0-9a-f]{40}',sha):
+                raise MaintenanceError('official source revision unknown')
+            with urllib.request.urlopen('https://raw.githubusercontent.com/ethstaker/eth-docker/'+sha+'/default.env',timeout=20) as resp:
+                defaults=resp.read().decode()
+            found=re.search(r'(?m)^ENV_VERSION=(\d+)$',defaults)
+            schema=int(found.group(1)) if found else None
+            supported=schema is not None and 67 <= schema <= SOURCE_MAX_ENV
+            self.source_revision=sha if supported else None
+            releases['eth-docker']['source']={'revision':sha,'env_schema':schema,'supported':supported,
+                'message':main.get('commit',{}).get('message','')[:1200],
+                'url':'https://github.com/ethstaker/eth-docker/commit/'+sha,
+                'recipe':'isolated merge, preserve local history/settings, no database migration, active services only'}
         return releases
 
     def llm(self, inventory: dict, releases: dict) -> dict:
@@ -372,7 +425,10 @@ class Backend:
                   "Do analyze factual warnings about migrations, resyncs, breaking changes, and incompatibilities. "
                   "Deterministic major-version gates skip those client upgrades; mention their pending review "
                   "without vetoing unrelated safe OS upgrades. Veto if an otherwise eligible automatic action "
-                  "may require a migration, resync, or incompatible change. Return ONLY a JSON object "
+                  "may require a migration, resync, or incompatible change. Eth Docker source updates use an "
+                  "isolated merge, supported env schemas 67..72, preservation of settings and local commits, "
+                  "candidate-version and volume guards. They never call ethd update or database migrations; "
+                  "signing/storage services stay running. Unsupported source schemas are skipped. Return ONLY a JSON object "
                   "with veto:boolean, summary:string, reason:string. Write summary and reason "
                   "in concise Brazilian Portuguese (pt-BR), each at most 600 characters. You may veto. Never propose "
                   "commands or validator/key/fee/resync changes. Deterministic gates decide execution.\n"
@@ -579,14 +635,18 @@ def inventory_report(inventory: dict, releases: dict, config: dict) -> dict:
                         "effective_plan": {"clients": bool(node["clients"] and not dirty and not blockers),
                                            "os": bool(node["os"] and not dirty)},
                         "client_blockers": blockers,
+                        "source_update": {'requested':bool(node.get('source')),
+                                          **releases['eth-docker'].get('source',{})},
                         "client_comparison": client_comparison(p, node, releases),
                         "reboot_required": p.get("reboot_required"),
                         "release_refs": {x: {k: releases[x].get(k) for k in ("tag", "url", "published_at")} for x in
                                          (("eth-docker", node["cl"], node["el"]) if name in SOURCES
                                           else ("eth-docker", "vero", "hyperdrive"))},
-                        "gaps": ["eth-docker code update requires separate review",
+                        "gaps": (["eth-docker code update requires separate review"] if not node.get('source') else []) + [
                                  "Hyperdrive stack update outside this recipe; compare CLI/package with release"] if name == "cloudvero" else
-                                ["eth-docker code update requires separate review"]}
+                                ([] if node.get('source') else ["eth-docker code update requires separate review"])}
+        if node.get('source') and releases['eth-docker'].get('source',{}).get('supported') is not True:
+            report[name]['gaps'].append('upstream eth-docker schema needs review; installed source retained')
         if any(is_fixed_pin(k, v) for k, v in p.get("pins", {}).items()):
             report[name]["gaps"].append("one or more explicit pins may prevent latest release")
         for client, entry in report[name]["client_comparison"].items():
@@ -713,7 +773,7 @@ class Engine:
             llm = self.backend.llm(report, releases)
             st.value["inventory"] = report
             st.value["llm"] = llm
-            st.value["gaps_summary"] = "running versions compared with releases; eth-docker source and Hyperdrive CLI/package need separate review; Hyperdrive apt package excluded on cloudvero; pins may hold versions"
+            st.value["gaps_summary"] = "running versions compared with releases; source updates follow explicit source flags and supported schema; Hyperdrive CLI/package outside recipe and excluded from apt; pins may hold versions"
             st.save()
             if llm["veto"]:
                 raise MaintenanceError("LLM veto: " + llm["reason"])
@@ -738,7 +798,7 @@ class Engine:
             if not enabled:
                 self.alert("Manutenção semanal parcial", "egkcluster",
                            "Sem ações elegíveis. Pendências: " + json.dumps(st.value["skipped"], ensure_ascii=False)
-                           + ". Versões comparadas; código eth-docker e Hyperdrive fora da receita.")
+                           + ". Versões comparadas; Hyperdrive requer receita própria.")
                 st.value.update(status="partial", finished_at=now(), phase="no-actions")
                 st.save()
                 return st.value
@@ -783,6 +843,8 @@ class Engine:
                     if isinstance(action_result, dict) and action_result.get("candidate_versions"):
                         st.value["current"]["candidate_versions"] = action_result["candidate_versions"]
                         st.save()
+                    if isinstance(action_result,dict) and action_result.get('source_update'):
+                        st.value['current']['source_update']=action_result['source_update'];st.save()
                     st.value["phase"] = "postcheck"
                     st.save()
                     inventory = self.postcheck(name, postcheck_since)
@@ -798,6 +860,7 @@ class Engine:
                             if old is None or new is None or old[0] != new[0]:
                                 raise MaintenanceError(f"{name}: unexpected/unknown {client} major after update")
                     st.value["actions"].append({"node": name, "kind": kind, "completed_at": now(),
+                                                "source_update":action_result.get('source_update') if isinstance(action_result,dict) else None,
                                                 "candidate_versions": action_result.get("candidate_versions")
                                                 if isinstance(action_result, dict) else None})
                     st.value.pop("current", None)
@@ -821,12 +884,15 @@ class Engine:
                         self.refresh_approvals()
                         pending_nodes.add(name)
                         break
+            updated_sources = [a['node'] for a in st.value['actions']
+                               if (a.get('source_update') or {}).get('applied')]
             detail = ("Ações: " + ", ".join(a["node"] + "/" + a["kind"] for a in st.value["actions"])
+                      + (". Código eth-docker atualizado em: " + ", ".join(updated_sources) if updated_sources else "")
                       + (". Reboot humano pendente: " + ", ".join(x["node"] for x in st.value["pending_reboots"])
                          if st.value["pending_reboots"] else ". Sem reboot pendente.")
                       + (" Pulados: " + json.dumps(st.value["skipped"], ensure_ascii=False)
                          if st.value["skipped"] else "")
-                      + " Código eth-docker e Hyperdrive: atualização separada pendente; pacote apt Hyperdrive excluído no cloudvero; pins podem manter versões anteriores.")
+                      + " Hyperdrive: atualização separada pendente; pacote apt Hyperdrive excluído no cloudvero; pins podem manter versões anteriores.")
             partial = bool(st.value["skipped"] or st.value["pending_reboots"] or st.value["gaps_summary"])
             self.alert("Manutenção semanal parcial" if partial else "Manutenção semanal aplicada", "egkcluster", detail)
             st.value.update(status="partial" if partial else "complete", finished_at=now(), phase="done")
