@@ -182,7 +182,8 @@ def prepare(workdir, revision, use_sudo=False, apply=True):
     result = {"old_head": old_head, "new_head": merged, "upstream_revision": revision,
               "env_before_sha256": hashlib.sha256(original.encode()).hexdigest(),
               "env_after_sha256": hashlib.sha256(updated.encode()).hexdigest(),
-              "backup": str(archive), "active_services": sorted(active), "helpers": sorted(helpers),
+              "backup": str(archive), "compose_files": files,
+              "active_services": sorted(active), "helpers": sorted(helpers),
               "local_history_preserved": True, "compose_checked": True, "applied": False, **migration}
     # Signing/storage containers keep their current binaries and running state.
     result['apply_services'] = sorted(active - {'postgres','web3signer'})

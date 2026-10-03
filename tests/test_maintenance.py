@@ -1,6 +1,8 @@
 """Offline gates for the weekly maintainer. No SSH, WhatsApp or API calls."""
 import copy
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -412,8 +414,8 @@ class MaintenanceTests(unittest.TestCase):
         backend._command = command
         backend.probe = lambda node: self.backend.inventory[node['name']]
         result = backend.action(node, 'clients', expected_versions=expected)
-        self.assertIn('cmd build --pull validator', calls[1])
-        self.assertIn('cmd up -d --no-build --pull never --no-deps validator', calls[3])
+        self.assertIn(' build --pull validator', calls[1])
+        self.assertIn(' up -d --no-build --pull never --no-deps validator', calls[3])
         self.assertNotIn('web3signer', calls[1] + calls[3])
         self.assertNotIn('postgres', calls[1] + calls[3])
         self.assertEqual(result['source_update'], source)
@@ -444,7 +446,8 @@ class MaintenanceTests(unittest.TestCase):
         result = backend.action(node, "clients", expected_versions=expected)
         self.assertEqual(len(calls), 3)
         self.assertIn("image tag changed", calls[2])
-        self.assertIn("./ethd cmd up -d --no-build --pull never", calls[2])
+        self.assertIn(" up -d --no-build --pull never", calls[2])
+        self.assertNotIn('./ethd cmd', '\n'.join(calls))
         self.assertNotIn("--remove-orphans", calls[2])
         self.assertEqual(result["candidate_versions"]["prysm"]["candidate"], "7.2.0")
 
@@ -462,7 +465,36 @@ class MaintenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(m.MaintenanceError,'before apply'):
             backend.action(node,'clients',expected_versions=expected)
         self.assertEqual(len(calls),2)
-        self.assertFalse(any('cmd up' in call for call in calls))
+        self.assertFalse(any(' up -d' in call for call in calls))
+
+    def test_probe_never_runs_ethd_or_rewrites_environment(self):
+        workdir = Path(self.tmp.name)
+        original = 'DOCKER_ROOT_MOUNTPOINT=/old-telemetry\nJWT_SECRET=private-test\n'
+        (workdir / '.env').write_text(original)
+        (workdir / 'README.md').write_text('This is Eth Docker v26.9.1-dev\n')
+        (workdir / '.git').mkdir()
+        def command(args, **kwargs):
+            self.assertNotIn('./ethd', args)
+            if args[0] == 'df': output = 'Filesystem blocks used avail use mounted\n/dev/fake 100 20 80 20% /data\n'
+            elif args[0] == 'curl': output = json.dumps({'data': {'is_syncing': False, 'is_optimistic': False, 'el_offline': False}})
+            elif args[:2] == ['docker', 'ps']:
+                output = '\n'.join(json.dumps({'Names': 'eth-docker-'+role+'-1', 'Status': 'Up', 'Image': 'old:local'}) for role in ('execution','consensus'))
+            elif args[:2] == ['docker', 'inspect']: output = 'sha256:old'
+            elif args[:2] == ['docker', 'exec']:
+                output = 'Version: 2.1.0' if 'execution' in args[2] else '  * Version: v1.48.0/test'
+            elif args[:2] == ['git', 'rev-parse']: output = 'a'*40
+            elif args[0] in ('git','apt'): output = ''
+            else: raise AssertionError('unexpected probe command')
+            return subprocess.CompletedProcess(args, 0, output, '')
+        stream = io.StringIO()
+        with patch.object(m.subprocess, 'run', side_effect=command), patch.object(sys, 'argv',
+                ['probe','/data',str(workdir),'0',json.dumps({'el':'nethermind','cl':'lodestar'})]), contextlib.redirect_stdout(stream):
+            exec(m.PROBE, {})
+        result = json.loads(stream.getvalue())
+        self.assertIn('Nethermind version\nVersion: 2.1.0', result['ethd_version'])
+        self.assertIn('v1.48.0', result['ethd_version'])
+        self.assertNotIn('private-test', stream.getvalue())
+        self.assertEqual((workdir / '.env').read_text(), original)
 
     def test_unexpected_post_action_major_blocks_next_node(self):
         self.c["nodes"]["minipcamd"]["clients"] = True
