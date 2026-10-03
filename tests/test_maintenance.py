@@ -63,6 +63,10 @@ def healthy(c):
         ("eth-docker-validator-1", "hyperdrive_sw_vc")}
     result["cloudvero"]["vc_started_at"] = {
         name: started for name in ("eth-docker-validator-1", "hyperdrive_sw_vc")}
+    result['cloudvero'].update(hyperdrive_version='hyperdrive version 1.3.0',
+                              hyperdrive_package='1.3.0',hyperdrive_vc_version='  * Version: v1.48.0/hash')
+    result['cloudvero']['containers']['hyperdrive_daemon']['image'] = 'nodeset/hyperdrive:v1.3.0'
+    result['cloudvero']['containers']['hyperdrive_sw_daemon']['image'] = 'nodeset/hyperdrive-stakewise:v1.3.0'
     return result
 
 
@@ -124,6 +128,10 @@ class FakeBackend:
                 name: stamp + " Published attestation" for name in
                 ("eth-docker-validator-1", "hyperdrive_sw_vc")}
         self.pending_publication = self.publish_after_action
+        if kind == 'hyperdrive':
+            self.inventory['cloudvero']['hyperdrive_vc_version'] = '  * Version: v1.49.0/hash'
+            self.inventory['cloudvero']['containers']['hyperdrive_sw_vc']['image_id'] = 'sha256:checked'
+            return {'candidate_versions':{'lodestar':{'candidate':'1.49.0','image_id':'sha256:checked'}}}
         return "done"
 
 
@@ -431,7 +439,7 @@ class MaintenanceTests(unittest.TestCase):
                          {"installed": "1.39.3", "latest": "2.1.0",
                           "status": "major_review", "fixed_pins": {}})
         self.assertEqual(result["inventory"]["minipcamd"]["effective_plan"],
-                         {"clients": False, "os": True})
+                         {"clients": False, "os": True, 'hyperdrive':False})
         self.assertEqual(result["skipped"][0]["kind"], "clients")
 
     def test_candidate_major_blocks_before_up(self):

@@ -49,7 +49,7 @@
     "cloudvero": {
       "name": "cloudvero", "ssh": {"local": true},
       "data_root": "/var/lib/docker", "workdir": "/home/egk/eth-docker", "cl": "remote",
-      "clients": false, "source": false, "os": false
+      "clients": false, "source": false, "hyperdrive": false, "os": false
     }
   }
 }

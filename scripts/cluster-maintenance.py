@@ -19,6 +19,7 @@ from pathlib import Path
 
 from gestaobot_client import Client
 from eth_docker_source import remote_script as source_script, MAX_ENV as SOURCE_MAX_ENV
+import hyperdrive_vc
 
 SOURCES = ("minipcamd", "minipcamd2", "minipcamd3", "minitx", "orangepi5-plus")
 NODES = SOURCES + ("cloudvero",)
@@ -161,8 +162,10 @@ try:
                 out['pins'][key] = value.strip().strip('"').strip("'")
 except Exception as e: out['pins_error'] = str(e)
 if sudo == '1':
-    out['hyperdrive_version'] = optional(['hyperdrive','version'])
+    out['hyperdrive_version'] = optional(['hyperdrive','--version'])
     out['hyperdrive_package'] = optional(['dpkg-query','-W','-f=${Version}','hyperdrive'])
+    out['hyperdrive_vc_version'] = optional(docker + ['exec','hyperdrive_sw_vc',
+        '/usr/app/node_modules/.bin/lodestar','--version'],45)
     for name in ('eth-docker-validator-1','hyperdrive_sw_vc'):
         try:
             p = subprocess.run(docker + ['logs','--timestamps','--since','15m','--tail','500',name],
@@ -307,6 +310,8 @@ def checked_config(path: Path) -> dict:
             raise MaintenanceError(f"{name}: explicit clients/os booleans required")
         if type(node.get("source", False)) is not bool or (node.get("source") and not node["clients"]):
             raise MaintenanceError(f"{name}: source updates require enabled client action")
+        if type(node.get('hyperdrive', False)) is not bool or (node.get('hyperdrive') and name != 'cloudvero'):
+            raise MaintenanceError('Hyperdrive VC recipe is restricted to cloudvero')
         if not str(node.get("data_root", "")).startswith("/") or not str(node.get("workdir", "")).startswith("/"):
             raise MaintenanceError(f"{name}: absolute data_root/workdir required")
         if name in SOURCES and node.get("el") not in ("geth", "nethermind"):
@@ -381,6 +386,11 @@ class Backend:
 
     def action(self, node: dict, kind: str, source_build: bool = False,
                expected_versions: dict | None = None) -> dict:
+        if kind == 'hyperdrive':
+            if node['name'] != 'cloudvero' or node['ssh'].get('local') is not True or not expected_versions:
+                raise MaintenanceError('Hyperdrive VC action requires local cloudvero and prior version inventory')
+            return hyperdrive_vc.update(expected_versions['lodestar'], self.before_apply,
+                                       Path(self.config['state_file']).parent)
         wd = shlex.quote(node["workdir"])
         prefix = f"cd {wd}\ntest -f .env\ntest -x ./ethd\n"
         if kind == "clients":
@@ -683,6 +693,35 @@ def client_update_blockers(probe: dict, node: dict, releases: dict) -> list[str]
             if entry["status"] in ("unknown", "major_review", "ahead_of_release")]
 
 
+def hyperdrive_comparison(probe: dict, releases: dict) -> dict:
+    def entry(raw, pattern, latest):
+        match = re.search(pattern, raw) if isinstance(raw, str) else None
+        installed = match.group(1) if match else None
+        old, new = semver(installed), semver(latest)
+        status = ('unknown' if old is None or new is None else
+                  'major_review' if old[0] != new[0] else
+                  'behind' if old < new else 'ahead_of_release' if old > new else 'current')
+        return {'installed':installed, 'latest':latest, 'status':status, 'fixed_pins':{}}
+    tag = releases['hyperdrive'].get('tag')
+    pattern = r'\bv?(\d+\.\d+\.\d+)\b'
+    result = {'cli':entry(probe.get('hyperdrive_version'), pattern, tag),
+              'package':entry(probe.get('hyperdrive_package'), r'^v?(\d+\.\d+\.\d+)', tag),
+              'lodestar':entry(probe.get('hyperdrive_vc_version'), CLIENT_PATTERNS['lodestar'],
+                              releases['lodestar'].get('tag'))}
+    for key, container in (('daemon','hyperdrive_daemon'), ('stakewise','hyperdrive_sw_daemon')):
+        ref = probe.get('containers',{}).get(container,{}).get('image')
+        repo = 'nodeset/hyperdrive' if key == 'daemon' else 'nodeset/hyperdrive-stakewise'
+        result[key] = entry(ref, '^' + re.escape(repo) + r':v?(\d+\.\d+\.\d+)$', tag)
+    return result
+
+
+def hyperdrive_blockers(probe: dict, releases: dict) -> list[str]:
+    return [f'Hyperdrive {key}: {value["status"]} ({value["installed"]} -> {value["latest"]})'
+            for key, value in hyperdrive_comparison(probe, releases).items()
+            if (key != 'lodestar' and value['status'] != 'current')
+            or (key == 'lodestar' and value['status'] not in ('current','behind'))]
+
+
 def validate_candidate_versions(candidate: dict, expected: dict) -> dict:
     """Require a known safe local image before any Compose up can touch live data."""
     if not isinstance(candidate, dict) or set(candidate) != set(expected):
@@ -730,10 +769,12 @@ def inventory_report(inventory: dict, releases: dict, config: dict) -> dict:
                         "ethd_commit": p.get("ethd_commit"), "ethd_version": p.get("ethd_version"),
                         "hyperdrive_version": p.get("hyperdrive_version") if name == "cloudvero" else None,
                         "hyperdrive_package": p.get("hyperdrive_package") if name == "cloudvero" else None,
+                        "hyperdrive_comparison": hyperdrive_comparison(p,releases) if name == 'cloudvero' else None,
                         "pins": p.get("pins"), "apt_upgradable": p.get("apt_upgradable"),
-                        "planned": {"clients": node["clients"], "os": node["os"]},
+                        "planned": {"clients": node["clients"], "os": node["os"], 'hyperdrive':node.get('hyperdrive',False)},
                         "effective_plan": {"clients": bool(node["clients"] and not dirty and not blockers),
-                                           "os": bool(node["os"] and not dirty)},
+                                           "os": bool(node["os"] and not dirty),
+                                           'hyperdrive':bool(node.get('hyperdrive') and not hyperdrive_blockers(p,releases))},
                         "client_blockers": blockers,
                         "source_update": {'requested':bool(node.get('source')),
                                           **releases['eth-docker'].get('source',{})},
@@ -742,13 +783,13 @@ def inventory_report(inventory: dict, releases: dict, config: dict) -> dict:
                         "release_refs": {x: {k: releases[x].get(k) for k in ("tag", "url", "published_at")} for x in
                                          (("eth-docker", node["cl"], node["el"]) if name in SOURCES
                                           else ("eth-docker", "vero", "hyperdrive"))},
-                        "gaps": (["eth-docker code update requires separate review"] if not node.get('source') else []) + [
-                                 "Hyperdrive stack update outside this recipe; compare CLI/package with release"] if name == "cloudvero" else
-                                ([] if node.get('source') else ["eth-docker code update requires separate review"])}
+                        "gaps": [] if node.get('source') else ["eth-docker code update requires separate review"]}
         if node.get('source') and releases['eth-docker'].get('source',{}).get('supported') is not True:
             report[name]['gaps'].append('upstream eth-docker schema needs review; installed source retained')
-        if any(is_fixed_pin(k, v) for k, v in p.get("pins", {}).items()):
-            report[name]["gaps"].append("one or more explicit pins may prevent latest release")
+        if name == 'cloudvero':
+            for key, value in report[name]['hyperdrive_comparison'].items():
+                if value['status'] != 'current':
+                    report[name]['gaps'].append(f'Hyperdrive {key}: {value["status"]} ({value["installed"]} -> {value["latest"]})')
         for client, entry in report[name]["client_comparison"].items():
             if entry["status"] in ("unknown", "major_review", "ahead_of_release", "behind"):
                 report[name]["gaps"].append(
@@ -894,14 +935,14 @@ class Engine:
             llm = self.backend.llm(report, releases)
             st.value["inventory"] = report
             st.value["llm"] = llm
-            st.value["gaps_summary"] = "running versions compared with releases; source updates follow explicit source flags and supported schema; Hyperdrive CLI/package outside recipe and excluded from apt; pins may hold versions"
+            st.value['gaps_summary'] = {n:r['gaps'] for n,r in report.items() if r['gaps']}
             st.save()
             if llm["veto"]:
                 raise MaintenanceError("LLM veto: " + llm["reason"])
             enabled = []
             client_blocked = set()
             for n in NODES:
-                if not (c["nodes"][n]["clients"] or c["nodes"][n]["os"]):
+                if not (c["nodes"][n]["clients"] or c["nodes"][n]["os"] or c['nodes'][n].get('hyperdrive')):
                     continue
                 if n in pending_nodes:
                     st.value["skipped"].append({"node": n, "reason": "human reboot pending"})
@@ -913,13 +954,13 @@ class Engine:
                         client_blocked.add(n)
                         st.value["skipped"].append({"node": n, "kind": "clients",
                                                      "reason": "; ".join(blockers)})
-                    if c["nodes"][n]["os"] or (c["nodes"][n]["clients"] and not blockers):
+                    if c["nodes"][n]["os"] or c['nodes'][n].get('hyperdrive') or (c["nodes"][n]["clients"] and not blockers):
                         enabled.append(n)
             st.save()
             if not enabled:
                 self.alert("Manutenção semanal parcial", "egkcluster",
                            "Sem ações elegíveis. Pendências: " + json.dumps(st.value["skipped"], ensure_ascii=False)
-                           + ". Versões comparadas; Hyperdrive requer receita própria.")
+                           + ". Versões em execução comparadas com releases oficiais.")
                 st.value.update(status="partial", finished_at=now(), phase="no-actions")
                 st.save()
                 return st.value
@@ -928,8 +969,8 @@ class Engine:
                        + (". Reboot humano pendente em: " + ", ".join(sorted(pending_nodes)) if pending_nodes else ""))
             for name in enabled:
                 node = c["nodes"][name]
-                for kind in ("clients", "os"):
-                    if not node[kind] or (kind == "clients" and name in client_blocked):
+                for kind in ("clients", "hyperdrive", "os"):
+                    if not node.get(kind) or (kind == "clients" and name in client_blocked):
                         continue
                     inventory = self.probe_all()
                     issues = health(inventory, c)
@@ -951,7 +992,17 @@ class Engine:
                     if kind == "clients" and (not isinstance(inventory[name].get("ethd_version"), str)
                                               or not inventory[name]["ethd_version"].strip()):
                         raise MaintenanceError(f"{name}: eth-docker version inventory unavailable")
-                    before_versions = client_comparison(inventory[name], node, releases) if kind == "clients" else {}
+                    if kind == 'hyperdrive':
+                        blockers = hyperdrive_blockers(inventory[name],releases)
+                        if blockers:
+                            st.value['skipped'].append({'node':name,'kind':kind,'reason':'; '.join(blockers)})
+                            st.save()
+                            continue
+                        if hyperdrive_comparison(inventory[name],releases)['lodestar']['status'] == 'current':
+                            continue
+                    before_versions = (client_comparison(inventory[name], node, releases) if kind == 'clients'
+                                       else {'lodestar':hyperdrive_comparison(inventory[name],releases)['lodestar']}
+                                       if kind == 'hyperdrive' else {})
                     action_started_at = time.time()
                     st.value.update(phase="mutating", current={"node": name, "kind": kind,
                                                                "started_at": now(), "started_epoch": action_started_at})
@@ -959,13 +1010,16 @@ class Engine:
                     source_build = any(k.endswith("DOCKERFILE") and v == "Dockerfile.source"
                                        for k, v in inventory[name].get("pins", {}).items())
                     action_result = self.backend.action(node, kind, source_build=source_build,
-                                                        expected_versions=before_versions if kind == "clients" else None)
+                                                        expected_versions=before_versions if kind in ('clients','hyperdrive') else None)
                     postcheck_since = time.time()  # only publications after the applied action count
                     if isinstance(action_result, dict) and action_result.get("candidate_versions"):
                         st.value["current"]["candidate_versions"] = action_result["candidate_versions"]
                         st.save()
                     if isinstance(action_result,dict) and action_result.get('source_update'):
                         st.value['current']['source_update']=action_result['source_update'];st.save()
+                    if kind == 'hyperdrive' and isinstance(action_result,dict):
+                        st.value['current']['hyperdrive_audit'] = action_result
+                        st.save()
                     st.value["phase"] = "postcheck"
                     st.save()
                     inventory = self.postcheck(name, postcheck_since)
@@ -974,8 +1028,9 @@ class Engine:
                         raise MaintenanceError(f"{name}: post-update client version inventory unavailable")
                     st.value["inventory_after"] = inventory_report(inventory, releases, c)
                     st.save()
-                    if kind == "clients":
-                        after_versions = client_comparison(inventory[name], node, releases)
+                    if kind in ('clients','hyperdrive'):
+                        after_versions = (client_comparison(inventory[name], node, releases) if kind == 'clients'
+                                          else {'lodestar':hyperdrive_comparison(inventory[name],releases)['lodestar']})
                         for client, before in before_versions.items():
                             old, new = semver(before["installed"]), semver(after_versions[client]["installed"])
                             if old is None or new is None or old[0] != new[0]:
@@ -983,11 +1038,13 @@ class Engine:
                         for client,candidate in (action_result.get('candidate_versions',{})
                                                  if isinstance(action_result,dict) else {}).items():
                             role='execution' if client in ('geth','nethermind') else 'validator' if client=='vero' else 'consensus'
-                            actual_id=inventory[name]['containers']['eth-docker-'+role+'-1'].get('image_id')
+                            container = 'hyperdrive_sw_vc' if kind == 'hyperdrive' else 'eth-docker-'+role+'-1'
+                            actual_id=inventory[name]['containers'][container].get('image_id')
                             if (after_versions[client]['installed']!=candidate['candidate']
                                     or actual_id!=candidate['image_id']):
                                 raise MaintenanceError(f'{name}: {client} running image/version differs from validated candidate; next node blocked')
                     st.value["actions"].append({"node": name, "kind": kind, "completed_at": now(),
+                                                'hyperdrive_audit':action_result if kind == 'hyperdrive' else None,
                                                 "source_update":action_result.get('source_update') if isinstance(action_result,dict) else None,
                                                 "candidate_versions": action_result.get("candidate_versions")
                                                 if isinstance(action_result, dict) else None})
@@ -1014,13 +1071,17 @@ class Engine:
                         break
             updated_sources = [a['node'] for a in st.value['actions']
                                if (a.get('source_update') or {}).get('applied')]
+            final_report = inventory_report(inventory,releases,c)
+            st.value['inventory_after'] = final_report
+            st.value['gaps_summary'] = {n:r['gaps'] for n,r in final_report.items() if r['gaps']}
             detail = ("Ações: " + ", ".join(a["node"] + "/" + a["kind"] for a in st.value["actions"])
                       + (". Código eth-docker atualizado em: " + ", ".join(updated_sources) if updated_sources else "")
                       + (". Reboot humano pendente: " + ", ".join(x["node"] for x in st.value["pending_reboots"])
                          if st.value["pending_reboots"] else ". Sem reboot pendente.")
                       + (" Pulados: " + json.dumps(st.value["skipped"], ensure_ascii=False)
                          if st.value["skipped"] else "")
-                      + " Hyperdrive: atualização separada pendente; pacote apt Hyperdrive excluído no cloudvero; pins podem manter versões anteriores.")
+                      + (". Revisões pendentes: " + json.dumps(st.value['gaps_summary'],ensure_ascii=False)
+                         if st.value['gaps_summary'] else '. Versões verificadas; sem revisão pendente.'))
             partial = bool(st.value["skipped"] or st.value["pending_reboots"] or st.value["gaps_summary"])
             self.alert("Manutenção semanal parcial" if partial else "Manutenção semanal aplicada", "egkcluster", detail)
             st.value.update(status="partial" if partial else "complete", finished_at=now(), phase="done")
@@ -1057,8 +1118,8 @@ def main(argv=None) -> int:
             print(json.dumps({"enabled": c["enabled"], "health_issues": issues,
                               "inventory": inventory_report(inventory, releases, c),
                               "planned": [{"node": n, "clients": c["nodes"][n]["clients"],
-                                           "os": c["nodes"][n]["os"]} for n in NODES],
-                              "hyperdrive_update": "separate manual recipe required",
+                                           "os": c["nodes"][n]["os"], 'hyperdrive':c['nodes'][n].get('hyperdrive',False)} for n in NODES],
+                              "hyperdrive_update": "Lodestar VC same-major recipe; CLI/package/module migrations require review",
                               "state": json.loads(Path(c["state_file"]).read_text()) if Path(c["state_file"]).exists() else {}},
                              ensure_ascii=False, indent=2))
             return 0 if not issues else 2
