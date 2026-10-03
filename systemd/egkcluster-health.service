@@ -1,0 +1,13 @@
+[Unit]
+Description=egkcluster daily health through GestãoBot
+After=network-online.target integra-botinterno.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=egk
+Environment=EGK_NODE_SSH_PORT=2222
+Environment=EGK_LOCAL_CLOUDVERO=1
+ExecStart=/usr/bin/python3 /opt/egkcluster/daily-health.py
+SuccessExitStatus=10 11
+TimeoutStartSec=1200

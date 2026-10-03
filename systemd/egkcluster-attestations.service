@@ -1,0 +1,11 @@
+[Unit]
+Description=egkcluster attestation monitoring through GestãoBot
+After=network-online.target docker.service integra-botinterno.service
+
+[Service]
+Type=oneshot
+User=egk
+Environment=EGK_DOCKER_SUDO=1
+ExecStart=/usr/bin/python3 /opt/egkcluster/attestation-monitor.py
+SuccessExitStatus=2
+TimeoutStartSec=180
