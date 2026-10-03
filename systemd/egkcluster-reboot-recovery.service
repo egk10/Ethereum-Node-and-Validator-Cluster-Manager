@@ -1,0 +1,15 @@
+[Unit]
+Description=Verify recovery of the individually approved Cloudvero reboot
+Wants=network-online.target docker.service tailscaled.service integra-botinterno.service integra-leadbot.service
+After=network-online.target docker.service tailscaled.service integra-botinterno.service integra-leadbot.service
+
+[Service]
+Type=oneshot
+User=egk
+WorkingDirectory=/opt/egkcluster
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/egkcluster/approved-reboot.py --config /opt/egkcluster/maintenance.json --recover
+TimeoutStartSec=45min
+
+[Install]
+WantedBy=multi-user.target
