@@ -102,6 +102,23 @@ class Monitors(unittest.TestCase):
                 self.assertEqual(attest.main(), 2)
                 self.assertEqual(send.call_count, 2)
 
+    def test_beacon_timeout_names_the_host_and_the_publication(self):
+        linha = ("Failed to get a response from beacon node: ConnectionTimeoutError("
+                 "'Connection timeout to host http://minipcamd2.velociraptor-scylla.ts.net:5052/eth/v2/beacon/pool/attestations')")
+        logs = [linha, linha, "Published attestations slot=10",
+                "Using minipcamd.velociraptor-scylla.ts.net as `best` beacon node"]
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(attest, "ESTADO", Path(directory)/"alerts.json"), patch.object(attest, "container_up", return_value=True), patch.object(attest, "docker_logs", return_value=logs), patch.object(attest, "mandar", return_value=True) as send:
+                self.assertEqual(attest.main(), 2)
+        textos = [call.args[1] for call in send.call_args_list]
+        self.assertTrue(textos)
+        self.assertIn("Beacon sem resposta", [call.args[0] for call in send.call_args_list])
+        self.assertTrue(all("erro de atestação" not in texto for texto in textos))
+        self.assertIn("minipcamd2 na porta 5052", textos[0])
+        self.assertIn("publicou atestação", textos[0])
+        self.assertIn("2 vezes", textos[0])
+        self.assertIn("beacon escolhido no lugar foi minipcamd", textos[0])
+
     def test_activity_without_publication_is_alerted(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(attest, "ESTADO", Path(directory)/"alerts.json"), patch.object(attest, "container_up", return_value=True), patch.object(attest, "docker_logs", return_value=["Preparing attestation"]), patch.object(attest, "mandar", return_value=True) as send:

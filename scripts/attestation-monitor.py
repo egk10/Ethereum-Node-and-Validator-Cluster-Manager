@@ -3,10 +3,11 @@
 
 Roda a cada 3 min (systemd timer) no cloudvero. Duas perguntas por validador:
 
-1. Erros de atestação no log (últimos 15 min): "Failed to produce attestation",
-   "missed", timeouts. HTTP 500 de beacon execution-optimistic
-   (HeadBlockNotFullyVerified) é ruído se houver atestação publicada na mesma
-   duty — o Vero tenta o próximo beacon e publica.
+1. Erros de atestação no log (últimos 15 min): "Failed to produce attestation"
+   e "missed". Timeout de conexão com um beacon não é atestação perdida:
+   o texto diz qual beacon não respondeu e se houve publicação por outro.
+   HTTP 500 de beacon execution-optimistic (HeadBlockNotFullyVerified) é ruído
+   se houver atestação publicada na mesma duty.
 2. Silêncio anormal: a posição da duty muda entre épocas (6,4 min cada),
    portanto o intervalo entre publicações pode alcançar quase duas épocas.
    Quinze minutos sem publicação com o container Up é alerta.
@@ -43,6 +44,11 @@ RE_SLOT = re.compile(r"(?i)\bslot[\s=:]+[\"']?([0-9]+)")
 RE_RUIDO = re.compile(
     r"(?i)headblocknotfullyverified|execution_status:\s*optimistic|"
     r"failed to produce attestation data")
+RE_BEACON_TIMEOUT = re.compile(
+    r"(?i)failed to get a response from beacon node|connectiontimeouterror|"
+    r"connection timeout to host")
+RE_HOST = re.compile(r"https?://([^/:\s]+):(\d+)")
+RE_BEST = re.compile(r"Using\s+(\S+)\s+as\s+[`']best[`']\s+beacon", re.I)
 
 
 def _docker() -> list[str]:
@@ -65,14 +71,84 @@ def container_up(cont: str) -> bool:
     return r.stdout.strip().startswith("Up")
 
 
-def mandar(texto: str) -> bool:
+def mandar(titulo: str, texto: str) -> bool:
     try:
-        Client().alert("Atestações", "cloudvero", texto[:1800])
+        Client().alert(titulo, "cloudvero", texto[:1800])
         print("alerta aceito pelo GestãoBot")
         return True
     except BotError as exc:
         print(str(exc), file=sys.stderr)
         return False
+
+
+def _host_curto(host: str) -> str:
+    return host.split(".", 1)[0]
+
+
+def _vezes(n: int) -> str:
+    return "1 vez" if n == 1 else f"{n} vezes"
+
+
+def _aviso_de_novo() -> str:
+    return f" Próximo aviso desta situação em {DEDUPE_MIN} min."
+
+
+def beacons_em_timeout(linhas: list[str]) -> dict[tuple[str, str], int]:
+    contagem: dict[tuple[str, str], int] = {}
+    for ln in linhas:
+        if not RE_BEACON_TIMEOUT.search(ln):
+            continue
+        found = RE_HOST.search(ln)
+        chave = (_host_curto(found.group(1)), found.group(2)) if found else ("beacon sem nome no log", "")
+        contagem[chave] = contagem.get(chave, 0) + 1
+    return contagem
+
+
+def beacon_escolhido(linhas: list[str]) -> str:
+    escolhido = ""
+    for ln in linhas:
+        match = RE_BEST.search(ln)
+        if match:
+            escolhido = _host_curto(match.group(1))
+    return escolhido
+
+
+def texto_beacon(nome: str, host: str, porta: str, vezes: int,
+                 publicadas: bool, escolhido: str) -> tuple[str, str]:
+    destino = f"{host} na porta {porta}" if porta else host
+    if publicadas:
+        titulo = "Beacon sem resposta"
+        frase = (f"{nome} publicou atestação nos últimos {JANELA_MIN} min. "
+                 f"O beacon {destino} não respondeu {_vezes(vezes)} por timeout de conexão.")
+        if escolhido and escolhido != host:
+            frase += f" O beacon escolhido no lugar foi {escolhido}."
+        else:
+            frase += " O validador usou outro beacon."
+    else:
+        titulo = "Atestação não publicada"
+        frase = (f"{nome} não publicou atestação nos últimos {JANELA_MIN} min. "
+                 f"O beacon {destino} não respondeu {_vezes(vezes)} por timeout de conexão.")
+    return titulo, frase + _aviso_de_novo()
+
+
+def texto_falha(nome: str, erros: list[str], publicadas: bool) -> tuple[str, str]:
+    ultima = erros[-1]
+    slot = RE_SLOT.search(ultima)
+    slot_txt = f" do slot {slot.group(1)}" if slot else ""
+    if RE_RUIDO.search(ultima):
+        fato = "o beacon recusou os dados da atestação porque o bloco ainda não estava verificado" + (
+            f" no slot {slot.group(1)}" if slot else "")
+    elif re.search(r"missed", ultima, re.I):
+        fato = "o validador perdeu a atestação" + slot_txt
+    else:
+        fato = "o validador não produziu a atestação" + slot_txt
+    frase = f"{nome}: {fato}."
+    if publicadas:
+        frase += " Houve publicação em outro slot nesta janela."
+    else:
+        frase += f" Nenhuma atestação foi publicada nos últimos {JANELA_MIN} min."
+    ocorrencias = "1 ocorrência" if len(erros) == 1 else f"{len(erros)} ocorrências"
+    return "Atestação falhou", f"{frase} {ocorrencias} nesta janela.{_aviso_de_novo()}"
 
 
 def main() -> int:
@@ -82,46 +158,53 @@ def main() -> int:
     except Exception:
         visto = {}
     agora = time.time()
-    # (chave estável, texto do alerta)
-    incidentes: list[tuple[str, str]] = []
+    # (chave estável, título, texto)
+    incidentes: list[tuple[str, str, str]] = []
 
     for nome, cont in VCS:
         try:
             up = container_up(cont)
             linhas = docker_logs(cont) if up else []
         except Exception as exc:
-            incidentes.append((f"{nome}:coleta", f"❌ {nome}: falha ao verificar atestações ({type(exc).__name__})"))
+            incidentes.append((
+                f"{nome}:coleta", "Falha ao verificar",
+                f"Não consegui verificar {nome}: {type(exc).__name__}.{_aviso_de_novo()}"))
             continue
         if not up:
-            incidentes.append((f"{nome}:down", f"❌ {nome}: container {cont} NÃO está Up"))
+            incidentes.append((
+                f"{nome}:down", "Validador parado",
+                f"{nome} está parado. O container {cont} não está Up.{_aviso_de_novo()}"))
             continue
         publicadas = any(RE_PUBLICADA.search(ln) for ln in linhas)
         slots_publicados = {match.group(1) for ln in linhas
                             if RE_PUBLICADA.search(ln) and (match := RE_SLOT.search(ln))}
-        erros_all = [ln.strip() for ln in linhas if RE_ERRO.search(ln)]
+        timeouts = beacons_em_timeout(linhas)
+        escolhido = beacon_escolhido(linhas)
+        erros_all = [ln.strip() for ln in linhas
+                     if RE_ERRO.search(ln) and not RE_BEACON_TIMEOUT.search(ln)]
         erros = [ln for ln in erros_all if not
                  (RE_RUIDO.search(ln) and (match := RE_SLOT.search(ln))
                   and match.group(1) in slots_publicados)]
+        for (host, porta), vezes in sorted(timeouts.items()):
+            titulo, texto = texto_beacon(nome, host, porta, vezes, publicadas, escolhido)
+            incidentes.append((f"{nome}:beacon:{host}:{porta}", titulo, texto))
         if erros:
-            incidentes.append(
-                (f"{nome}:erro",
-                 f"❌ {nome}: erro de atestação — {erros[-1][:150]} "
-                 f"({len(erros)} na janela)"))
+            titulo, texto = texto_falha(nome, erros, publicadas)
+            incidentes.append((f"{nome}:erro", titulo, texto))
         elif erros_all and publicadas:
             print(f"ok: {nome}: {len(erros_all)} 500 optimistic ignorados "
                   f"(há atestação publicada na janela)")
-        elif not publicadas:
-            incidentes.append(
-                (f"{nome}:silencio",
-                 f"⚠️ {nome}: nenhuma atestação publicada em "
-                 f"{JANELA_MIN} min (container Up)"))
+        elif not publicadas and not timeouts:
+            incidentes.append((
+                f"{nome}:silencio", "Atestação não publicada",
+                f"{nome} não publicou nenhuma atestação nos últimos {JANELA_MIN} min. "
+                f"O container {cont} está no ar.{_aviso_de_novo()}"))
 
     falha_envio = False
-    for chave, msg in incidentes:
+    for chave, titulo, msg in incidentes:
         if agora - float(visto.get(chave, 0)) < DEDUPE_MIN * 60:
             continue
-        if mandar(f"egkcluster ATESTAÇÕES\n{msg}\n"
-                  f"(próximos avisos desta chave em {DEDUPE_MIN} min)"):
+        if mandar(titulo, msg):
             visto[chave] = agora
         else:
             falha_envio = True
@@ -139,7 +222,7 @@ def main() -> int:
         return 20
 
     if incidentes:
-        print("\n".join(m for _, m in incidentes))
+        print("\n".join(m for _, _, m in incidentes))
         return 2
     print(f"ok: {len(VCS)} VCs sem erros de atestação na janela de {JANELA_MIN} min")
     return 0
