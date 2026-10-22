@@ -43,6 +43,18 @@ class Client:
         return result
 
     def alert(self, titulo: str, node: str, detalhe: str = "", approval: bool = False) -> dict:
+        # Alertas comuns podem ir por e-mail (alert_email.py); pedidos de
+        # aprovação continuam sempre no GestãoBot/WhatsApp.
+        if not approval:
+            try:
+                import alert_email
+            except ImportError:
+                alert_email = None
+            if alert_email is not None and alert_email.enabled():
+                try:
+                    return alert_email.send(titulo, node, detalhe)
+                except (OSError, RuntimeError, ValueError, KeyError) as exc:
+                    raise BotError(f"Email alert failed: {str(exc)[:180]}") from exc
         return self._request("/internal/cluster/alerta", {
             "titulo": titulo, "node": node, "detalhe": detalhe,
             "aprovacao": approval,
