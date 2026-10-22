@@ -119,6 +119,53 @@ class Monitors(unittest.TestCase):
         self.assertIn("2 vezes", textos[0])
         self.assertIn("beacon escolhido no lugar foi minipcamd", textos[0])
 
+    def test_checkpoint_timeout_with_publication_is_quiet(self):
+        logs = [
+            "2026-10-22 18:28:49,250 - AttestationService - INFO : Published attestations for slot 15489142, count: 1",
+            "2026-10-22 18:30:51,130 - BeaconNode - WARNING: Failed to produce attestation data while waiting for checkpoints: TimeoutError()",
+            "2026-10-22 18:34:25,054 - AttestationService - INFO : Published attestations for slot 15489170, count: 1",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(attest, "ESTADO", Path(directory)/"alerts.json"), patch.object(attest, "container_up", return_value=True), patch.object(attest, "docker_logs", return_value=logs), patch.object(attest, "mandar") as send:
+                self.assertEqual(attest.main(), 0)
+                send.assert_not_called()
+
+    def test_parallel_half_second_timeouts_with_publication_are_quiet(self):
+        futuro = ("future: <Task finished name='Task-1' coro=<BeaconNode.produce_attestation_data() "
+                  "done, defined at /vero/providers/beacon_node.py:316> exception=TimeoutError()>")
+        logs = [
+            "2026-10-22 19:59:14,914 - AttestationService - INFO : Published attestations for slot 15489594, count: 1",
+            "2026-10-22 20:00:11,054 - asyncio - ERROR: Task exception was never retrieved",
+            futuro, futuro, futuro, futuro, futuro,
+            "2026-10-22 20:02:13,480 - AttestationService - INFO : Published attestations for slot 15489609, count: 1",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(attest, "ESTADO", Path(directory)/"alerts.json"), patch.object(attest, "container_up", return_value=True), patch.object(attest, "docker_logs", return_value=logs), patch.object(attest, "mandar") as send:
+                self.assertEqual(attest.main(), 0)
+                send.assert_not_called()
+
+    def test_stall_timeouts_name_the_freeze_not_an_unverified_block(self):
+        logs = [
+            "2026-10-22 19:22:37,020 - AttestationService - INFO : Published attestations for slot 15489411, count: 1",
+            "2026-10-22 19:30:07,807 - MultiBeaconNode - WARNING: Failed to produce attestation data: TimeoutError()",
+            "2026-10-22 19:30:08,240 - RemoteSigner - ERROR: Failed to get healthcheck response: TimeoutError()",
+            "2026-10-22 19:30:08,686 - RemoteSigner - ERROR: Failed to get healthcheck response: ClientResponseError(status=503, message='Service Unavailable', url=URL('http://mainnet-web3signer:9000/healthcheck'))",
+            "2026-10-22 19:32:03,722 - event-loop - WARNING: Event loop lag high: 97.41814747301979",
+            "2026-10-22 19:34:34,358 - TaskManager - ERROR: RuntimeError('Invalid slot for block proposal: 15489450. Current slot: 15489470')",
+            "2026-10-22 19:34:40,513 - MultiBeaconNode - WARNING: Failed to produce attestation data: TimeoutError()",
+            "2026-10-22 19:39:48,846 - AttestationService - INFO : Published attestations for slot 15489497, count: 1",
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(attest, "ESTADO", Path(directory)/"alerts.json"), patch.object(attest, "container_up", return_value=True), patch.object(attest, "docker_logs", return_value=logs), patch.object(attest, "mandar", return_value=True) as send:
+                self.assertEqual(attest.main(), 2)
+        textos = [call.args[1] for call in send.call_args_list]
+        self.assertEqual(len(textos), 2)
+        self.assertTrue(all("97" in texto for texto in textos))
+        self.assertTrue(all("web3signer" in texto for texto in textos))
+        self.assertTrue(all("86 slots" in texto for texto in textos))
+        self.assertTrue(all("não estava verificado" not in texto for texto in textos))
+        self.assertTrue(all("0,5 s" in texto for texto in textos))
+
     def test_activity_without_publication_is_alerted(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(attest, "ESTADO", Path(directory)/"alerts.json"), patch.object(attest, "container_up", return_value=True), patch.object(attest, "docker_logs", return_value=["Preparing attestation"]), patch.object(attest, "mandar", return_value=True) as send:

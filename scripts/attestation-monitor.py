@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Monitor de atestações do egkcluster — vero VC e hyperdrive_sw_vc (Layer 1).
 
-Roda a cada 3 min (systemd timer) no cloudvero. Duas perguntas por validador:
+Roda a cada 3 min (systemd timer) no cloudvero. Três perguntas por validador:
 
 1. Erros de atestação no log (últimos 15 min): "Failed to produce attestation"
    e "missed". Timeout de conexão com um beacon não é atestação perdida:
    o texto diz qual beacon não respondeu e se houve publicação por outro.
    HTTP 500 de beacon execution-optimistic (HeadBlockNotFullyVerified) é ruído
    se houver atestação publicada na mesma duty.
-2. Silêncio anormal: a posição da duty muda entre épocas (6,4 min cada),
+2. Timeout de produce_attestation_data. O Vero 1.4.1 corta cada beacon em
+   0,5 s e dispara um por beacon no mesmo instante. Uma rajada no mesmo
+   segundo, com publicação saudável, não é miss — e não é "bloco ainda não
+   verificado". Só vira alerta se o event loop passou de 5 s, um job rodou
+   fora do slot, as rajadas duraram 60 s ou mais, não houve publicação, ou
+   o vão entre slots publicados passou de 63 (uma época ficou de fora).
+3. Silêncio anormal: a posição da duty muda entre épocas (6,4 min cada),
    portanto o intervalo entre publicações pode alcançar quase duas épocas.
    Quinze minutos sem publicação com o container Up é alerta.
 
@@ -25,12 +31,17 @@ import subprocess
 import sys
 import time
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from gestaobot_client import Client, BotError
 
 ESTADO = Path("/opt/egkcluster/state/attest-alerts.json")
 JANELA_MIN = 15
 DEDUPE_MIN = 30
+# Uma época tem 32 slots. O vão normal entre duas duties cabe em 63 slots.
+GAP_EPOCH_SLOTS = 63
+LAG_ALERTA_S = 5.0
+RAJADA_SPAN_S = 60
 
 VCS = [
     ("vero", "eth-docker-validator-1"),
@@ -41,14 +52,24 @@ RE_ERRO = re.compile(
 RE_PUBLICADA = re.compile(r"(?i)published attest")
 RE_SLOT = re.compile(r"(?i)\bslot[\s=:]+[\"']?([0-9]+)")
 # 500 do Lighthouse/outros quando o EL está em resync — não é miss.
+# "Failed to produce attestation data" sozinho fica de fora: no Vero isso
+# também é TimeoutError de 0,5 s, e o texto antigo dizia "bloco não verificado".
 RE_RUIDO = re.compile(
     r"(?i)headblocknotfullyverified|execution_status:\s*optimistic|"
-    r"failed to produce attestation data")
+    r"block not yet verified|not yet fully verified")
+RE_PRODUCE_TIMEOUT = re.compile(
+    r"(?i)failed to produce attestation data[^\n]*timeouterror|"
+    r"produce_attestation_data\(\)[^\n]*timeouterror|"
+    r"waiting for checkpoints:[^\n]*timeouterror")
 RE_BEACON_TIMEOUT = re.compile(
     r"(?i)failed to get a response from beacon node|connectiontimeouterror|"
     r"connection timeout to host")
 RE_HOST = re.compile(r"https?://([^/:\s]+):(\d+)")
 RE_BEST = re.compile(r"Using\s+(\S+)\s+as\s+[`']best[`']\s+beacon", re.I)
+RE_TS = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+RE_LAG = re.compile(r"Event loop lag high:\s*([0-9]+(?:\.[0-9]+)?)")
+RE_SLOT_INVALIDO = re.compile(r"(?i)invalid slot for (?:attestation|block proposal)")
+RE_SIGNER = re.compile(r"(?i)mainnet-web3signer|remotesigner")
 
 
 def _docker() -> list[str]:
@@ -131,6 +152,93 @@ def texto_beacon(nome: str, host: str, porta: str, vezes: int,
     return titulo, frase + _aviso_de_novo()
 
 
+def avaliar_produce_timeouts(linhas: list[str]) -> dict | None:
+    """Rajada curta de TimeoutError com publicação saudável não é miss.
+
+    O Vero pergunta a todos os beacons em paralelo e cada um estoura em 0,5 s.
+    Cinco linhas no mesmo segundo são um round, não cinco duties.
+    """
+    carimbo = None
+    vistos: list[datetime] = []
+    n = 0
+    lag = 0.0
+    slot_invalido = False
+    signer = False
+    for ln in linhas:
+        marca = RE_TS.match(ln)
+        if marca:
+            carimbo = datetime.strptime(marca.group(1), "%Y-%m-%d %H:%M:%S")
+        if RE_PRODUCE_TIMEOUT.search(ln):
+            n += 1
+            if carimbo is not None:
+                vistos.append(carimbo)
+        atraso = RE_LAG.search(ln)
+        if atraso:
+            lag = max(lag, float(atraso.group(1)))
+        if RE_SLOT_INVALIDO.search(ln):
+            slot_invalido = True
+        if RE_SIGNER.search(ln) and re.search(r"(?i)timeouterror|status=503|service unavailable", ln):
+            signer = True
+    slots = sorted({
+        int(achado.group(1))
+        for ln in linhas
+        if RE_PUBLICADA.search(ln) and (achado := RE_SLOT.search(ln))
+    })
+    gap = max((b - a for a, b in zip(slots, slots[1:])), default=0)
+    if n == 0 and lag < LAG_ALERTA_S and not slot_invalido:
+        return None
+    span = (max(vistos) - min(vistos)).total_seconds() if len(vistos) >= 2 else 0.0
+    grave = (
+        (lag >= LAG_ALERTA_S and (n > 0 or slot_invalido or not slots or gap > GAP_EPOCH_SLOTS))
+        or slot_invalido
+        or span >= RAJADA_SPAN_S
+        or gap > GAP_EPOCH_SLOTS
+        or (n > 0 and not slots)
+    )
+    if not grave:
+        return None
+    return {
+        "linhas": n,
+        "momentos": len({t.strftime("%Y-%m-%d %H:%M:%S") for t in vistos}) or (1 if n else 0),
+        "lag": lag if lag >= LAG_ALERTA_S else None,
+        "slot_invalido": slot_invalido,
+        "signer": signer,
+        "gap": gap,
+    }
+
+
+def texto_timeout(nome: str, info: dict, publicadas: bool) -> tuple[str, str]:
+    n = info["linhas"]
+    momentos = info["momentos"]
+    if n:
+        linha_txt = "1 linha" if n == 1 else f"{n} linhas"
+        momento_txt = "1 momento" if momentos == 1 else f"{momentos} momentos"
+        frase = (
+            f"{nome}: timeout ao pedir dados de atestação aos beacons "
+            f"({linha_txt} em {momento_txt}). "
+            "Cada beacon tem 0,5 s; várias linhas no mesmo segundo são o mesmo "
+            "pedido em paralelo, não várias duties perdidas."
+        )
+    else:
+        frase = f"{nome}: a cadência de atestação quebrou."
+    if info["lag"] is not None:
+        frase += f" O event loop do Vero atrasou {info['lag']:.0f} s."
+    if info["slot_invalido"]:
+        frase += " Um job de duty rodou fora do slot."
+    if info["signer"]:
+        frase += " O web3signer local (mainnet-web3signer:9000) também falhou nesse intervalo."
+    if info["gap"] > GAP_EPOCH_SLOTS:
+        frase += (
+            f" O maior vão entre atestações publicadas na janela foi de {info['gap']} slots; "
+            "acima de 63 fica uma época de fora."
+        )
+    elif publicadas:
+        frase += " Ainda houve publicação nesta janela."
+    else:
+        frase += f" Nenhuma atestação foi publicada nos últimos {JANELA_MIN} min."
+    return "Atestação falhou", frase + _aviso_de_novo()
+
+
 def texto_falha(nome: str, erros: list[str], publicadas: bool) -> tuple[str, str]:
     ultima = erros[-1]
     slot = RE_SLOT.search(ultima)
@@ -181,20 +289,25 @@ def main() -> int:
         timeouts = beacons_em_timeout(linhas)
         escolhido = beacon_escolhido(linhas)
         erros_all = [ln.strip() for ln in linhas
-                     if RE_ERRO.search(ln) and not RE_BEACON_TIMEOUT.search(ln)]
+                     if RE_ERRO.search(ln) and not RE_BEACON_TIMEOUT.search(ln)
+                     and not RE_PRODUCE_TIMEOUT.search(ln)]
         erros = [ln for ln in erros_all if not
                  (RE_RUIDO.search(ln) and (match := RE_SLOT.search(ln))
                   and match.group(1) in slots_publicados)]
+        grave = avaliar_produce_timeouts(linhas)
         for (host, porta), vezes in sorted(timeouts.items()):
             titulo, texto = texto_beacon(nome, host, porta, vezes, publicadas, escolhido)
             incidentes.append((f"{nome}:beacon:{host}:{porta}", titulo, texto))
+        if grave:
+            titulo, texto = texto_timeout(nome, grave, publicadas)
+            incidentes.append((f"{nome}:timeout", titulo, texto))
         if erros:
             titulo, texto = texto_falha(nome, erros, publicadas)
             incidentes.append((f"{nome}:erro", titulo, texto))
         elif erros_all and publicadas:
             print(f"ok: {nome}: {len(erros_all)} 500 optimistic ignorados "
                   f"(há atestação publicada na janela)")
-        elif not publicadas and not timeouts:
+        elif not publicadas and not timeouts and not grave:
             incidentes.append((
                 f"{nome}:silencio", "Atestação não publicada",
                 f"{nome} não publicou nenhuma atestação nos últimos {JANELA_MIN} min. "

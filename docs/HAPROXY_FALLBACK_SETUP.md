@@ -308,6 +308,39 @@ watch -n5 'curl -s "http://127.0.0.1:8404/stats;csv" | grep -E "beacon_nodes|exe
 
 This "first available" strategy minimizes latency while providing automatic failover.
 
+## Vero does not use this proxy
+
+Vero on cloudvero keeps its own beacon URL list and a consensus threshold across those hosts. Pointing it at `localhost:15052` would collapse every beacon into whichever server `balance first` currently picks, so a timeout would no longer say which client failed and the threshold would be meaningless.
+
+HAProxy is the Hyperdrive / Stakewise path (`beaconapi` via tsdproxy). A Vero log line that names `minipcamd3` as `best` is Vero's score (success +1, failure -5, cap 100), not this backend list. After a local stall the first configured beacon can sit below another node for a while; attestation data is still requested from every initialized beacon.
+
+On 2026-10-22 the missed Vero attestation was a memory stall on cloudvero (event loop lag 97s, local web3signer 503). It was not this load balancer. The same scrape showed:
+
+| Server | Status | Check | Sessions (`stot`) | What it means |
+|--------|--------|-------|-------------------|---------------|
+| minipcamd4 | DOWN, connection refused | L4 | 88 | Beacon port closed. `balance first` skips it. |
+| minipcamd2 | UP | 35ms, HTTP 200 | 8201, 1 active | Where Hyperdrive traffic actually goes. |
+| minipcamd | UP | 248ms | 30836 | Historical primary. Idle while minipcamd2 is up. |
+| minipcamd3 | UP | 37ms | 7 | Healthy and as fast as minipcamd2. Almost unused, because it is fourth. |
+| minitx / opiplus | UP | ~250ms | 0 | Brazil. Reachable, never selected. |
+
+`timeout connect 5s` / `timeout server 30s` do not govern Vero. Vero 1.4.1 aborts `produce_attestation_data` at 0.5s inside the client. Do not switch this backend to `leastconn`: that would spray Hyperdrive across the 250ms Brazil nodes. Do not lower `timeout server` to "match" the 0.5s budget; beacon HTTP on this port includes slow calls, and an idle stream dies on the inactivity timer.
+
+### Health check change (not applied)
+
+`GET /eth/v1/node/syncing` stays HTTP 200 while the execution client is offline. Attestation requests then fail with the block still unverified. `/eth/v1/node/health` is the beacon-API check: 200 ready, 206 syncing, 503 not ready. Confirm Nimbus on opiplus returns 200 when healthy before reloading. This does not change which server is first.
+
+```diff
+ backend beacon_nodes
+     balance first
+-    option httpchk GET /eth/v1/node/syncing
+-    http-check expect rstring "is_optimistic":false.*"is_syncing":false|"is_syncing":false.*"is_optimistic":false
++    option httpchk GET /eth/v1/node/health
++    http-check expect status 200
+```
+
+Leave `balance first` and the server order as they are. Restoring minipcamd4 (connection refused on :5052 and :8545) puts Hyperdrive back on the first server; until then minipcamd2 is the correct active backend.
+
 ## Troubleshooting
 
 ### HAProxy won't start
