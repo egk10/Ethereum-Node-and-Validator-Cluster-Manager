@@ -499,6 +499,12 @@ MIT — Open source, public good!
 
 ---
 
+## Beacon boot check (minipcamd3)
+
+Checagem periódica do Lodestar com reinício automático do container `consensus` em travamento ou lag (`sync_distance` > 32 por 30+ min). Instalação, detalhes e testes: [docs/BEACON_BOOT_CHECK.md](docs/BEACON_BOOT_CHECK.md).
+
+---
+
 ## ⚠️ Segurança
 
 ### **Arquivos a NÃO incluir no Git:**
