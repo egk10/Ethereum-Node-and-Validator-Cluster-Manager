@@ -1,0 +1,9 @@
+[Unit]
+Description=Checagem do beacon a cada 10 min (Lodestar travado / lag)
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
